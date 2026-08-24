@@ -4,3 +4,4 @@ dev-dist/
 coverage/
 *.local
 .DS_Store
+.claude/scheduled_tasks.lock
