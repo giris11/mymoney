@@ -64,10 +64,24 @@ final report; never drift silently.
 - Accessibility: every input inside `Field` (or with an explicit label/
   aria-label); dialogs via `Modal`; destructive actions via `ConfirmDialog`;
   icon-only buttons via `IconButton` (label required).
-- Charts (Reports/Dashboard): Recharts; colours: series can use account/
-  category colours from data or the CSS vars (`var(--c-accent)` etc.); axes/
-  grid/tooltip text must use palette vars so dark mode stays readable
-  (`stroke="var(--c-muted)"`, tooltip `contentStyle` with surface/border vars).
+- Charts (Reports/Dashboard) — Recharts, binding rules:
+  - **Every mark is direct-labelled** (name + formatted value visible without
+    hover): category/payee/tag spend renders as a labelled horizontal-bar
+    list, never an unlabelled pie. This is the accessibility relief for
+    entity-coloured marks — non-negotiable.
+  - **One axis per chart.** Never dual y-scales.
+  - Colour by meaning: category/account marks use the entity's own `colour`;
+    income = `var(--c-pos)`, expense = `var(--c-neg)`, net-worth/cash-flow
+    lines = `var(--c-accent)`. Text (labels, values, axes, legends) always
+    uses text tokens (`var(--c-text)`/`var(--c-muted)`), never series colour.
+  - Marks: lines 2px with dot radius ≥3 on hover; bars thin with 4px rounded
+    ends and gaps between them; grid/axes recessive
+    (`stroke="var(--c-border)"`, tick fill `var(--c-muted)`, no vertical
+    grid on time charts).
+  - Tooltips on every plot: `contentStyle` with surface/border/text vars,
+    values via `formatMinor`. Months displayed as "MMM YYYY".
+  - Y-axis money ticks: compact ("£1.2k") via a shared formatter you write
+    locally; never raw minor units.
 - Currency formatting: `formatMinor` / `<Amount/>`. The base currency for
   totals comes from `getSettings()`.
 

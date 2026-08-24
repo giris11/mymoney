@@ -6,18 +6,22 @@ import { uid } from '../lib/util';
 
 type SeedNode = [name: string, colour: string, children?: string[]];
 
+// Colours: hue-spread set checked with a palette validator on both theme
+// surfaces; residual close pairs under colour-vision-deficiency simulation are
+// unavoidable with 12 entity colours, so every chart ALSO direct-labels each
+// mark (see docs/CONTRACTS.md charts section). 'Other' is deliberately grey.
 const EXPENSE_TREE: SeedNode[] = [
-  ['Bills & Utilities', '#0e7490', ['Electricity', 'Gas', 'Water', 'Internet', 'Mobile', 'Council Tax']],
-  ['Housing', '#7c3aed', ['Rent', 'Mortgage', 'Repairs & Maintenance', 'Furniture & Appliances']],
   ['Food & Drink', '#ea580c', ['Groceries', 'Restaurants', 'Takeaway', 'Coffee & Snacks']],
+  ['Bills & Utilities', '#0284c7', ['Electricity', 'Gas', 'Water', 'Internet', 'Mobile', 'Council Tax']],
   ['Transport', '#2563eb', ['Fuel', 'Public Transport', 'Taxi & Ride-hailing', 'Parking', 'Car Maintenance', 'Car Insurance']],
+  ['Housing', '#7c3aed', ['Rent', 'Mortgage', 'Repairs & Maintenance', 'Furniture & Appliances']],
   ['Shopping', '#db2777', ['Clothing', 'Electronics', 'Household', 'Gifts']],
   ['Health', '#dc2626', ['Pharmacy', 'Doctor & Dental', 'Fitness']],
-  ['Entertainment', '#9333ea', ['Streaming & Subscriptions', 'Cinema & Events', 'Games', 'Books']],
-  ['Personal', '#0891b2', ['Education', 'Personal Care', 'Charity']],
+  ['Entertainment', '#c026d3', ['Streaming & Subscriptions', 'Cinema & Events', 'Games', 'Books']],
+  ['Personal', '#a16207', ['Education', 'Personal Care', 'Charity']],
   ['Travel', '#059669', ['Flights', 'Accommodation', 'Holiday Spending']],
-  ['Family', '#c2410c', ['Childcare', 'Pets']],
-  ['Finance', '#4f46e5', ['Bank Fees', 'Interest Charges', 'Insurance', 'Taxes']],
+  ['Family', '#65a30d', ['Childcare', 'Pets']],
+  ['Finance', '#0d9488', ['Bank Fees', 'Interest Charges', 'Insurance', 'Taxes']],
   ['Other', '#6b7280'],
 ];
 
