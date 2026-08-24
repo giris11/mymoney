@@ -46,8 +46,14 @@ final report; never drift silently.
   Query params via `route.params` (e.g. `/transactions?account=<id>`).
 - Kit: use `src/ui/kit/kit.tsx` (Button, IconButton, Input, Select, Checkbox,
   Field, Segmented, Modal, ConfirmDialog, Amount, MoneyInput, ProgressBar,
-  EmptyState, Chip, Card), `toast.tsx` (`useToast`), `icons.tsx`. Don't
-  duplicate these; add page-local components inside your own folder.
+  EmptyState, Chip, Card), `toast.tsx` (`useToast`), `icons.tsx`. Shared form
+  widgets also exist — use them, don't rebuild them:
+  `CategoryPicker.tsx` (CategoryPicker single-select + CategoryMultiSelect for
+  budgets), `PayeeInput.tsx` (combobox, `onPick` hands you the payee with its
+  learned defaultCategoryId), `TagsInput.tsx` (chip input by tag NAME),
+  `DateRangePicker.tsx` (DateRangePicker + `defaultRange()`/`presetRange()`,
+  exports `DateRangeValue`). Don't duplicate these; add page-local components
+  inside your own folder.
 - Styling: Tailwind with the SEMANTIC palette only — `bg-bg`, `bg-surface`,
   `bg-surface2`, `text-text`, `text-muted`, `text-faint`, `border-border`,
   `text-accent`/`bg-accent`/`text-on-accent`, `text-pos`, `text-neg`,
