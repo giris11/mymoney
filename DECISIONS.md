@@ -38,4 +38,10 @@ Every non-obvious choice made while building, per Working Agreement §2. Newest 
 - **D23. Quick-add** is a bottom sheet (mobile) / modal (desktop) with amount-first keypad flow, category grid (recent first), payee autocomplete that learns, account defaulting to last used, date defaulting to today. Expense is the default sign; income/refund/transfer are one tap away.
 - **D24. Onboarding**: welcome → base currency (GBP preselected) → pick accounts from templates (editable) → choose one of {import MoneyWiz now, load sample data, start empty}.
 - **D25. Theme**: `system | light | dark` in Settings, default system, implemented as `data-theme` attribute + CSS variables; both palettes checked for WCAG AA.
+- **D26a. Chart accessibility**: seed category colours are a hue-spread set
+  checked with a colour-vision-deficiency validator on both theme surfaces.
+  Twelve entity colours cannot be pairwise CVD-safe, so the binding rule is
+  that every chart mark is direct-labelled (name + value), and category spend
+  renders as labelled bar lists, not unlabelled pies. 'Other' is deliberately
+  grey (neutral bucket).
 - **D26. iOS splash screens**: shipping `apple-touch-icon` + themed manifest (iOS derives launch UI from these). Full per-device `apple-touch-startup-image` sets are 20+ generated PNGs; deferred to Phase 2 polish unless you want them now. Marked partial in PROGRESS.md.
