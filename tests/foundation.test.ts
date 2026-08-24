@@ -139,7 +139,7 @@ describe('category tree (pure)', () => {
     const tree = buildTree(cats);
     // sorted by sortOrder first (Bills 0, Orphan 0, Food 1), then name
     expect(tree.map((n) => n.name)).toEqual(['Bills', 'Orphan', 'Food']);
-    expect(tree[1].children.map((n) => n.name)).toEqual(['Groceries', 'Restaurants']);
+    expect(tree[2].children.map((n) => n.name)).toEqual(['Groceries', 'Restaurants']);
   });
   it('descendantIds includes roots and all descendants', () => {
     expect(descendantIds(cats, ['food'])).toEqual(new Set(['food', 'groc', 'rest']));
