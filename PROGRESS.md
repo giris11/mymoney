@@ -7,10 +7,10 @@ Status of every Phase 1 spec feature. Updated as work lands. (Phase 2/3 items ar
 ## Build plan (Phase 1)
 
 1. ✅ SPEC.md saved verbatim, git init, spec committed
-2. ⬜ Project scaffold: Vite + React + TS + Tailwind 4 + PWA + Vitest, icons, config
-3. ⬜ Foundation: data model + Dexie schema v1, money math, seed categories, contracts
-4. ⬜ Domain modules (parallel): transactions/balances, import engine, budgets, backup, reports aggregation — each with tests
-5. ⬜ App shell: layout (sidebar / bottom tabs), hash router, theme, UI kit
+2. ✅ Project scaffold: Vite + React + TS + Tailwind 4 + PWA + Vitest, icons, config
+3. ✅ Foundation: data model + Dexie schema v1, money math, seed categories, contracts
+4. ✅ Domain modules (parallel): transactions/balances, import engine, budgets, backup, reports aggregation — 247 tests green
+5. ✅ App shell: layout (sidebar / bottom tabs), hash router, theme, UI kit + shared pickers
 6. ⬜ Pages (parallel): Transactions register + editor + quick add, Dashboard, Budgets, Reports, Settings, Import wizard, Onboarding + sample data
 7. ⬜ Integration: wiring, typecheck, full test suite, hand-calculated golden tests
 8. ⬜ Adversarial review pass (money correctness, import edge cases, spec compliance) + fixes

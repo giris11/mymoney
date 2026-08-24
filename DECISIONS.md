@@ -33,6 +33,17 @@ Every non-obvious choice made while building, per Working Agreement §2. Newest 
 - **D21. Restore is all-or-nothing**: full-file validation first, then a single Dexie transaction that clears and repopulates every table. A malformed file changes nothing. Restore requires typed confirmation ("RESTORE") since it replaces current data.
 - **D22. Multi-currency budgets**: budget amounts are in the base currency; spend in other currencies converts at current rates (no-rate transactions listed separately on the budget, not silently dropped).
 
+- **D27. Import fine print** (decided during engine build): duplicates are only
+  detected against the *existing database* — rows identical within one file
+  import as-is (two identical same-day coffees are legitimate spending).
+  Two-digit years pivot at 50 (<50 ⇒ 20xx). Amounts with more precision than
+  the currency (e.g. "12.345" GBP) are row errors, never silently rounded.
+  Date format and decimal style are detected once per file column, so one file
+  can never mix interpretations.
+- **D28. Reports missing-rate counting**: `missingRateCount` counts whole
+  transactions whose currency has no rate (uniformly across the five flow
+  reports); net worth reports the affected currencies by name.
+
 ## UX
 
 - **D23. Quick-add** is a bottom sheet (mobile) / modal (desktop) with amount-first keypad flow, category grid (recent first), payee autocomplete that learns, account defaulting to last used, date defaulting to today. Expense is the default sign; income/refund/transfer are one tap away.
