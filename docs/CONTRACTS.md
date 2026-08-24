@@ -29,6 +29,11 @@ final report; never drift silently.
   `makeDedupeHash(accountId, date, amountMinor, payeeName-or-description)`.
 - Errors: throw `ValidationError` (from `src/domain/transactions.ts`) for user
   mistakes; UI catches and shows the message.
+- **Dexie trap**: IndexedDB indexes never contain `null`/`undefined` — a
+  `where('field').equals(x)` query can only find records where the field is a
+  real value. To find records with a null field, use `.filter()` (or query a
+  compound differently). This applies to `parentId`, `groupId`, `categoryId`,
+  `payeeId`, `transferGroupId`, `importBatchId`.
 
 ## React / UI rules
 

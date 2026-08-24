@@ -111,6 +111,9 @@ export interface ImportBatch {
   createdPayeeIds: string[];
   createdTagIds: string[];
   createdGroupIds: string[];
+  // only the sample-data batch creates these (D19)
+  createdBudgetIds?: string[];
+  createdFxRateIds?: string[];
 }
 
 // Saved generic-CSV column mapping, persisted per file signature (SPEC §7.2)
