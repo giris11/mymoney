@@ -1,0 +1,12 @@
+Account,Transfers,Description,Payee,Category,Date,Time,Memo,Amount,Currency,Check #,Tags,Balance
+Current Account,,Weekly shop,Sainsbury's,Food & Drink > Groceries,23/07/2026,17:55,,-49.60,GBP,,food,
+Current Account,,July salary,Acme Ltd,Salary,25/07/2026,09:00,,"2,650.00",GBP,,work,
+Current Account,,Rent August,Hartley Lettings,Housing > Rent,01/08/2026,08:00,August rent,"-1,200.00",GBP,,,
+Current Account,Savings,Transfer to savings,,,05/08/2026,10:00,monthly saving,-300.00,GBP,,,
+Savings,Current Account,Transfer from current,,,05/08/2026,10:00,monthly saving,300.00,GBP,,,
+Credit Card,,Petrol,Shell,Transport > Fuel,07/08/2026,16:45,,-62.40,GBP,,car,
+Current Account,,Weekly shop,Tesco,Food & Drink > Groceries,13/08/2026,18:20,,-63.15,GBP,,food,
+Credit Card,,Board game order,Zatu Games,Hobbies > Board Games,09/08/2026,15:00,,-29.99,GBP,,,
+Current Account,,Weekly shop,Tesco,Food & Drink > Groceries,20/08/2026,18:00,,-57.35,GBP,,food,
+Current Account,,August salary,Acme Ltd,Salary,25/08/2026,09:00,,"2,650.00",GBP,,work,
+Credit Card,,Flat white,Caffe Nero,Food & Drink > Coffee & Snacks,21/08/2026,08:12,,-3.85,GBP,,,
