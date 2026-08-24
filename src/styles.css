@@ -1,0 +1,95 @@
+@import 'tailwindcss';
+
+/* Dark mode is driven by data-theme on <html>, set from Settings (system|light|dark). */
+@custom-variant dark (&:where([data-theme='dark'], [data-theme='dark'] *));
+
+/* Semantic palette — the ONLY colours the app uses. Both themes are WCAG AA
+   for text-on-surface combinations. */
+:root {
+  --c-bg: #f2f4f7;
+  --c-surface: #ffffff;
+  --c-surface2: #eceff3;
+  --c-text: #17222e;
+  --c-muted: #57687a;
+  --c-faint: #8494a6;
+  --c-border: #dde3ea;
+  --c-accent: #047857;
+  --c-accent-strong: #065f46;
+  --c-on-accent: #ffffff;
+  --c-pos: #047857;
+  --c-neg: #b42318;
+  --c-warn: #b45309;
+  --c-danger: #b42318;
+  --c-focus: #1d4ed8;
+  color-scheme: light;
+}
+[data-theme='dark'] {
+  --c-bg: #0d1117;
+  --c-surface: #161c24;
+  --c-surface2: #1e2630;
+  --c-text: #e6edf3;
+  --c-muted: #9daebe;
+  --c-faint: #708095;
+  --c-border: #2b3542;
+  --c-accent: #34d399;
+  --c-accent-strong: #6ee7b7;
+  --c-on-accent: #06281c;
+  --c-pos: #4ade80;
+  --c-neg: #f87171;
+  --c-warn: #fbbf24;
+  --c-danger: #f87171;
+  --c-focus: #93c5fd;
+  color-scheme: dark;
+}
+
+@theme inline {
+  --color-bg: var(--c-bg);
+  --color-surface: var(--c-surface);
+  --color-surface2: var(--c-surface2);
+  --color-text: var(--c-text);
+  --color-muted: var(--c-muted);
+  --color-faint: var(--c-faint);
+  --color-border: var(--c-border);
+  --color-accent: var(--c-accent);
+  --color-accent-strong: var(--c-accent-strong);
+  --color-on-accent: var(--c-on-accent);
+  --color-pos: var(--c-pos);
+  --color-neg: var(--c-neg);
+  --color-warn: var(--c-warn);
+  --color-danger: var(--c-danger);
+  --color-focus: var(--c-focus);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  @apply bg-bg text-text antialiased;
+  font-family:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial,
+    sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji';
+  overscroll-behavior-y: none;
+}
+
+/* Visible, consistent focus for keyboard users (SPEC §9 accessibility). */
+:focus-visible {
+  outline: 2px solid var(--c-focus);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* iOS standalone safe areas */
+.safe-bottom {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+.safe-top {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+
+/* Tabular figures for money columns */
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
