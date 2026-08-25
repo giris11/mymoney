@@ -176,11 +176,7 @@ export default function Transactions() {
             onChange={(e) => setSearchText(e.target.value)}
           />
         </div>
-        <Button
-          className="lg:hidden"
-          aria-expanded={filtersExpanded}
-          onClick={() => setFiltersExpanded((v) => !v)}
-        >
+        <Button aria-expanded={filtersExpanded} onClick={() => setFiltersExpanded((v) => !v)}>
           <IconFilter size={16} />
           Filters
           {activeCount > 0 && (

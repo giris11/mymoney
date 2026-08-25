@@ -1,6 +1,8 @@
 // Register filter panel (SPEC §8.1.2: date range, account, category, payee,
-// tag, amount range, status). Inline on desktop; behind the page's "Filters"
-// disclosure on mobile. The search input itself lives in the page header.
+// tag, amount range, status). Behind the page's "Filters" disclosure on every
+// breakpoint (an always-open panel starves the register of height on smaller
+// windows), and capped at half the viewport so the list always has room.
+// The search input itself lives in the page header.
 import type { Account, Tag } from '../../db/types';
 import { cn } from '../../lib/util';
 import { Button, Field, MoneyInput, Segmented, Select } from '../kit/kit';
@@ -24,7 +26,7 @@ export function FilterBar({
   accounts: Account[];
   tags: Tag[];
   baseCurrency: string;
-  /** Mobile disclosure state; the panel is always visible on desktop. */
+  /** Disclosure state (all breakpoints). */
   expanded: boolean;
   anyActive: boolean;
   onClearAll: () => void;
@@ -32,8 +34,8 @@ export function FilterBar({
   return (
     <div
       className={cn(
-        'flex-col gap-3 rounded-xl border border-border bg-surface p-3',
-        expanded ? 'flex' : 'hidden lg:flex',
+        'max-h-[50dvh] flex-col gap-3 overflow-y-auto rounded-xl border border-border bg-surface p-3',
+        expanded ? 'flex' : 'hidden',
       )}
     >
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">

@@ -73,8 +73,10 @@ export async function loadSampleData(): Promise<void> {
     const tagIdsBefore = new Set(await db.tags.toCollection().primaryKeys());
 
     // ---- groups + accounts ------------------------------------------------
-    const everyday: AccountGroup = { id: uid(), name: 'Everyday', sortOrder: 0 };
-    const savingCredit: AccountGroup = { id: uid(), name: 'Saving & Credit', sortOrder: 1 };
+    // Group names carry the "Sample" label (SPEC §4: clearly labelled) so the
+    // demo accounts can't be confused with accounts the user created.
+    const everyday: AccountGroup = { id: uid(), name: 'Sample · Everyday', sortOrder: 90 };
+    const savingCredit: AccountGroup = { id: uid(), name: 'Sample · Saving & Credit', sortOrder: 91 };
     await db.accountGroups.bulkAdd([everyday, savingCredit]);
     batch.createdGroupIds.push(everyday.id, savingCredit.id);
 
