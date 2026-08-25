@@ -66,7 +66,7 @@ export default function Reports() {
         />
       </div>
 
-      <DateRangePicker value={range} onChange={setRange} />
+      <DateRangePicker value={range} onChange={setRange} initialActive="this_year" />
 
       {currency === undefined ? (
         <ReportSkeleton kind="chart" />

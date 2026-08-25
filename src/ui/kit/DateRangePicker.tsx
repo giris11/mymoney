@@ -1,5 +1,5 @@
 // Shared date-range picker for reports/register: preset chips + custom dates.
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import dayjs from 'dayjs';
 import { db } from '../../db/db';
 import { todayISO, cn } from '../../lib/util';
@@ -60,17 +60,17 @@ export function defaultRange(): DateRangeValue {
 export function DateRangePicker({
   value,
   onChange,
+  initialActive = null,
   className,
 }: {
   value: DateRangeValue;
   onChange: (v: DateRangeValue) => void;
+  /** Which preset chip starts highlighted (when the caller's initial value
+   *  came from that preset). Default: none lit until the user picks one. */
+  initialActive?: PresetKey | 'custom' | null;
   className?: string;
 }) {
-  const [active, setActive] = useState<PresetKey | 'custom'>('this_month');
-  // keep 'custom' highlighted when dates are edited by hand
-  useEffect(() => {
-    void 0;
-  }, [value]);
+  const [active, setActive] = useState<PresetKey | 'custom' | null>(initialActive);
   return (
     <div className={cn('flex flex-wrap items-center gap-2', className)}>
       <div className="flex flex-wrap gap-1" role="group" aria-label="Date range presets">
