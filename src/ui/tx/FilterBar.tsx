@@ -3,7 +3,7 @@
 // breakpoint (an always-open panel starves the register of height on smaller
 // windows), and capped at half the viewport so the list always has room.
 // The search input itself lives in the page header.
-import type { Account, Tag } from '../../db/types';
+import type { Account, Payee, Tag } from '../../db/types';
 import { cn } from '../../lib/util';
 import { Button, Field, MoneyInput, Segmented, Select } from '../kit/kit';
 import { CategoryPicker } from '../kit/CategoryPicker';
@@ -14,6 +14,10 @@ import type { FilterState, StatusFilter } from './txShared';
 export function FilterBar({
   value,
   onPatch,
+  onPatchWhileTyping,
+  payeeText,
+  onPayeeText,
+  onPayeePick,
   accounts,
   tags,
   baseCurrency,
@@ -22,7 +26,22 @@ export function FilterBar({
   onClearAll,
 }: {
   value: FilterState;
+  /** A discrete choice: one deliberate change, one history entry. */
   onPatch: (patch: Partial<FilterState>) => void;
+  /**
+   * A control that fires on every keystroke (the amount boxes). Same effect on
+   * the view, but it REPLACES the history entry instead of stacking one per
+   * character — see the push-vs-replace policy in Transactions.tsx.
+   */
+  onPatchWhileTyping: (patch: Partial<FilterState>) => void;
+  /**
+   * The payee combobox's display text. It narrows nothing on its own (only a
+   * picked payee does), so it is page state rather than part of FilterState —
+   * see the note on FilterState.
+   */
+  payeeText: string;
+  onPayeeText: (text: string) => void;
+  onPayeePick: (payee: Payee) => void;
   accounts: Account[];
   tags: Tag[];
   baseCurrency: string;
@@ -70,10 +89,10 @@ export function FilterBar({
           {(id) => (
             <PayeeInput
               id={id}
-              value={value.payeeText}
+              value={payeeText}
               placeholder="All payees"
-              onChange={(payeeText) => onPatch({ payeeText, payeeId: null })}
-              onPick={(p) => onPatch({ payeeText: p.name, payeeId: p.id })}
+              onChange={onPayeeText}
+              onPick={onPayeePick}
             />
           )}
         </Field>
@@ -98,7 +117,7 @@ export function FilterBar({
               valueMinor={value.minMinor}
               currency={baseCurrency}
               placeholder="Any"
-              onValue={(minMinor) => onPatch({ minMinor })}
+              onValue={(minMinor) => onPatchWhileTyping({ minMinor })}
             />
           )}
         </Field>
@@ -109,7 +128,7 @@ export function FilterBar({
               valueMinor={value.maxMinor}
               currency={baseCurrency}
               placeholder="Any"
-              onValue={(maxMinor) => onPatch({ maxMinor })}
+              onValue={(maxMinor) => onPatchWhileTyping({ maxMinor })}
             />
           )}
         </Field>

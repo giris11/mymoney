@@ -140,6 +140,46 @@ Every non-obvious choice made while building, per Working Agreement §2. Newest 
   origin (GitHub Pages, which is one command away when Girish asks). Recording
   this because it is a deployment fact, not a bug, and it decides where his real
   history should live.
+- **D38. Account grouping is inferred, and says when it is guessing.** MoneyWiz's
+  Report export carries no account type and no grouping, so all 58 accounts
+  imported as `current` in a flat list. `autoGroupAccounts()` files them into ten
+  canonical groups (Cash · Bank Accounts · Savings · Credit Cards · Loans ·
+  Investments & Assets · Foreign Currency · Gift Cards & Vouchers · Money Lent &
+  Owed · Other Accounts) by matching WHOLE WORDS in the name — so "Visa" is not
+  an ISA and "Bowen" does not owe anything. Precedence is gift → lending →
+  currency → type. `rewards` is deliberately a *weak* signal, which is what
+  separates "BARCLAYS REWARDS SERVER" (savings) from "HSBC rewards" (a credit
+  card). Anything matched only weakly returns `confident: false` and the UI
+  flags it for review rather than asserting a fact about someone's finances.
+  Grouping and typing are organisational only — a test asserts transactions,
+  per-account balances and net worth are byte-identical across a full run.
+- **D39. Exclude-from-net-worth lives on the ACCOUNT.** A group-level control is
+  a bulk action that sets the flag on that group's current members, not a second
+  standing flag. Two independent flags were rejected: un-excluding one account
+  inside an excluded group has no obviously correct answer. Excluded accounts
+  stay visible with their real balance — "not counted", never hidden — and the
+  net-worth chart shares one predicate with the headline figure so they cannot
+  drift apart. An excluded account whose currency has no rate reports "cannot
+  total this" rather than a silent zero. Spending and income reports are
+  untouched: they group by category, not account. The field is optional
+  (`undefined === false`) and unindexed, so no Dexie migration was needed and
+  older backups restore with exclusions off.
+- **D40. Duplicating a transaction dates the copy TODAY.** "I bought that again"
+  is the overwhelming case, and re-typing the date is the friction the feature
+  exists to remove. The competing risk — an old row silently re-saved under
+  today's date — is handled by making the change visible rather than by
+  defaulting to the original date: the dialog is titled "(copy)", and when the
+  dates differ a note beside the Date field names the original with a one-click
+  "Use that date". Copies carry no id, so saving can only insert; duplicating a
+  transfer leg produces a whole new pair with both explicit amounts.
+- **D41. The register's filters ARE the URL.** They were component state, which
+  is why filtering created no history entry and Back skipped the whole page —
+  the reported "no option to go back". A Back button calling `history.back()`
+  would have inherited the same fault, so the state moved into the hash instead:
+  Back/Forward now work, a narrowed view is bookmarkable and shareable, and the
+  old workaround that wiped the address bar on the first filter tweak is gone.
+  In-app depth is stamped into `history.state` rather than trusting
+  `history.length`, which counts entries from before the app was opened.
 
 ## UX
 

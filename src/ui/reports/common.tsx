@@ -1,12 +1,14 @@
 // Shared building blocks for the Reports page (SPEC §8.1.8).
 // Chart rules from CONTRACTS.md: palette CSS vars only, compact £ ticks,
 // months as 'MMM YYYY', labelled horizontal bar lists for entity spend.
-import type { ReactElement, ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactElement, type ReactNode } from 'react';
 import dayjs from 'dayjs';
 import { ResponsiveContainer } from 'recharts';
-import { cn } from '../../lib/util';
+import { cn, todayISO } from '../../lib/util';
 import { formatMinor, minorToMajorNumber, formatMinorPlain } from '../../money/money';
 import { IconAlert, IconChevronRight } from '../kit/icons';
+import { DateRangePicker, type DateRangeValue } from '../kit/DateRangePicker';
+import { matchPreset } from './reportParams';
 
 // ---------------------------------------------------------------- formatters
 
@@ -82,6 +84,74 @@ export const legendText = (value: unknown): ReactNode => (
   <span style={{ color: 'var(--c-text)', fontSize: 12 }}>{String(value)}</span>
 );
 
+// ---------------------------------------------------------------- range bar
+
+const rangeKey = (r: DateRangeValue) => `${r.from}|${r.to}`;
+
+/**
+ * The reports' shared date range, wired for history.
+ *
+ * The range lives in the URL, so the page has to know HOW it changed: picking
+ * a preset is a deliberate jump and PUSHES a history entry (Back undoes it),
+ * while typing/dragging a custom date fires on every keystroke and must
+ * REPLACE, or one edited date would bury the previous view under a dozen
+ * junk entries.
+ *
+ * The shared kit picker is read-only for us (CONTRACTS.md) and its `onChange`
+ * carries only the value, so the source is read off the DOM event that
+ * produced it: preset chips are <button>s, custom dates are <input>s. Both
+ * signals are captured (click and input) so a value committed from the native
+ * calendar popup — which never clicks inside this element — still counts as
+ * custom.
+ */
+export function ReportRangeBar({
+  value,
+  onChange,
+  className,
+}: {
+  value: DateRangeValue;
+  onChange: (next: DateRangeValue, source: 'preset' | 'custom') => void;
+  className?: string;
+}) {
+  const source = useRef<'preset' | 'custom'>('preset');
+  // Key of the last range WE produced, so we can tell our own change from one
+  // arriving via Back/Forward or a deep link.
+  const ours = useRef<string>(rangeKey(value));
+  const [epoch, setEpoch] = useState(0);
+  const key = rangeKey(value);
+
+  useEffect(() => {
+    if (ours.current === key) return;
+    ours.current = key;
+    // External change: remount the picker so the lit chip is re-derived from
+    // the URL. (Remounting only on external changes keeps focus in the date
+    // input while the user is typing one.)
+    setEpoch((e) => e + 1);
+  }, [key]);
+
+  return (
+    <div
+      className={className}
+      onClickCapture={(e) => {
+        source.current = (e.target as HTMLElement).closest('button') ? 'preset' : 'custom';
+      }}
+      onInputCapture={() => {
+        source.current = 'custom';
+      }}
+    >
+      <DateRangePicker
+        key={epoch}
+        value={value}
+        initialActive={matchPreset(value, todayISO())}
+        onChange={(next) => {
+          ours.current = rangeKey(next);
+          onChange(next, source.current);
+        }}
+      />
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------- notes
 
 /** SPEC §6 — surfaced, never guessed: excluded-for-missing-rate notice. */
@@ -138,6 +208,12 @@ export interface BarListItem {
   chip?: ReactNode;
   /** drill-down rows: click descends a level (renders a chevron) */
   onDrill?: () => void;
+  /**
+   * Drill-down as a real link (renders a chevron too). Preferred over
+   * `onDrill` when the level is addressable: an <a> pushes a history entry of
+   * its own, so Back walks back up, and the row can be opened in a new tab.
+   */
+  drillHref?: string;
   /** leaf rows: deep link (e.g. filtered Transactions register) */
   href?: string;
 }
@@ -161,6 +237,8 @@ export function BarList({
   return (
     <ul aria-label={label} className="flex flex-col">
       {items.map((it) => {
+        const linkHref = it.drillHref ?? it.href;
+        const drillable = !!(it.onDrill || it.drillHref);
         const inner = (
           <>
             <div className="flex min-w-0 items-center gap-2">
@@ -178,7 +256,7 @@ export function BarList({
               <span className="tnum shrink-0 text-sm font-medium text-text">
                 {formatMinor(it.amountMinor, currency)}
               </span>
-              {it.onDrill && <IconChevronRight size={16} className="shrink-0 text-faint" />}
+              {drillable && <IconChevronRight size={16} className="shrink-0 text-faint" />}
             </div>
             <div
               aria-hidden="true"
@@ -205,8 +283,8 @@ export function BarList({
               >
                 {inner}
               </button>
-            ) : it.href ? (
-              <a href={it.href} className={cn(rowClass, 'transition-colors hover:bg-surface2')}>
+            ) : linkHref ? (
+              <a href={linkHref} className={cn(rowClass, 'transition-colors hover:bg-surface2')}>
                 {inner}
               </a>
             ) : (

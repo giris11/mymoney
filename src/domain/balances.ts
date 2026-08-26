@@ -3,6 +3,13 @@
 // report time, via rateLookup() — a missing rate excludes the account from the
 // converted total and is surfaced, never guessed (SPEC §6).
 //
+// WHAT COUNTS: an account balance is always the account's own real balance.
+// Whether it lands in the NET WORTH total is a separate question, answered by
+// countsTowardNetWorth() below — archived (retired) or flagged
+// excludeFromNetWorth ("show it, don't count it") keep an account out of the
+// total while leaving its balance, its transactions and its visibility
+// completely untouched.
+//
 // SCALE (SPEC §9): the sidebar is mounted on every page and re-runs this on
 // every write, so the aggregation STREAMS the transactions table in batches
 // and accumulates into a small per-account map. It never materialises an array
@@ -19,14 +26,63 @@ export interface AccountBalance {
   balanceMinor: number; // opening + all transactions
   clearedMinor: number; // opening + cleared transactions only
   txCount: number;
+  /**
+   * Mirror of account.excludeFromNetWorth, resolved (undefined → false) so
+   * every consumer can render "not counted" without a second lookup. The
+   * balance above is the real balance either way — excluding an account never
+   * changes its own figure, only what the TOTAL counts.
+   */
+  excludedFromNetWorth: boolean;
 }
 
 export interface NetWorth {
-  /** Sum of all non-archived account balances converted to base currency. */
+  /**
+   * Sum of the account balances that COUNT — not archived, not excluded from
+   * net worth — converted to base currency.
+   */
   totalBaseMinor: number;
   baseCurrency: string;
   /** Currencies excluded from the total because no rate exists (SPEC §6). */
   missingRateCurrencies: string[];
+  /**
+   * How many visible (non-archived) accounts the user has flagged as
+   * not-counted, so the UI can say "N accounts not counted" honestly.
+   * Archived accounts are NOT counted here even when flagged: they are already
+   * out of the total for an older, separate reason and are not on screen next
+   * to the headline figure, so counting them again would overstate what the
+   * user can actually see.
+   */
+  excludedCount: number;
+  /**
+   * What those excluded accounts are worth, in base currency — the "£X not
+   * counted" figure. NULL when any of them is in a currency with no rate to
+   * base: the honest answer is then "we cannot total this", never a guess that
+   * silently omits an account (SPEC §6). The excluded accounts' currencies are
+   * deliberately NOT added to missingRateCurrencies — that list means
+   * "your total is missing this currency", and an excluded account was never
+   * going to be in the total.
+   */
+  excludedBaseMinor: number | null;
+}
+
+/**
+ * Has the user flagged this account out of net-worth totals? Single reader of
+ * the optional flag, so undefined (rows from older builds/backups) resolves to
+ * false in exactly one place.
+ */
+export function isExcludedFromNetWorth(account: Account): boolean {
+  return account.excludeFromNetWorth === true;
+}
+
+/**
+ * Does this account contribute to the net-worth total? The two reasons NOT to
+ * count compose: archived (retired) OR excluded (visible but not counted).
+ * Shared by netWorth() here and netWorthSeries() in reports/aggregate.ts so
+ * the headline figure and the chart can never disagree about which accounts
+ * count.
+ */
+export function countsTowardNetWorth(account: Account): boolean {
+  return !account.archived && !isExcludedFromNetWorth(account);
 }
 
 /** Pure core, unit-tested: opening + Σ amounts. */
@@ -103,12 +159,15 @@ function toBalances(accounts: Account[], agg: Map<string, Agg>): AccountBalance[
         balanceMinor: account.openingBalanceMinor + a.sum,
         clearedMinor: account.openingBalanceMinor + a.cleared,
         txCount: a.count,
+        excludedFromNetWorth: isExcludedFromNetWorth(account),
       };
     });
 }
 
 /**
- * Balances for ALL accounts (archived included — callers filter).
+ * Balances for ALL accounts (archived AND net-worth-excluded included —
+ * callers filter; an excluded account must stay visible with its real
+ * balance, it is "not counted", not hidden).
  * One streamed pass over the transactions table, grouped in JS — never a query
  * per account, and never a materialised copy of the table (SPEC §9 scale).
  */
@@ -119,6 +178,16 @@ export async function accountBalances(): Promise<AccountBalance[]> {
 
 /**
  * Net worth in base currency.
+ *
+ * Two independent reasons an account is left out of the total, composed here
+ * (archived OR excluded ⇒ not counted):
+ *  * `archived` — retired; already the behaviour before exclusions existed and
+ *    unchanged by them;
+ *  * `excludeFromNetWorth` — the user's "show it, don't count it" flag (a
+ *    property valuation, gift cards, money-lent ledgers).
+ * Excluding never touches a balance or an amount: the excluded accounts are
+ * totalled separately into excludedCount/excludedBaseMinor so the UI can say
+ * exactly how much is sitting outside the figure.
  *
  * Pass the balances in when you already have them — net worth is derived from
  * them, and re-deriving means a second full pass over the transactions table.
@@ -132,13 +201,30 @@ export async function netWorth(balances?: AccountBalance[]): Promise<NetWorth> {
   const base = settings.baseCurrency;
   let total = 0;
   const missing = new Set<string>();
+  let excludedCount = 0;
+  // Starts at 0 and latches to null the moment one excluded account cannot be
+  // converted — a partial "not counted" total would be a wrong number, and a
+  // wrong number is worse than an honest gap (SPEC §6).
+  let excludedBaseMinor: number | null = 0;
   for (const b of resolved) {
     if (b.account.archived) continue;
     const converted = convertMinor(b.balanceMinor, b.account.currency, base, lookup);
+    if (b.excludedFromNetWorth) {
+      excludedCount += 1;
+      if (converted === null) excludedBaseMinor = null;
+      else if (excludedBaseMinor !== null) excludedBaseMinor += converted;
+      continue;
+    }
     if (converted === null) missing.add(b.account.currency);
     else total += converted;
   }
-  return { totalBaseMinor: total, baseCurrency: base, missingRateCurrencies: [...missing] };
+  return {
+    totalBaseMinor: total,
+    baseCurrency: base,
+    missingRateCurrencies: [...missing],
+    excludedCount,
+    excludedBaseMinor,
+  };
 }
 
 export interface BalanceSnapshot {

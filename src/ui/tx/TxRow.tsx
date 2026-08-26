@@ -1,13 +1,19 @@
 // One register row. Mobile: two-line layout; desktop: table-ish grid that
 // shares its column template with the sticky header (REGISTER_GRID).
+//
+// The row is two sibling controls: the wide one opens the editor, the narrow
+// one on the right duplicates the transaction without opening it first. They
+// are siblings rather than nested so the Duplicate button cannot swallow the
+// row's click (and so the markup stays valid — no button inside a button).
 import { memo, type ReactNode } from 'react';
 import dayjs from 'dayjs';
 import type { Account, Category, Payee, Tag, Transaction } from '../../db/types';
 import { categoryPathName } from '../../domain/categories';
 import { cn, formatDate } from '../../lib/util';
-import { Amount, Chip } from '../kit/kit';
+import { Amount, Chip, IconButton } from '../kit/kit';
 import { IconTransfer } from '../kit/icons';
-import { REGISTER_GRID } from './txShared';
+import { IconCopy } from './IconCopy';
+import { REGISTER_ACTION_COL, REGISTER_GRID } from './txShared';
 
 export interface TxRowProps {
   tx: Transaction;
@@ -18,6 +24,8 @@ export interface TxRowProps {
   /** Name of the other leg's account when this row is a transfer leg. */
   otherAccountName: string | null;
   onOpen: (tx: Transaction) => void;
+  /** Open a prefilled copy of this transaction in the editor. */
+  onDuplicate: (tx: Transaction) => void;
 }
 
 function firstLine(s: string): string {
@@ -41,6 +49,7 @@ export const TxRow = memo(function TxRow({
   tagsById,
   otherAccountName,
   onOpen,
+  onDuplicate,
 }: TxRowProps) {
   const account = accountsById.get(tx.accountId);
   const payee = tx.payeeId ? payeesById.get(tx.payeeId) : undefined;
@@ -91,6 +100,11 @@ export const TxRow = memo(function TxRow({
     </>
   );
 
+  // Every row's Duplicate button needs its own accessible name — "Duplicate"
+  // twenty times over tells a screen-reader user nothing about which row they
+  // are on, so the name carries the row's title and date.
+  const duplicateLabel = `Duplicate ${titleFaint ? 'transaction' : title}, ${formatDate(tx.date)}`;
+
   const accountDot = account && (
     <span
       aria-hidden="true"
@@ -100,67 +114,74 @@ export const TxRow = memo(function TxRow({
   );
 
   return (
-    <button
-      type="button"
-      onClick={() => onOpen(tx)}
-      className="block w-full cursor-pointer border-b border-border px-3 py-2 text-left transition-colors hover:bg-surface2 lg:px-4"
-    >
-      {/* Mobile: two lines */}
-      <div className="flex flex-col gap-0.5 lg:hidden">
-        <div className="flex items-center gap-2">
-          <span
-            className={cn(
-              'min-w-0 flex-1 truncate text-sm font-medium',
-              titleFaint ? 'text-faint' : 'text-text',
+    <div className="flex items-stretch border-b border-border transition-colors hover:bg-surface2">
+      <button
+        type="button"
+        onClick={() => onOpen(tx)}
+        className="block min-w-0 flex-1 cursor-pointer px-3 py-2 text-left lg:px-4"
+      >
+        {/* Mobile: two lines */}
+        <div className="flex flex-col gap-0.5 lg:hidden">
+          <div className="flex items-center gap-2">
+            <span
+              className={cn(
+                'min-w-0 flex-1 truncate text-sm font-medium',
+                titleFaint ? 'text-faint' : 'text-text',
+              )}
+            >
+              {title}
+            </span>
+            {tx.status === 'pending' && <PendingBadge />}
+            <Amount minor={tx.amountMinor} currency={tx.currency} signColour className="shrink-0 text-sm" />
+          </div>
+          <div className="flex min-w-0 items-center gap-1.5 text-xs text-muted">
+            <span className="tnum shrink-0">{dayjs(tx.date).format('DD/MM')}</span>
+            <span aria-hidden="true">·</span>
+            <span className="flex min-w-0 items-center gap-1">{categoryNode}</span>
+            {account && (
+              <>
+                <span aria-hidden="true">·</span>
+                {accountDot}
+                <span className="max-w-24 truncate">{account.name}</span>
+              </>
             )}
-          >
-            {title}
-          </span>
-          {tx.status === 'pending' && <PendingBadge />}
-          <Amount minor={tx.amountMinor} currency={tx.currency} signColour className="shrink-0 text-sm" />
+            {tagNames.length > 0 && <span className="flex shrink-0 items-center gap-1">{tagChips}</span>}
+          </div>
         </div>
-        <div className="flex min-w-0 items-center gap-1.5 text-xs text-muted">
-          <span className="tnum shrink-0">{dayjs(tx.date).format('DD/MM')}</span>
-          <span aria-hidden="true">·</span>
-          <span className="flex min-w-0 items-center gap-1">{categoryNode}</span>
-          {account && (
-            <>
-              <span aria-hidden="true">·</span>
-              {accountDot}
-              <span className="max-w-24 truncate">{account.name}</span>
-            </>
-          )}
-          {tagNames.length > 0 && <span className="flex shrink-0 items-center gap-1">{tagChips}</span>}
-        </div>
-      </div>
 
-      {/* Desktop: grid aligned with the sticky header */}
-      <div className={cn('hidden lg:grid lg:items-center lg:gap-3', REGISTER_GRID)}>
-        <span className="tnum text-sm text-muted">{formatDate(tx.date)}</span>
-        <span className="flex min-w-0 items-center gap-2">
-          <span
-            className={cn(
-              'truncate text-sm font-medium',
-              titleFaint ? 'text-faint' : 'text-text',
-            )}
-          >
-            {title}
+        {/* Desktop: grid aligned with the sticky header */}
+        <div className={cn('hidden lg:grid lg:items-center lg:gap-3', REGISTER_GRID)}>
+          <span className="tnum text-sm text-muted">{formatDate(tx.date)}</span>
+          <span className="flex min-w-0 items-center gap-2">
+            <span
+              className={cn(
+                'truncate text-sm font-medium',
+                titleFaint ? 'text-faint' : 'text-text',
+              )}
+            >
+              {title}
+            </span>
+            {tx.status === 'pending' && <PendingBadge />}
           </span>
-          {tx.status === 'pending' && <PendingBadge />}
-        </span>
-        <span className="flex min-w-0 items-center gap-1.5 text-sm text-muted">{categoryNode}</span>
-        <span className="flex min-w-0 items-center gap-2">
-          {accountDot}
-          <span className="truncate text-sm text-muted">{account?.name ?? '—'}</span>
-        </span>
-        <span className="flex min-w-0 items-center gap-1 overflow-hidden">{tagChips}</span>
-        <Amount
-          minor={tx.amountMinor}
-          currency={tx.currency}
-          signColour
-          className="justify-self-end text-sm"
-        />
+          <span className="flex min-w-0 items-center gap-1.5 text-sm text-muted">{categoryNode}</span>
+          <span className="flex min-w-0 items-center gap-2">
+            {accountDot}
+            <span className="truncate text-sm text-muted">{account?.name ?? '—'}</span>
+          </span>
+          <span className="flex min-w-0 items-center gap-1 overflow-hidden">{tagChips}</span>
+          <Amount
+            minor={tx.amountMinor}
+            currency={tx.currency}
+            signColour
+            className="justify-self-end text-sm"
+          />
+        </div>
+      </button>
+      <div className={cn('flex items-center justify-center', REGISTER_ACTION_COL)}>
+        <IconButton label={duplicateLabel} onClick={() => onDuplicate(tx)}>
+          <IconCopy size={16} />
+        </IconButton>
       </div>
-    </button>
+    </div>
   );
 });

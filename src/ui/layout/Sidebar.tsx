@@ -1,12 +1,19 @@
 // Desktop sidebar (SPEC §4): net worth on top, nav, account groups with
 // per-account balances.
+//
+// An account the user has flagged out of net worth still appears here, with
+// its real balance, marked "Not counted" — excluded means not counted, never
+// hidden. The quiet line under the headline figure says what those accounts
+// are worth, so the total on screen is never silently different from the sum
+// of the list beneath it.
 import { useLive } from '../../db/useLive';
 import { db } from '../../db/db';
-import { accountBalances, netWorth, type AccountBalance } from '../../domain/balances';
+import { balanceSnapshot, type AccountBalance } from '../../domain/balances';
 import { formatMinor } from '../../money/money';
 import { cn } from '../../lib/util';
 import { href, navigate, useRoute } from '../router';
 import { APP_NAME } from '../../config';
+import { NOT_COUNTED_LABEL, NotCountedNote } from '../settings/NetWorthCount';
 import {
   IconCoins,
   IconGear,
@@ -27,11 +34,14 @@ const NAV = [
 
 export function Sidebar({ onQuickAdd }: { onQuickAdd: () => void }) {
   const route = useRoute();
-  const nw = useLive(() => netWorth(), []);
-  const balances = useLive(() => accountBalances(), []);
+  // ONE query, not two: the headline figure and the rows below it come from the
+  // same snapshot, so they can never disagree about which accounts counted —
+  // and a 100k-row ledger is scanned once per write, not twice (SPEC §9).
+  const snapshot = useLive(() => balanceSnapshot(), []);
+  const nw = snapshot?.netWorth;
   const groups = useLive(() => db.accountGroups.orderBy('sortOrder').toArray(), []);
 
-  const visible = (balances ?? []).filter((b) => !b.account.archived);
+  const visible = (snapshot?.balances ?? []).filter((b) => !b.account.archived);
   const grouped = new Map<string | null, AccountBalance[]>();
   for (const b of visible) {
     const key = b.account.groupId;
@@ -64,6 +74,13 @@ export function Sidebar({ onQuickAdd }: { onQuickAdd: () => void }) {
             <div className="mt-0.5 text-xs text-warn">
               excludes {nw.missingRateCurrencies.join(', ')} — no rate set
             </div>
+          )}
+          {nw && (
+            <NotCountedNote
+              count={nw.excludedCount}
+              baseMinor={nw.excludedBaseMinor}
+              baseCurrency={nw.baseCurrency}
+            />
           )}
         </div>
       </div>
@@ -107,7 +124,20 @@ export function Sidebar({ onQuickAdd }: { onQuickAdd: () => void }) {
                       className="h-2.5 w-2.5 shrink-0 rounded-full"
                       style={{ backgroundColor: b.account.colour }}
                     />
-                    <span className="min-w-0 flex-1 truncate text-text">{b.account.name}</span>
+                    <span className="min-w-0 flex-1">
+                      {/* Muted, never faded out — the name of an account you
+                          still own has to stay readable (AA in both themes). */}
+                      <span
+                        className={cn('block truncate', b.excludedFromNetWorth ? 'text-muted' : 'text-text')}
+                      >
+                        {b.account.name}
+                      </span>
+                      {b.excludedFromNetWorth && (
+                        <span className="block text-[11px] leading-tight text-faint">
+                          {NOT_COUNTED_LABEL}
+                        </span>
+                      )}
+                    </span>
                     <span className={cn('tnum text-xs', b.balanceMinor < 0 ? 'text-neg' : 'text-muted')}>
                       {formatMinor(b.balanceMinor, b.account.currency)}
                     </span>

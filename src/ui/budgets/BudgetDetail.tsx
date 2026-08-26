@@ -1,6 +1,11 @@
-// Budget detail (/budgets?id=<id>): progress for a viewed period window,
-// ‹ › period navigation via shiftWindow, and the transactions that count
-// toward the budget in that window.
+// Budget detail (/budgets?id=<id>&period=<n>): progress for a viewed period
+// window, ‹ › period navigation via shiftWindow, and the transactions that
+// count toward the budget in that window.
+//
+// The viewed period is a URL param, not component state, so stepping through
+// periods creates history entries the browser Back button can undo, and the
+// period you are looking at can be bookmarked or shared (`period` is an
+// offset in periods from the one containing today; 0 is omitted).
 import { useState } from 'react';
 import { db, getSettings } from '../../db/db';
 import { useLive } from '../../db/useLive';
@@ -12,17 +17,39 @@ import {
 import { queryTransactions } from '../../domain/transactions';
 import type { Transaction } from '../../db/types';
 import { formatDate, todayISO } from '../../lib/util';
-import { href, navigate } from '../router';
+import { href, navigate, useRoute } from '../router';
 import { Amount, Button, Card, Chip, EmptyState, IconButton, ProgressBar } from '../kit/kit';
 import { IconChevronLeft, IconChevronRight, IconPencil } from '../kit/icons';
 import BudgetEditor from './BudgetEditor';
 import { BudgetStatusLine, MissingRateChip, OverBadge, windowLabel } from './budgetFormat';
 
 const MAX_ROWS = 200;
+/** Sanity bound on a hand-typed ?period= (≈50 years of monthly windows). */
+const MAX_PERIOD_STEPS = 600;
+
+const budgetPath = (id: string, offset: number) =>
+  `/budgets?id=${encodeURIComponent(id)}${offset === 0 ? '' : `&period=${offset}`}`;
+
+/** ?period= → periods away from the one containing today. Junk reads as 0. */
+function parsePeriodOffset(raw: string | null): number {
+  const n = Number(raw);
+  if (!raw || !Number.isFinite(n)) return 0;
+  return Math.max(-MAX_PERIOD_STEPS, Math.min(MAX_PERIOD_STEPS, Math.trunc(n)));
+}
 
 export default function BudgetDetail({ id }: { id: string }) {
-  const [offset, setOffset] = useState(0); // periods away from the current one
+  const route = useRoute();
+  const offset = parsePeriodOffset(route.params.get('period')); // periods away from the current one
   const [editing, setEditing] = useState(false);
+
+  // Push: each step is a place you can come back to.
+  const showPeriod = (next: number) => navigate(budgetPath(id, next));
+  // Leaving the detail REPLACES the entry we are on. This control is labelled
+  // with a destination, so it must always land on the list — a bare
+  // history.back() would obey whatever came before instead — and dropping the
+  // entry stops browser Back from bouncing straight into the view just left,
+  // which is what the old push-a-second-/budgets-entry version did.
+  const leaveToList = () => navigate('/budgets', { replace: true });
 
   const data = useLive(async () => {
     const budget = await db.budgets.get(id);
@@ -54,7 +81,7 @@ export default function BudgetDetail({ id }: { id: string }) {
         <EmptyState
           title="Budget not found"
           message="It may have been deleted."
-          action={<Button onClick={() => navigate('/budgets')}>All budgets</Button>}
+          action={<Button onClick={leaveToList}>All budgets</Button>}
         />
       </div>
     );
@@ -83,6 +110,12 @@ export default function BudgetDetail({ id }: { id: string }) {
       <div>
         <a
           href={href('/budgets')}
+          onClick={(e) => {
+            // Modified clicks stay a normal link (new tab / copy address).
+            if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+            e.preventDefault();
+            leaveToList();
+          }}
           className="inline-flex items-center gap-1 text-sm text-muted hover:text-text"
         >
           <IconChevronLeft size={16} />
@@ -103,7 +136,7 @@ export default function BudgetDetail({ id }: { id: string }) {
 
       <Card>
         <div className="flex items-center justify-between gap-2">
-          <IconButton label="Previous period" onClick={() => setOffset((o) => o - 1)}>
+          <IconButton label="Previous period" onClick={() => showPeriod(offset - 1)}>
             <IconChevronLeft size={18} />
           </IconButton>
           <div className="flex min-w-0 flex-col items-center">
@@ -113,12 +146,12 @@ export default function BudgetDetail({ id }: { id: string }) {
               variant="ghost"
               className="text-xs text-muted"
               disabled={offset === 0}
-              onClick={() => setOffset(0)}
+              onClick={() => showPeriod(0)}
             >
               Current period
             </Button>
           </div>
-          <IconButton label="Next period" onClick={() => setOffset((o) => o + 1)}>
+          <IconButton label="Next period" onClick={() => showPeriod(offset + 1)}>
             <IconChevronRight size={18} />
           </IconButton>
         </div>
@@ -193,7 +226,8 @@ export default function BudgetDetail({ id }: { id: string }) {
         open={editing}
         budget={budget}
         onClose={() => setEditing(false)}
-        onDeleted={() => navigate('/budgets')}
+        // Replace: the detail URL is dead now — Back must not return to it.
+        onDeleted={leaveToList}
       />
     </div>
   );

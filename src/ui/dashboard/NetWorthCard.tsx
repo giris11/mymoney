@@ -1,4 +1,9 @@
 // Net worth hero card: headline figure + 6-month sparkline (SPEC §8.1.7).
+//
+// The headline counts only the accounts the user has left counting, so when
+// anything is excluded it carries the same one-line note as the sidebar and
+// the net-worth report — the big number must never quietly mean something
+// different from the list of accounts it came from.
 import dayjs from 'dayjs';
 import { Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { db } from '../../db/db';
@@ -9,6 +14,7 @@ import { formatMinor } from '../../money/money';
 import { netWorthSeries, type DateRange } from '../../reports/aggregate';
 import { Card } from '../kit/kit';
 import { href } from '../router';
+import { NotCountedNote } from '../settings/NetWorthCount';
 import { CardHeader, chartTooltipStyle, Skeleton, WarnNote } from './shared';
 
 /** Last 6 calendar months up to today (month-end samples + today). */
@@ -43,6 +49,13 @@ export function NetWorthCard({ className }: { className?: string }) {
             <WarnNote>
               Excludes {nw.missingRateCurrencies.join(', ')} balances &mdash; no exchange rate set.
             </WarnNote>
+          )}
+          {nw !== undefined && (
+            <NotCountedNote
+              count={nw.excludedCount}
+              baseMinor={nw.excludedBaseMinor}
+              baseCurrency={nw.baseCurrency}
+            />
           )}
           {accountCount === 0 && (
             <p className="mt-2 text-sm text-muted">

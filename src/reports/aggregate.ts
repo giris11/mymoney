@@ -11,9 +11,16 @@
 //  * split transactions contribute each split under the split's category;
 //  * "spending" figures are net of refunds (positive amounts in expense
 //    categories subtract) and reported as POSITIVE numbers;
-//  * months are 'YYYY-MM' strings.
+//  * months are 'YYYY-MM' strings;
+//  * account.excludeFromNetWorth affects netWorthSeries ONLY. Every other
+//    report here groups by CATEGORY, not by account: money spent from a gift
+//    card or a lent-money ledger is still spending, and hiding it would make
+//    the spend reports lie. Excluding re-scopes a TOTAL, never a transaction.
+//    (tests/networth-exclusion.test.ts asserts these reports are identical
+//    with and without exclusions.)
 import dayjs from 'dayjs';
 import { db, getSettings } from '../db/db';
+import { countsTowardNetWorth } from '../domain/balances';
 import { rateLookup } from '../domain/fx';
 import { convertMinor } from '../money/money';
 import type { Category, Transaction } from '../db/types';
@@ -180,7 +187,12 @@ export interface NetWorthPoint {
 }
 
 /**
- * Net worth (all non-archived accounts) sampled at each month-end in range.
+ * Net worth sampled at each month-end in range, over the accounts that COUNT —
+ * countsTowardNetWorth(): not archived, not flagged excludeFromNetWorth.
+ *
+ * That predicate is imported from domain/balances rather than re-spelled here
+ * on purpose: this chart and the headline netWorth() figure must never
+ * disagree about which accounts are in the total.
  *
  * Net worth is CUMULATIVE from the beginning of time: openingBalanceMinor plus
  * every transaction dated on or before the sample date — not just range
@@ -199,7 +211,7 @@ export async function netWorthSeries(
   const [settings, lookup, accounts, txs] = await Promise.all([
     getSettings(),
     rateLookup(),
-    db.accounts.filter((a) => !a.archived).toArray(),
+    db.accounts.filter((a) => countsTowardNetWorth(a)).toArray(),
     db.transactions.where('date').belowOrEqual(range.to).toArray(),
   ]);
   const base = settings.baseCurrency;
@@ -217,7 +229,9 @@ export async function netWorthSeries(
     totals.set(a.currency, (totals.get(a.currency) ?? 0) + a.openingBalanceMinor);
   }
 
-  // Only non-archived accounts' transactions matter for net worth.
+  // Only the counting accounts' transactions matter for net worth: an account
+  // that is archived or excluded never made it into currencyOfAccount, so its
+  // rows drop out here.
   const relevant = txs.filter((t) => currencyOfAccount.has(t.accountId)).sort(byDateAsc);
 
   // Sample dates: every month-end that falls inside the range, plus the range

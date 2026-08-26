@@ -118,6 +118,18 @@ read-only for agents — if one blocks you, report it instead of editing it.
   `/transactions?category=<id>`, `/transactions?payee=<id>`,
   `/transactions?tag=<id>`, `/transactions?from=YYYY-MM-DD&to=YYYY-MM-DD`
   (combinable). The Transactions page must honour these on load.
+  **The register's filters ARE the URL** — they are derived from it, not held
+  in component state, so Back/Forward work and a narrowed view is bookmarkable.
+  Additional params: `q` (search text), `status`, `min`/`max` (integer MINOR
+  UNITS, never formatted). Filters that are off are absent, so the resting
+  state is a bare `/transactions`. Absent `from`+`to` means the default recent
+  window; an EMPTY `from` (`?from=`) means "all dates" explicitly.
+  Push vs replace: discrete choices (account, category, tag, status, preset)
+  push one history entry; typing in search or the amount boxes replaces, so a
+  typed word leaves one entry rather than one per keystroke.
+- Router: `navigate(to, { replace })`, `goBack(fallback)`, `useCanGoBack()`.
+  `goBack` never strands the user outside the app — on a cold start or a shared
+  deep link there is no in-app history, so it navigates to the fallback.
 - Reports deep link: `/reports?report=<net-worth|by-category|income-expense|cash-flow|by-payee|by-tag>`.
 
 ## Testing

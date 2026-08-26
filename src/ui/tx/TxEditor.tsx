@@ -13,7 +13,7 @@ import {
   saveTransfer,
   validateSplits,
 } from '../../domain/transactions';
-import { todayISO } from '../../lib/util';
+import { formatDate, todayISO } from '../../lib/util';
 import { formatMinor } from '../../money/money';
 import {
   Button,
@@ -39,23 +39,33 @@ import {
   transferDraftToInput,
   type TransferDraft,
 } from './TransferFields';
-
-interface SplitDraft {
-  key: number;
-  categoryId: string | null;
-  amountMinor: number | null; // positive magnitude; sign applied on save
-  notes: string;
-}
+import {
+  draftSign,
+  draftToSaveInput,
+  type SplitDraft,
+  type TxDraft,
+  type TxSaveDraft,
+} from './duplicate';
+import { IconCopy } from './IconCopy';
 
 export default function TxEditor({
   open,
   onClose,
   tx,
+  draft = null,
+  onDuplicate,
 }: {
   open: boolean;
   onClose: () => void;
   /** null = create new. A transfer leg loads the whole pair. */
   tx: Transaction | null;
+  /**
+   * Prefilled form for a NEW transaction (a duplicate). Only read when `tx` is
+   * null — it is a starting point for a create, never an edit of anything.
+   */
+  draft?: TxDraft | null;
+  /** Duplicate the transaction being edited (the page reopens this editor). */
+  onDuplicate?: (tx: Transaction) => void;
 }) {
   const { toast } = useToast();
 
@@ -113,8 +123,30 @@ export default function TxEditor({
   const isTransferEdit = !!tx && tx.transferGroupId !== null;
   const currency =
     accounts.find((a) => a.id === accountId)?.currency ?? settings?.baseCurrency ?? 'GBP';
-  const sign = mode === 'income' || refund ? 1 : -1;
+  const sign = draftSign(mode, refund);
   const splitKind = mode === 'income' ? 'income' : 'expense';
+
+  // Prefilled create = a duplicate. It is titled and annotated as one so a copy
+  // can never be mistaken for the original being edited.
+  const isCopy = !tx && !!draft;
+  /** The original's date, when this copy is not dated the same day. */
+  const copySourceDate = isCopy ? (draft?.sourceDate ?? null) : null;
+
+  /** The form's fields as a plain draft — the shape a copy arrives in, and the
+   *  single mapping both the edit path and the copy path save through. */
+  const formDraft = (): TxSaveDraft => ({
+    mode,
+    amountMinor: amount,
+    refund,
+    categoryId,
+    payeeName,
+    accountId,
+    date,
+    tagNames,
+    notes,
+    pending,
+    splits,
+  });
 
   // ------------------------------------------------------------- init
   useEffect(() => {
@@ -139,11 +171,34 @@ export default function TxEditor({
         nextKey.current = 0;
       };
       if (!tx) {
+        if (cancelled) return;
+        // A duplicate: the form starts filled in, but it is still a CREATE —
+        // no id, no groupId, no importBatchId, so Save can only insert.
+        if (draft) {
+          reset();
+          setMode(draft.mode);
+          setAmount(draft.amountMinor);
+          setRefund(draft.refund);
+          setCategoryId(draft.categoryId);
+          // The copied category came from the user's own earlier transaction,
+          // so it outranks any payee default (D17) — a later payee pick must
+          // not quietly replace it.
+          categoryWasAutoFilled.current = false;
+          setPayeeName(draft.payeeName);
+          setAccountId(draft.accountId);
+          setDate(draft.date);
+          setTagNames(draft.tagNames);
+          setNotes(draft.notes);
+          setPending(draft.pending);
+          setSplits(draft.splits);
+          nextKey.current = draft.splits.length;
+          setTransfer(draft.transfer ?? emptyTransferDraft(allAccounts, draft.accountId));
+          return;
+        }
         const preferred =
           (s.lastUsedAccountId && usable.find((a) => a.id === s.lastUsedAccountId)?.id) ||
           usable[0]?.id ||
           '';
-        if (cancelled) return;
         reset();
         setMode('expense');
         setAccountId(preferred);
@@ -214,7 +269,19 @@ export default function TxEditor({
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, tx?.id]);
+  }, [open, tx?.id, draft]);
+
+  // Duplicating from the footer swaps the dialog's contents underneath the
+  // button that was just clicked, which would drop focus onto <body>. Modal
+  // only moves focus when it opens, so the copy re-runs the same step.
+  const bodyRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open || !draft) return;
+    const t = window.setTimeout(() => {
+      bodyRef.current?.querySelector<HTMLElement>('input, select, textarea, button')?.focus();
+    }, 0);
+    return () => window.clearTimeout(t);
+  }, [open, draft]);
 
   // ------------------------------------------------------------- derived
   const remainder =
@@ -316,32 +383,22 @@ export default function TxEditor({
     try {
       const status: TxStatus = pending ? 'pending' : 'cleared';
       if (mode === 'transfer') {
+        // `groupId` is null for a copy, so saveTransfer mints a NEW pair
+        // instead of rewriting the transfer that was copied.
         await saveTransfer(
           transferDraftToInput(accounts, transfer, date, notes, status, groupId ?? undefined),
         );
-        toast('Transfer saved', 'success');
+        toast(isCopy ? 'Copy saved as a new transfer' : 'Transfer saved', 'success');
       } else {
         // Belt and braces with the disabled Save button above (D4): the
         // editor and Quick Add agree that a zero-amount row is not a
-        // transaction.
+        // transaction. (draftToSaveInput enforces the same rule.)
         if (!isSaveableAmount(amount)) throw new Error('Enter an amount');
-        await saveTransaction({
-          id: tx?.id,
-          accountId,
-          date,
-          amountMinor: sign * Math.abs(amount),
-          payeeName: payeeName || null,
-          categoryId: splits.length > 0 ? null : categoryId,
-          tagNames,
-          notes,
-          status,
-          splits: splits.map((s) => ({
-            categoryId: s.categoryId,
-            amountMinor: sign * Math.abs(s.amountMinor ?? 0),
-            ...(s.notes ? { notes: s.notes } : {}),
-          })),
-        });
-        toast('Transaction saved', 'success');
+        // `tx?.id` is the only thing that turns this into an update, and a
+        // copy has no `tx` — so a copy can only ever insert a new row and can
+        // never touch the transaction it was made from.
+        await saveTransaction(draftToSaveInput(formDraft(), tx?.id));
+        toast(isCopy ? 'Copy saved as a new transaction' : 'Transaction saved', 'success');
       }
       onClose();
     } catch (e) {
@@ -367,24 +424,54 @@ export default function TxEditor({
   };
 
   // ------------------------------------------------------------- render
+  const dialogTitle = tx
+    ? isTransferEdit
+      ? 'Edit transfer'
+      : 'Edit transaction'
+    : isCopy
+      ? mode === 'transfer'
+        ? 'New transfer (copy)'
+        : 'New transaction (copy)'
+      : 'Add transaction';
+
+  // A copy is dated TODAY (see TxDraft.sourceDate for why). That trade is only
+  // safe if the change announces itself, so whenever the copy's date differs
+  // from the original's, the original date is named right next to the date
+  // field — with one click to adopt it.
+  const copyDateNote = copySourceDate !== null && copySourceDate !== date && (
+    <div className="flex flex-wrap items-center gap-2 rounded-lg border border-warn px-3 py-2 text-xs text-warn">
+      <span>
+        The {mode === 'transfer' ? 'transfer' : 'transaction'} you copied is dated{' '}
+        {formatDate(copySourceDate)}; this copy is dated {formatDate(date)}.
+      </span>
+      <Button size="sm" variant="ghost" onClick={() => setDate(copySourceDate)}>
+        Use {formatDate(copySourceDate)}
+      </Button>
+    </div>
+  );
+
   return (
     <>
       <Modal
         open={open}
         onClose={onClose}
         wide
-        title={tx ? (isTransferEdit ? 'Edit transfer' : 'Edit transaction') : 'Add transaction'}
+        title={dialogTitle}
         footer={
           <>
             {tx && (
-              <Button
-                variant="danger"
-                className="mr-auto"
-                onClick={() => setConfirmDelete(true)}
-              >
-                <IconTrash size={16} />
-                Delete
-              </Button>
+              <div className="mr-auto flex items-center gap-2">
+                <Button variant="danger" onClick={() => setConfirmDelete(true)}>
+                  <IconTrash size={16} />
+                  Delete
+                </Button>
+                {onDuplicate && (
+                  <Button onClick={() => onDuplicate(tx)}>
+                    <IconCopy size={16} />
+                    Duplicate
+                  </Button>
+                )}
+              </div>
             )}
             <Button onClick={onClose}>Cancel</Button>
             <Button variant="primary" disabled={saveDisabled} onClick={handleSave}>
@@ -393,7 +480,7 @@ export default function TxEditor({
           </>
         }
       >
-        <div className="flex flex-col gap-4">
+        <div ref={bodyRef} className="flex flex-col gap-4">
           {accounts.length === 0 && (
             <p className="rounded-lg border border-warn px-3 py-2 text-sm text-warn">
               Create an account first — transactions need an account to live in.
@@ -493,6 +580,7 @@ export default function TxEditor({
                   )}
                 </Field>
               </div>
+              {copyDateNote}
               <Field label="Tags">
                 {(id) => <TagsInput id={id} value={tagNames} onChange={setTagNames} />}
               </Field>
@@ -574,16 +662,19 @@ export default function TxEditor({
           )}
 
           {mode === 'transfer' && (
-            <Field label="Date">
-              {(id) => (
-                <Input
-                  id={id}
-                  type="date"
-                  value={date}
-                  onChange={(e) => e.target.value && setDate(e.target.value)}
-                />
-              )}
-            </Field>
+            <>
+              <Field label="Date">
+                {(id) => (
+                  <Input
+                    id={id}
+                    type="date"
+                    value={date}
+                    onChange={(e) => e.target.value && setDate(e.target.value)}
+                  />
+                )}
+              </Field>
+              {copyDateNote}
+            </>
           )}
           <Field label="Notes">
             {(id) => (

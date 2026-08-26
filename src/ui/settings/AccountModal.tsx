@@ -1,6 +1,11 @@
 // Create/edit account modal. Currency locks once the account has transactions
 // (domain enforces it too); opening balance edits in the account's currency;
 // groups can be created inline.
+//
+// "Count in net worth" is the same single flag the accounts list toggles
+// (NetWorthCount.tsx). On an existing account it writes straight away, like
+// Archive does, so the switch is honest the moment it moves; on a new account
+// it is applied once the account exists.
 import { useState } from 'react';
 import type { Account, AccountGroup, AccountType } from '../../db/types';
 import { COMMON_CURRENCIES, ACCOUNT_TYPE_LABELS } from '../../db/seed';
@@ -10,8 +15,18 @@ import {
   saveAccount,
   saveGroup,
   setAccountArchived,
+  setAccountExcluded,
 } from '../../domain/accounts';
-import { Button, ConfirmDialog, Field, Input, Modal, MoneyInput, Select } from '../kit/kit';
+import {
+  Button,
+  Checkbox,
+  ConfirmDialog,
+  Field,
+  Input,
+  Modal,
+  MoneyInput,
+  Select,
+} from '../kit/kit';
 import { useToast } from '../kit/toast';
 import { ColourSwatches, ENTITY_COLOURS, errorMessage } from './shared';
 
@@ -40,6 +55,7 @@ export function AccountModal({
   const [newGroupName, setNewGroupName] = useState('');
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [countInNetWorth, setCountInNetWorth] = useState(account?.excludeFromNetWorth !== true);
 
   const currencyLocked = !!account && txCount > 0;
   const currencies = COMMON_CURRENCIES.includes(currency)
@@ -53,7 +69,7 @@ export function AccountModal({
       if (groupChoice === NEW_GROUP) {
         groupId = (await saveGroup({ name: newGroupName })).id;
       }
-      await saveAccount({
+      const saved = await saveAccount({
         id: account?.id,
         name,
         type,
@@ -62,12 +78,31 @@ export function AccountModal({
         colour,
         groupId,
       });
+      // A brand-new account has no id until now, so its net-worth choice is
+      // applied here. On an existing account the switch already wrote itself.
+      if (!account && !countInNetWorth) await setAccountExcluded(saved.id, true);
       toast(account ? 'Account saved' : 'Account created', 'success');
       onClose();
     } catch (e) {
       toast(errorMessage(e), 'error');
     } finally {
       setBusy(false);
+    }
+  };
+
+  /**
+   * Existing account: write immediately so the switch can never be a promise
+   * the Cancel button breaks. Optimistic, reverted if the write fails — a
+   * finance app must not show a state the database disagrees with.
+   */
+  const toggleCounted = async (next: boolean) => {
+    setCountInNetWorth(next);
+    if (!account) return; // new account — applied on create
+    try {
+      await setAccountExcluded(account.id, !next);
+    } catch (e) {
+      setCountInNetWorth(!next);
+      toast(errorMessage(e), 'error');
     }
   };
 
@@ -205,6 +240,18 @@ export function AccountModal({
               )}
             </Field>
           )}
+          <div className="flex flex-col gap-1">
+            <Checkbox
+              label="Count in net worth"
+              checked={countInNetWorth}
+              onChange={(v) => void toggleCounted(v)}
+            />
+            <p className="text-xs text-muted">
+              Turn this off for money you want to see but not add up — a property valuation, a
+              gift-card balance, an IOU. The account stays in the sidebar with its balance, its
+              transactions are untouched, and spending reports are unaffected.
+            </p>
+          </div>
         </div>
       </Modal>
       <ConfirmDialog

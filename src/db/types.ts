@@ -17,6 +17,41 @@ export interface Account {
   groupId: string | null;
   sortOrder: number;
   archived: boolean;
+  /**
+   * Show the account, but leave it OUT of net-worth totals.
+   *
+   * What it does and does not do: it changes what a TOTAL counts, and nothing
+   * else. The account keeps its own balance, every transaction is untouched,
+   * and no amount anywhere is re-computed. Category-based reports (spending,
+   * income, cash flow, payee, tag) group by CATEGORY, not by account, and are
+   * deliberately unaffected — a gift card you spend is still spending.
+   * The account stays VISIBLE with its balance shown: "not counted" is not
+   * "hidden", and the user must never be unable to find their money.
+   * It composes with `archived` (archived OR excluded ⇒ not counted); the two
+   * are independent — archiving retires an account, excluding only re-scopes
+   * the headline figure.
+   *
+   * THE FLAG LIVES ON THE ACCOUNT, and this is the single source of truth.
+   * A group-level control is a BULK ACTION that writes this field on every
+   * account currently in that group (setGroupExcluded in domain/accounts.ts) —
+   * it is a snapshot, not a rule, so an account moved into the group later is
+   * unaffected. A second, group-level flag was considered and REJECTED: with
+   * two independent flags, un-excluding one account inside an excluded group
+   * has no obvious correct answer (does the account win, or the group?), and a
+   * finance app must never leave the user guessing which of two switches is
+   * deciding their net worth.
+   *
+   * OPTIONAL ON PURPOSE — undefined means false. Every account row written by
+   * an earlier build, and every account row inside an older backup file, lacks
+   * this key entirely; treating undefined as false makes those rows already
+   * correct, so no Dexie migration and no SCHEMA_VERSION bump is needed. That
+   * holds only because the field is NOT INDEXED: the accounts store is
+   * declared `'id, groupId, archived'` in src/db/db.ts, and IndexedDB only
+   * cares about a schema change when the set of indexes changes. Backups keep
+   * round-tripping too, since they store whole rows (src/backup/backup.ts).
+   * If this ever needs an index, that IS a migration — bump the version.
+   */
+  excludeFromNetWorth?: boolean;
   // Loan fields (Phase 2 amortisation view)
   loanPrincipalMinor?: number;
   loanRatePct?: number;

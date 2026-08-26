@@ -1,4 +1,8 @@
 // Net worth over time (SPEC §8.1.8) — accent line sampled at month-ends.
+//
+// The series counts the same accounts the headline figure does, so accounts
+// flagged out of net worth are named here too: one quiet line saying what is
+// not in the chart, rather than a curve that silently means something else.
 import dayjs from 'dayjs';
 import {
   CartesianGrid,
@@ -10,12 +14,14 @@ import {
   type TooltipContentProps,
 } from 'recharts';
 import { useLive } from '../../db/useLive';
+import { netWorth } from '../../domain/balances';
 import { netWorthSeries, type NetWorthPoint } from '../../reports/aggregate';
 import { formatMinor } from '../../money/money';
 import { formatDate } from '../../lib/util';
 import { Card, EmptyState } from '../kit/kit';
 import { IconTrendUp } from '../kit/icons';
 import type { DateRangeValue } from '../kit/DateRangePicker';
+import { NotCountedNote } from '../settings/NetWorthCount';
 import {
   AXIS_LINE,
   AXIS_TICK,
@@ -37,6 +43,9 @@ export default function NetWorthReport({
     () => netWorthSeries({ from: range.from, to: range.to }),
     [range.from, range.to],
   );
+  // Which accounts are out, and what they hold today — the series itself is a
+  // history of totals and carries no per-account detail.
+  const nw = useLive(() => netWorth(), []);
   if (data === undefined) return <ReportSkeleton kind="chart" />;
 
   const { points, missingRateCurrencies } = data;
@@ -73,6 +82,13 @@ export default function NetWorthReport({
           {formatMinor(current.totalBaseMinor, currency)}
         </p>
         <p className="text-xs text-muted">as at {formatDate(current.date)}</p>
+        {nw !== undefined && (
+          <NotCountedNote
+            count={nw.excludedCount}
+            baseMinor={nw.excludedBaseMinor}
+            baseCurrency={nw.baseCurrency}
+          />
+        )}
         <div className="mt-4">
           <ChartBox>
             <LineChart data={points} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>

@@ -124,15 +124,28 @@ describe('accountBalances', () => {
     expect(balances[0].account.id).toBe(arch.id);
     expect(balances[0].balanceMinor).toBe(42);
   });
+
+  it('an account with no excludeFromNetWorth key reads as not excluded', async () => {
+    // Rows written by earlier builds have no such key at all — undefined must
+    // resolve to false here, not leak out as undefined.
+    const a = await makeAccount({ name: 'Legacy', openingBalanceMinor: 100 });
+    expect(a).not.toHaveProperty('excludeFromNetWorth');
+    const [row] = await accountBalances();
+    expect(row.excludedFromNetWorth).toBe(false);
+  });
 });
 
 // ------------------------------------------------------------------- netWorth
 describe('netWorth', () => {
   it('empty database → zero in default base currency GBP', async () => {
+    // excludedCount/excludedBaseMinor: nothing to exclude, and 0 (not null) —
+    // null means "an excluded account could not be converted" (SPEC §6).
     expect(await netWorth()).toEqual({
       totalBaseMinor: 0,
       baseCurrency: 'GBP',
       missingRateCurrencies: [],
+      excludedCount: 0,
+      excludedBaseMinor: 0,
     });
   });
 
