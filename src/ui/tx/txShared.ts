@@ -88,10 +88,22 @@ export function emptyFilters(): FilterState {
   };
 }
 
-/** True when `range` is exactly the default window (i.e. nobody narrowed it). */
-export function isDefaultRange(range: DateRangeValue | null): boolean {
+/**
+ * True when `range` is exactly the default window (i.e. nobody narrowed it).
+ *
+ * `today` is threaded through rather than read from the clock inside, because
+ * the default window is DEFINED relative to a day: comparing a range built for
+ * one day against a window built for another silently returns false. That is
+ * not hypothetical — it makes the summary line wrong for anyone whose tab is
+ * open across midnight, and it made this function untestable except on the day
+ * the test was written.
+ */
+export function isDefaultRange(
+  range: DateRangeValue | null,
+  today: string = todayISO(),
+): boolean {
   if (!range) return false;
-  const d = defaultRegisterRange();
+  const d = defaultRegisterRange(today);
   return range.from === d.from && range.to === d.to;
 }
 
@@ -283,9 +295,12 @@ export function sumByCurrency(rows: Transaction[]): [currency: string, totalMino
  * saying so — an empty list must read as "nothing in this window", never be
  * mistaken for "you have no transactions".
  */
-export function rangeSummary(range: DateRangeValue | null): string {
+export function rangeSummary(
+  range: DateRangeValue | null,
+  today: string = todayISO(),
+): string {
   if (!range || (!range.from && !range.to)) return 'all dates';
-  if (isDefaultRange(range)) {
+  if (isDefaultRange(range, today)) {
     return `the last ${DEFAULT_RANGE_DAYS} days (since ${formatDate(range.from)})`;
   }
   if (range.from && range.to) return `${formatDate(range.from)} – ${formatDate(range.to)}`;

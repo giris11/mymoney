@@ -175,7 +175,7 @@ describe('the register opens on a date window (D1)', () => {
   });
 
   it('states the window in words, and never says "all" while one is set', () => {
-    expect(rangeSummary(defaultRegisterRange('2026-08-26'))).toBe(
+    expect(rangeSummary(defaultRegisterRange('2026-08-26'), '2026-08-26')).toBe(
       `the last ${DEFAULT_RANGE_DAYS} days (since 29/05/2026)`,
     );
     expect(rangeSummary({ from: '2026-03-01', to: '2026-03-31' })).toBe('01/03/2026 – 31/03/2026');

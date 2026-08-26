@@ -37,6 +37,26 @@ const IconPayees = ({ size = 20, ...rest }: IconProps) => (
   </svg>
 );
 
+/** Cloud for the sync card (kit has no cloud icon). */
+const IconCloud = ({ size = 20, ...rest }: IconProps) => (
+  <svg
+    width={size}
+    height={size}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth={1.8}
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+    {...rest}
+  >
+    <path d="M7 18.5a4.2 4.2 0 0 1-.5-8.37 5.3 5.3 0 0 1 10.2-1.1A3.9 3.9 0 0 1 17.8 18.5z" />
+    <path d="M12 21v-7" />
+    <path d="m9.4 16.2 2.6-2.6 2.6 2.6" />
+  </svg>
+);
+
 interface Section {
   path: string;
   title: string;
@@ -53,6 +73,7 @@ const SECTIONS: Section[] = [
   { path: 'rates', title: 'Currency rates', description: 'Manual exchange rates for totals and reports', icon: IconCoins },
   { path: 'imports', title: 'Imports', description: 'Import CSV files, undo imports, sample data', icon: IconUpload },
   { path: 'backup', title: 'Backup & storage', description: 'Export, restore, storage protection, erase', icon: IconShield },
+  { path: 'sync', title: 'Sync', description: 'Share this data with your other devices via your own Google Drive', icon: IconCloud },
 ];
 
 export default function SectionIndex() {

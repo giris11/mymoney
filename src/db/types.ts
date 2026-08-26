@@ -191,4 +191,59 @@ export interface Settings {
   lastFxSyncAt: string | null;
   /** Human-readable name of the source that last supplied rates. */
   lastFxSyncSource: string | null;
+
+  // ------------------------------------------------------- Drive sync (D42)
+  //
+  // SPEC §8.3's "optional Google Drive backup sync". Every field below is
+  // supplied by defaultSettings(), so a settings row written by an older build
+  // — or restored from an older backup — gains them through the normalisation
+  // in getSettings() and needs no Dexie migration (none of them is indexed;
+  // the settings store is declared `'id'`). SCHEMA_VERSION is unchanged.
+  //
+  // Which of these travel between devices and which stay put is decided ONCE,
+  // in DEVICE_LOCAL_SETTING_KEYS (src/sync/syncEngine.ts): everything named
+  // `sync*` here is device-local, because a pulled snapshot carries the OTHER
+  // device's settings row and must never be allowed to steal this device's
+  // identity, its OAuth client id, or its sync bookkeeping.
+
+  /** Master switch for AUTOMATIC syncing. A manual "Sync now" ignores it. */
+  syncEnabled: boolean;
+  /**
+   * Stable id for THIS browser profile, minted lazily on first use
+   * (`''` until then — defaultSettings() must stay a pure value, so it cannot
+   * mint one itself or every getSettings() call would invent a new device).
+   */
+  syncDeviceId: string;
+  /** What the user calls this device in conflict dialogs. `''` ⇒ guess it. */
+  syncDeviceName: string;
+  /**
+   * The user's OWN Google OAuth client id. A browser app cannot keep a client
+   * secret, and we ship no credential of ours, so this is pasted in by the
+   * user (docs/DRIVE-SETUP.md). Not a secret — but device-local, because it is
+   * useless to a device that has not been set up anyway.
+   */
+  syncClientId: string | null;
+  /** ISO timestamp of the last successful push or pull. */
+  syncLastSyncedAt: string | null;
+  /** Revision number of the remote snapshot this device's data descends from. */
+  syncLastPulledRevision: number;
+  /**
+   * Monotonic counter of local CHANGE BATCHES. Bumped once per write
+   * operation on a data table by the tracker in db.ts (coalesced — a
+   * 5,127-row import bumps it once, not 5,127 times).
+   */
+  syncLocalRevision: number;
+  /**
+   * The value syncLocalRevision had at the last successful push/pull.
+   * `syncLocalRevision !== syncSyncedLocalRevision` is the ONE definition of
+   * "this device has unsynced changes".
+   *
+   * Deliberately not "reset syncLocalRevision to 0 on sync": a write that
+   * lands DURING a push would be erased by that reset, the device would look
+   * clean while differing from the remote, and the next pull would overwrite
+   * the change without anybody being asked. Comparing against a captured
+   * value makes that window visible instead — the worst case is a redundant
+   * push, never a silent loss.
+   */
+  syncSyncedLocalRevision: number;
 }

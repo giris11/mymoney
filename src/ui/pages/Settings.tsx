@@ -10,6 +10,7 @@ import TagsSection from '../settings/TagsSection';
 import RatesSection from '../settings/RatesSection';
 import ImportsSection from '../settings/ImportsSection';
 import BackupSection from '../settings/BackupSection';
+import SyncSection from '../settings/SyncSection';
 
 export default function Settings() {
   const route = useRoute();
@@ -31,6 +32,8 @@ export default function Settings() {
       return <ImportsSection />;
     case 'backup':
       return <BackupSection />;
+    case 'sync':
+      return <SyncSection />;
     default:
       return <SectionIndex />; // /settings and any unknown subpath
   }
