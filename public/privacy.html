@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en-GB">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MyMoney — Privacy</title>
+    <style>
+      :root { color-scheme: light dark; }
+      body {
+        margin: 0 auto; max-width: 44rem; padding: 2.5rem 1.25rem 6rem;
+        font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        background: #f2f4f7; color: #17222e;
+      }
+      @media (prefers-color-scheme: dark) { body { background: #0d1117; color: #e6edf3; } a { color: #6ee7b7; } }
+      h1 { font-size: 1.6rem; margin-bottom: .25rem; }
+      h2 { font-size: 1.1rem; margin-top: 2rem; }
+      .sub { color: #57687a; margin-top: 0; }
+      @media (prefers-color-scheme: dark) { .sub { color: #9daebe; } }
+      code { font-size: .9em; }
+      ul { padding-left: 1.2rem; }
+      a { color: #047857; }
+    </style>
+  </head>
+  <body>
+    <h1>Privacy</h1>
+    <p class="sub">MyMoney — last updated 27 August 2026</p>
+
+    <p>
+      MyMoney is a personal finance app that runs entirely in your web browser. It has
+      no server, no user accounts and no login. This page describes exactly what it does
+      with your information, because an app that handles money should be specific rather
+      than reassuring.
+    </p>
+
+    <h2>Where your financial data lives</h2>
+    <p>
+      Your accounts, transactions, categories, budgets and settings are stored in your
+      own browser's local database (IndexedDB), on the device you are using. They are
+      not uploaded anywhere by default, and the developer of this app has no server, no
+      database and no ability to see them.
+    </p>
+    <p>
+      Because the data is local to one browser, clearing that browser's site data
+      deletes it. Exporting a backup file is the way to keep a copy.
+    </p>
+
+    <h2>Network requests the app makes</h2>
+    <p>MyMoney makes no network requests at all except the following two, both optional:</p>
+    <ul>
+      <li>
+        <strong>Exchange rates.</strong> When live rates are switched on, the app
+        requests published daily reference rates from
+        <code>open.er-api.com</code> (or <code>latest.currency-api.pages.dev</code> if the
+        first is unavailable). These requests contain only a currency code such as
+        <code>GBP</code>. No account, transaction or personal information is sent. This
+        can be switched off in Settings → Rates, after which the app makes no network
+        requests whatsoever.
+      </li>
+      <li>
+        <strong>Google Drive sync.</strong> When you connect Drive sync, the app stores a
+        copy of your database as a single file in <em>your own</em> Google Drive, so that
+        your other devices can read it. It uses the
+        <code>drive.file</code> permission, which allows an app to see and modify only the
+        files it has itself created — it cannot see, list or open anything else in your
+        Drive. The file is in your Drive, under your control, and can be deleted by you at
+        any time. The developer has no access to it.
+      </li>
+    </ul>
+
+    <h2>What the app does not do</h2>
+    <ul>
+      <li>No analytics, telemetry, tracking, fingerprinting or advertising.</li>
+      <li>No cookies used for tracking.</li>
+      <li>No sharing or selling of information to anyone, for any purpose.</li>
+      <li>No account, email address or password is collected, because there is no login.</li>
+    </ul>
+
+    <h2>Revoking Drive access</h2>
+    <p>
+      You can disconnect sync inside the app at any time. To revoke the permission at the
+      Google end, visit
+      <a href="https://myaccount.google.com/permissions">myaccount.google.com/permissions</a>
+      and remove MyMoney. Disconnecting does not delete the sync file from your Drive —
+      you can delete that yourself from Drive if you want it gone.
+    </p>
+
+    <h2>Contact</h2>
+    <p>
+      MyMoney is a personal project maintained by its owner, who is also its only intended
+      user. Questions can be raised on the project's
+      <a href="https://github.com/giris11/mymoney">GitHub repository</a>.
+    </p>
+
+    <p><a href="./">← Back to MyMoney</a></p>
+  </body>
+</html>
