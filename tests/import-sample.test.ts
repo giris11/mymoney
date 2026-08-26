@@ -48,7 +48,7 @@ describe('loadSampleData', () => {
     expect(batch.rowCount).toBe(await db.transactions.count());
 
     const groupNames = (await db.accountGroups.toArray()).map((g) => g.name).sort();
-    expect(groupNames).toEqual(['Everyday', 'Saving & Credit']);
+    expect(groupNames).toEqual(['Sample · Everyday', 'Sample · Saving & Credit']);
     const eur = (await db.accounts.toArray()).filter((a) => a.currency === 'EUR');
     expect(eur).toHaveLength(1);
   });
