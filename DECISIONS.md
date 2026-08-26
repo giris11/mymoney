@@ -181,6 +181,62 @@ Every non-obvious choice made while building, per Working Agreement §2. Newest 
   In-app depth is stamped into `history.state` rather than trusting
   `history.length`, which counts entries from before the app was opened.
 
+- **D42. Drive sync runs on the user's OWN Google credentials, and syncs a whole
+  snapshot rather than a stream of edits.** SPEC §8.3 lists "optional Google
+  Drive backup sync" as Phase 3; pulled forward because opening the live site in
+  a second browser showed onboarding again — correct behaviour for per-origin,
+  per-browser IndexedDB, but indistinguishable from data loss to the person
+  looking at it. Every part of this decision is downstream of §2's no-backend,
+  zero-fees rule:
+  - **No credential of ours ships.** A browser app cannot keep a client secret,
+    and a shared client id would make me the quota holder and the party Google
+    contacts. The user pastes in a client id from their own Google Cloud project
+    (docs/DRIVE-SETUP.md), so the app talks to Google *as them*, and revoking it
+    is theirs to do at myaccount.google.com/permissions.
+  - **Scope is `drive.file`, and a test fails if it is ever widened.** That scope
+    grants access only to files this app itself created — it cannot list, read
+    or touch anything else in the Drive. It is also classed *non-sensitive*, so
+    the app needs no Google review, which is what makes the zero-fee, no-process
+    promise survivable. `drive.appdata` was rejected for the opposite reason: it
+    hides the file from the user, and a file you cannot see is a file you cannot
+    rescue.
+  - **The app is PUBLISHED, not left in testing.** Google expires a test app's
+    grant after seven days; on a personal finance app that means silent
+    reconnection prompts on every device every week, and the first one missed
+    looks like sync failing. Publishing is free here precisely because the scope
+    is non-sensitive.
+  - **One file, whole-database.** Per-record deltas need a merge function, and a
+    wrong merge in a money app is the unacceptable outcome §2 names. A snapshot
+    can only ever be adopted whole, which makes every outcome explainable.
+  - **"Has this device changed?" is a comparison, never a reset.** Three numbers
+    do it: `syncLocalRevision` (bumped once per write batch — a 5,127-row import
+    counts as one), `syncSyncedLocalRevision` (its value at the last successful
+    sync) and `syncLastPulledRevision` (which remote snapshot we descend from).
+    Zeroing the counter on sync was rejected: a write landing *during* a push
+    would be erased by the reset, the device would then look clean while
+    differing from the remote, and the next pull would overwrite it with nobody
+    asked. Comparing against a captured value makes that window a redundant
+    push instead of a silent loss.
+  - **Both sides moved ⇒ ask, and write nothing.** No last-write-wins, no
+    timestamp tie-break. The dialog names each side with its device, its time and
+    its row counts, and the losing copy is written to a restorable backup file
+    *first* — if that write fails, the resolution is abandoned rather than
+    proceeding.
+  - **Settings named `sync*` never travel.** A pulled snapshot carries the other
+    device's settings row; letting it land whole would hand this browser the
+    other one's device id, client id and sync bookkeeping, and the two would
+    then fight over one identity. The device-local key list is declared once, in
+    src/sync/syncEngine.ts.
+
+  Cost to the privacy promise, stated plainly: Google is now a **second**
+  outbound host after the rates provider, and the app's line is "no external
+  requests except exchange rates, and your own Drive when you switch it on".
+  Both are off-switchable; with both off the app still makes no network requests
+  at all. Building this also surfaced a real latent bug — `updateSettings`
+  read-modify-wrote outside a transaction, so a concurrent write could be lost,
+  which in the sync path could mark a device clean while it still held unsynced
+  changes. Now atomic, with a test that fails without the fix.
+
 ## UX
 
 - **D23. Quick-add** is a bottom sheet (mobile) / modal (desktop) with amount-first keypad flow, category grid (recent first), payee autocomplete that learns, account defaulting to last used, date defaulting to today. Expense is the default sign; income/refund/transfer are one tap away.

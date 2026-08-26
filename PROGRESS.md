@@ -34,11 +34,11 @@ Status of every Phase 1 spec feature. Updated as work lands. (Phase 2/3 items ar
 | 9 | Backup export / restore / 7-day nudge | ✅ | all-or-nothing restore with typed confirmation; round-trip tested |
 | 10 | PWA: installable, offline, icons, subpath-safe | 🟡 | SW + manifest + icons verified on production build; iOS per-device splash images deferred (D26) — icons/standalone/offline all in place |
 | 11 | Dark/light mode, responsive, onboarding, sample data | ✅ | sample data is one undoable batch, groups labelled "Sample ·" |
-| — | Test suite (spec §10) | ✅ | 744 tests: money maths, balances, import parsing incl. edge cases, dedupe + near-dups, budget periods, backup round-trip, golden hand-calculated month, plus 93 regression tests from the review pass |
+| — | Test suite (spec §10) | ✅ | 852 tests: money maths, balances, import parsing incl. edge cases, dedupe + near-dups, budget periods, backup round-trip, golden hand-calculated month, plus 93 regression tests from the review pass |
 
 ## Definition of done (spec §12) — status
 
-Everything except the physical-iPhone steps has been machine-verified (onboarding, add/edit/delete incl. split + transfer, MoneyWiz import + duplicate detection on second import, dashboard + six reports + budgets with hand-calculated numbers, backup export→wipe→restore equality in tests, dark/light, `npm test` clean). **Left for Girish:** install on the iPhone home screen, airplane-mode check, and a real MoneyWiz export file (see below).
+Everything except the physical-iPhone steps has been machine-verified (onboarding, add/edit/delete incl. split + transfer, MoneyWiz import + duplicate detection on second import, dashboard + six reports + budgets with hand-calculated numbers, backup export→wipe→restore equality in tests, dark/light, `npm test` clean). **Left for Girish:** install on the iPhone home screen and the airplane-mode check. (The real MoneyWiz export has since been imported and reconciled — see below.)
 
 ## Review findings fixed (post-build hardening)
 
@@ -124,13 +124,61 @@ Added on request after he started using it:
 | Exclude from net worth | Per account or whole group (D39) |
 | Duplicate transaction | From row or editor, dated today with an original-date escape (D40) |
 | Working Back/Forward | Register filters and report drill-down live in the URL (D41) |
+| Google Drive sync | Your own Drive, your own Google credentials, `drive.file` scope (D42) |
 
 **Browser-verified on the live site**: grouping applied without moving any
 balance; Back returns from a filtered view (8 rows → 321); duplicate opens a
 prefilled copy with the date-difference note; CI green on every deploy.
 
+## Google Drive sync (2026-08-27)
+
+Built because opening the live site in a second browser showed onboarding again.
+Nothing was lost — browser storage is per-origin *and* per-browser, so Chrome and
+Safari each hold their own database — but "restore from a backup file every time
+I switch browser" is not a workable answer, so sync was pulled forward from
+Phase 3 (SPEC §8.3), logged as D42.
+
+**It runs on your own Google credentials.** No account, no server, no shipped
+secret: the app talks to Google as you, using a client id from your own Google
+Cloud project, and stores one file in your own Drive. Setup on this Mac is
+already done — project `mymoney-506723`, Drive API on, consent screen complete,
+app **published** so the grant never expires. The client id lives in
+Settings → Sync; `docs/DRIVE-SETUP.md` covers repeating it if ever needed.
+
+**Permission is `drive.file`** — an app can only see files it created itself. It
+cannot list, open or touch anything else in your Drive, and because that scope is
+non-sensitive Google requires no review and no fee, ever. A test fails if the
+scope is ever widened.
+
+**If two devices both changed, it asks.** There is no last-write-wins and no
+timestamp tie-break. You see each side with its device name, time and row
+counts, and the copy you do not keep is written to a restorable backup file
+first — if that write fails, the whole resolution is abandoned rather than
+proceeding. Choosing nothing changes nothing.
+
+**Privacy line, updated honestly:** Google is now a second outbound host after
+the rates provider. The app's claim is "no external requests except exchange
+rates, and your own Drive when you switch it on". Both are switchable off, and
+with both off it makes no network requests at all.
+
+Building it caught a real latent bug: `updateSettings` read-modify-wrote outside
+a transaction, so a concurrent write could be silently lost — in the sync path
+that could mark a device clean while it still held unsynced changes, and the
+next pull would overwrite them. Now atomic, with a test that fails without it.
+
+**Status:** shipped, deployed, CI green. Awaiting your one-time approval in
+Google's own consent window (that click is yours, not mine), then a first
+"Sync now" and a two-browser check.
+
 ## Open items for Girish
 
-- No real MoneyWiz export file was available — import built against MoneyWiz's documented CSV layout with flexible header mapping (D20) and verified against realistic fixtures. **Drop your real export in the project root** and I'll validate/adjust next session.
+- **Drive sync is built but not yet connected.** Press Connect on
+  Settings → Sync, approve in Google's window (it will warn the app is
+  "unverified" — it is yours, and the warning is what Google shows for any app
+  it has not reviewed), then Sync now.
+- **Net-worth exclusion is built but nothing is excluded yet.** 68 Saint's Mary
+  Drive (£90,000), the gift cards and Money Lent & Owed are all still counted
+  inside the £429,327.86. Tell me which should come out and I'll apply it —
+  it changes only the total, never a balance or a transaction.
 - `fake-indexeddb` added as a dev-only dependency for the mandated Dexie round-trip tests (D8) — flag per §11.7; say the word to remove.
 - Node.js was installed user-locally (D1) since the Mac had none.
