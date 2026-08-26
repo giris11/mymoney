@@ -6,6 +6,7 @@ import { APP_NAME } from './config';
 import { seedCategoriesIfEmpty } from './db/seed';
 import { getSettings } from './db/db';
 import { requestPersistence } from './lib/storage';
+import { refreshLiveRatesIfStale } from './domain/fxAuto';
 
 document.title = APP_NAME;
 
@@ -23,7 +24,15 @@ void (async () => {
   try {
     await seedCategoriesIfEmpty();
     const settings = await getSettings();
-    if (settings.onboarded) await requestPersistence();
+    if (settings.onboarded) {
+      await requestPersistence();
+      // Live FX rates (D34) — the only outbound request this app ever makes,
+      // and only once the user is past onboarding. Deliberately not awaited:
+      // it must not extend this chain, it resolves an outcome instead of
+      // throwing, and if it never finishes the app is unaffected. It refreshes
+      // only when the feature is on and the last sync has aged out.
+      void refreshLiveRatesIfStale();
+    }
   } catch (e) {
     console.error('startup init failed', e);
   }

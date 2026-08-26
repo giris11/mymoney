@@ -168,6 +168,13 @@ export default function Onboarding() {
             <p className="max-w-sm text-sm text-muted">
               Your money, on your device. No accounts, no cloud, works offline.
             </p>
+            {/* Live rates are on by default (D34), so the promise above must not
+                overstate: name the one request the app makes, and that it is
+                optional. Better said here than discovered later. */}
+            <p className="max-w-sm text-xs text-faint">
+              The only thing it ever sends is a request for exchange rates — none of
+              your data, and you can switch that off in Settings.
+            </p>
             <Button variant="primary" className="mt-2 w-full" onClick={() => setStep(1)}>
               Get started
             </Button>
