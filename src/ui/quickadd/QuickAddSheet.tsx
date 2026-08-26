@@ -25,12 +25,41 @@ export interface QuickAddSheetProps {
   onClose: () => void;
 }
 
+/** The chosen category plus where it came from (see `categoryAfterPayeePick`). */
+export interface QuickAddCategory {
+  id: string | null;
+  /** true = auto-filled from a payee's learned default rather than chosen by the user. */
+  auto: boolean;
+}
+
+/**
+ * What a payee pick should do to the current category. Returns the next
+ * category, or `null` for "leave it alone".
+ *
+ * "Save & add another" keeps the category so a run of same-category entries
+ * stays fast, but that carried-over value must not silence auto-categorisation
+ * (D17) for the next payee: a category the *user* picked outranks the payee's
+ * default, while one that was itself auto-filled belongs to the payee it came
+ * from, so a new pick replaces it — or clears it, when the new payee has no
+ * usable default to offer.
+ */
+export function categoryAfterPayeePick(
+  current: QuickAddCategory,
+  payee: Pick<Payee, 'defaultCategoryId'>,
+  usable: (categoryId: string) => boolean,
+): QuickAddCategory | null {
+  if (current.id !== null && !current.auto) return null;
+  const id =
+    payee.defaultCategoryId && usable(payee.defaultCategoryId) ? payee.defaultCategoryId : null;
+  return id === current.id ? null : { id, auto: id !== null };
+}
+
 export default function QuickAddSheet({ open, onClose }: QuickAddSheetProps) {
   const { toast } = useToast();
 
   const [type, setType] = useState<TxKind>('expense');
   const [amount, setAmount] = useState<number | null>(null); // positive magnitude
-  const [categoryId, setCategoryId] = useState<string | null>(null);
+  const [category, setCategory] = useState<QuickAddCategory>({ id: null, auto: false });
   const [payeeText, setPayeeText] = useState('');
   const [accountId, setAccountId] = useState(''); // '' = use preferred
   const [date, setDate] = useState(todayISO());
@@ -74,7 +103,7 @@ export default function QuickAddSheet({ open, onClose }: QuickAddSheetProps) {
     if (open && !wasOpen.current) {
       setType('expense');
       setAmount(null);
-      setCategoryId(null);
+      setCategory({ id: null, auto: false });
       setPayeeText('');
       setAccountId('');
       setDate(todayISO());
@@ -133,10 +162,18 @@ export default function QuickAddSheet({ open, onClose }: QuickAddSheetProps) {
     setType(t);
   };
 
+  const categoryId = category.id;
+  /** A category the picker itself would offer: right kind, not archived. */
+  const usableCategory = (id: string) => {
+    const c = catsById.get(id);
+    return !!c && c.kind === qKind && !c.archived;
+  };
+  /** Anything the user chooses by hand outranks payee auto-fill from then on. */
+  const pickCategory = (id: string | null) => setCategory({ id, auto: false });
+
   const onPickPayee = (p: Payee) => {
-    if (categoryId || !p.defaultCategoryId) return;
-    const c = catsById.get(p.defaultCategoryId);
-    if (c && c.kind === qKind && !c.archived) setCategoryId(p.defaultCategoryId);
+    const next = categoryAfterPayeePick(category, p, usableCategory);
+    if (next) setCategory(next);
   };
 
   const toAccount = usableAccounts.find((a) => a.id === transfer.toAccountId);
@@ -273,7 +310,7 @@ export default function QuickAddSheet({ open, onClose }: QuickAddSheetProps) {
                       key={c.id}
                       type="button"
                       aria-pressed={categoryId === c.id}
-                      onClick={() => setCategoryId(categoryId === c.id ? null : c.id)}
+                      onClick={() => pickCategory(categoryId === c.id ? null : c.id)}
                       className={cn(
                         'flex cursor-pointer items-center gap-1.5 rounded-lg border px-2 py-1.5 text-xs transition-colors',
                         categoryId === c.id
@@ -300,7 +337,7 @@ export default function QuickAddSheet({ open, onClose }: QuickAddSheetProps) {
                 id="quickadd-category"
                 kind={qKind}
                 value={categoryId}
-                onChange={setCategoryId}
+                onChange={pickCategory}
               />
             </div>
             <Field label="Payee">

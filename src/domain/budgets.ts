@@ -9,8 +9,9 @@
 //  * split transactions contribute each split by the SPLIT's category;
 //  * transfers never count (their categoryId is null);
 //  * amounts are converted to the base currency at current rates; transactions
-//    with no available rate are counted in missingRateCount, never guessed
-//    (SPEC §6, D22);
+//    with no available rate are counted in missingRateCount — once each, even
+//    when several of their splits fall in the budget — never guessed
+//    (SPEC §6, D22, D28);
 //  * period windows anchor at startDate: weekly = consecutive 7-day windows,
 //    monthly = calendar-ish months anchored at startDate's day (clamped to
 //    short months), yearly = anniversary years. Windows are [start, end]
@@ -142,10 +143,20 @@ export async function budgetProgress(budget: Budget, refDate?: string): Promise<
   let sumMinor = 0; // signed Σ of converted contributions (spend negative)
   let missingRateCount = 0;
   for (const t of txs) {
-    for (const amountMinor of contributionsOf(t, cats)) {
+    const contributions = contributionsOf(t, cats);
+    if (contributions.length === 0) continue;
+    // Convertibility is a property of the TRANSACTION's currency, so an
+    // unconvertible transaction is excluded — and counted — exactly once
+    // however many of its splits this budget covers. The count is of
+    // transactions (D28), which is what the UI says ("N transactions
+    // excluded"); counting per split over-reported split purchases.
+    if (lookup(t.currency, settings.baseCurrency) === null) {
+      missingRateCount += 1; // never guess (SPEC §6)
+      continue;
+    }
+    for (const amountMinor of contributions) {
       const converted = convertMinor(amountMinor, t.currency, settings.baseCurrency, lookup);
-      if (converted === null) missingRateCount += 1; // never guess (SPEC §6)
-      else sumMinor += converted;
+      if (converted !== null) sumMinor += converted; // null unreachable: rate checked above
     }
   }
 

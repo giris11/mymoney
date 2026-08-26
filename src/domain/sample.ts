@@ -29,7 +29,6 @@ import { undoImport } from '../import/importer';
 import { findOrCreateByPath } from './categories';
 import { getOrCreatePayee, learnPayeeCategory } from './payees';
 import { getOrCreateTags } from './tags';
-import { setManualRate } from './fx';
 
 /** Small deterministic PRNG (mulberry32) — same data on every load. */
 function mulberry32(seed: number): () => number {
@@ -103,8 +102,16 @@ export async function loadSampleData(): Promise<void> {
     const savings = await mkAccount('Savings', 'savings', 'GBP', 420000, '#059669', savingCredit.id, 3);
 
     // ---- manual EUR:GBP rate (only if the user hasn't already set one) ----
+    // Written directly rather than via setManualRate so `asOf` is the batch's
+    // own timestamp: an fxRates row has a fixed primary key, so if the user
+    // later edits this rate into their real one, setManualRate overwrites this
+    // very row. undoImport deletes it only while asOf still matches the batch,
+    // which is how "Remove sample data" avoids destroying that edit (A6).
     if (!(await db.fxRates.get('EUR:GBP'))) {
-      await setManualRate('EUR', 'GBP', 0.85);
+      await db.fxRates.put({
+        id: 'EUR:GBP', base: 'EUR', quote: 'GBP', rate: 0.85,
+        asOf: batch.importedAt, source: 'manual',
+      });
       batch.createdFxRateIds!.push('EUR:GBP');
     }
 

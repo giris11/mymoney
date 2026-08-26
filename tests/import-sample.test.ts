@@ -6,6 +6,7 @@ import { db, getSettings, updateSettings } from '../src/db/db';
 import { todayISO } from '../src/lib/util';
 import { seedCategoriesIfEmpty } from '../src/db/seed';
 import { sumSplits } from '../src/money/money';
+import { setManualRate } from '../src/domain/fx';
 import {
   loadSampleData,
   removeSampleData,
@@ -144,6 +145,24 @@ describe('removeSampleData', () => {
     await removeSampleData();
     // …and must not remove it on undo.
     expect((await db.fxRates.get('EUR:GBP'))!.rate).toBe(0.9);
+  });
+
+  it('keeps the EUR:GBP rate once the user has edited it into their own', async () => {
+    // fxRates rows have a fixed primary key, so editing the sample's rate
+    // OVERWRITES that row — after which deleting it would drop the user's EUR
+    // accounts out of net worth. Removing samples must never destroy it.
+    await loadSampleData();
+    expect((await db.fxRates.get('EUR:GBP'))!.rate).toBe(0.85);
+    await setManualRate('EUR', 'GBP', 0.8712);
+
+    await removeSampleData();
+
+    const rate = await db.fxRates.get('EUR:GBP');
+    expect(rate).toBeDefined();
+    expect(rate!.rate).toBe(0.8712);
+    // …everything else the sample created is still gone.
+    expect(await db.accounts.count()).toBe(0);
+    expect(await db.importBatches.count()).toBe(0);
   });
 
   it('is a no-op when no sample data is loaded', async () => {

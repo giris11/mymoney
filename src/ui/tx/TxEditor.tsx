@@ -63,6 +63,11 @@ export default function TxEditor({
   const [amount, setAmount] = useState<number | null>(null); // positive magnitude
   const [refund, setRefund] = useState(false);
   const [categoryId, setCategoryId] = useState<string | null>(null);
+  // Whether the current categoryId came from a payee's learned default rather
+  // than from the user. An auto-filled category belongs to the payee it came
+  // from, so picking a different payee replaces it; a user's own choice never
+  // gets overwritten (D17, same rule as Quick Add).
+  const categoryWasAutoFilled = useRef(false);
   const [payeeName, setPayeeName] = useState('');
   const [accountId, setAccountId] = useState('');
   const [date, setDate] = useState(todayISO());
@@ -122,6 +127,7 @@ export default function TxEditor({
         setRefund(false);
         setAmount(null);
         setCategoryId(null);
+        categoryWasAutoFilled.current = false;
         setPayeeName('');
         setDate(todayISO());
         setTagNames([]);
@@ -184,6 +190,7 @@ export default function TxEditor({
       setRefund(isRefund);
       setAmount(Math.abs(tx.amountMinor));
       setCategoryId(tx.categoryId);
+      categoryWasAutoFilled.current = false;
       setPayeeName(payee?.name ?? '');
       setAccountId(tx.accountId);
       setDate(tx.date);
@@ -271,9 +278,14 @@ export default function TxEditor({
   };
 
   const onPickPayee = (p: Payee) => {
-    if (categoryId || splits.length > 0 || !p.defaultCategoryId) return;
-    const c = catsById.get(p.defaultCategoryId);
-    if (c && c.kind === splitKind && !c.archived) setCategoryId(p.defaultCategoryId);
+    // Splits carry their own categories — never override them from a payee.
+    if (splits.length > 0) return;
+    if (categoryId && !categoryWasAutoFilled.current) return; // user's choice wins
+    const c = p.defaultCategoryId ? catsById.get(p.defaultCategoryId) : undefined;
+    const next = c && c.kind === splitKind && !c.archived ? p.defaultCategoryId : null;
+    if (next === categoryId) return;
+    setCategoryId(next);
+    categoryWasAutoFilled.current = next !== null;
   };
 
   const addSplit = () => {
@@ -418,7 +430,10 @@ export default function TxEditor({
                       id={id}
                       kind={splitKind}
                       value={categoryId}
-                      onChange={setCategoryId}
+                      onChange={(id) => {
+                        setCategoryId(id);
+                        categoryWasAutoFilled.current = false;
+                      }}
                     />
                   )}
                 </Field>

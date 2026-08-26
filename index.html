@@ -11,6 +11,28 @@
     <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="./apple-touch-icon.png" />
     <title>MyMoney</title>
+    <script>
+      /* Paint the right palette on the FIRST frame. The authoritative theme
+         choice lives in IndexedDB (async), so waiting for React to mount means
+         a dark-theme user gets a white flash on every cold start of the
+         installed PWA. 'mymoney.theme' is a DISPLAY HINT, never a record
+         (SPEC §3, D29): it holds one string ('system' | 'light' | 'dark')
+         written by useThemeSync, and if it is missing, stale or unreadable the
+         only cost is one corrected frame — src/ui/theme.ts re-applies the real
+         setting after mount. Keep this in sync with resolveTheme(). */
+      (function () {
+        var hint = null;
+        try {
+          hint = window.localStorage.getItem('mymoney.theme');
+        } catch (e) {
+          /* Private mode / file:// / storage blocked — fall back to the OS. */
+        }
+        var dark =
+          hint === 'dark' ||
+          (hint !== 'light' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+        document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

@@ -368,7 +368,7 @@ describe('budgetProgress', () => {
     expect(p.over).toBe(false);
   });
 
-  it('no-rate split transaction: each covered split counts in missingRateCount', async () => {
+  it('no-rate split transaction counts ONCE, not once per covered split', async () => {
     await db.transactions.bulkAdd([
       tx({
         date: '2025-03-07',
@@ -382,10 +382,32 @@ describe('budgetProgress', () => {
       tx({ date: '2025-03-08', amountMinor: -1234, categoryId: 'food' }), // GBP, fine
     ]);
     const p = await budgetProgress(mkBudget(), '2025-03-15');
-    // Both covered CHF splits are inconvertible contributions → 2; excluded
-    // from spend, so spent = 1234 (GBP tx only).
-    expect(p.missingRateCount).toBe(2);
+    // ONE inconvertible transaction, however many of its splits this budget
+    // covers — missingRateCount is a transaction count (D28) and the UI says
+    // "N transactions excluded". Its whole amount stays out of spend, so
+    // spent = 1234 (the GBP transaction only).
+    expect(p.missingRateCount).toBe(1);
     expect(p.spentMinor).toBe(1234);
+  });
+
+  it('no-rate transactions outside the budget’s categories are not counted', async () => {
+    await db.transactions.bulkAdd([
+      // Covered category, no rate → counted once.
+      tx({ date: '2025-03-05', amountMinor: -2500, currency: 'CHF', categoryId: 'dining' }),
+      // Same missing rate, but 'travel' is not in this budget → invisible here.
+      tx({ date: '2025-03-06', amountMinor: -9999, currency: 'CHF', categoryId: 'travel' }),
+      // Split where only the uncovered split is present → nothing to exclude.
+      tx({
+        date: '2025-03-09',
+        amountMinor: -4000,
+        currency: 'CHF',
+        categoryId: 'food', // ignored: splits win
+        splits: [{ categoryId: 'travel', amountMinor: -4000 }],
+      }),
+    ]);
+    const p = await budgetProgress(mkBudget(), '2025-03-15');
+    expect(p.missingRateCount).toBe(1);
+    expect(p.spentMinor).toBe(0);
   });
 
   it('FX conversion rounds half-away-from-zero once per contribution', async () => {

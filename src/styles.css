@@ -3,15 +3,20 @@
 /* Dark mode is driven by data-theme on <html>, set from Settings (system|light|dark). */
 @custom-variant dark (&:where([data-theme='dark'], [data-theme='dark'] *));
 
-/* Semantic palette — the ONLY colours the app uses. Both themes are WCAG AA
-   for text-on-surface combinations. */
+/* Semantic palette — the ONLY colours the app uses. Every text colour clears
+   WCAG AA (4.5:1) against --c-bg, --c-surface AND --c-surface2 in its own
+   theme; --c-faint styles real information (register column headers,
+   "Uncategorised", "No payee"), so it is held to the same bar, not to 3:1.
+   Measured ratios (bg / surface / surface2):
+     light  text 14.61 / 16.10 / 13.96   muted 5.20 / 5.73 / 4.97   faint 4.95 / 5.46 / 4.73
+     dark   text 16.02 / 14.50 / 12.92   muted 8.32 / 7.53 / 6.71   faint 5.83 / 5.28 / 4.70 */
 :root {
   --c-bg: #f2f4f7;
   --c-surface: #ffffff;
   --c-surface2: #eceff3;
   --c-text: #17222e;
   --c-muted: #57687a;
-  --c-faint: #8494a6;
+  --c-faint: #5b6b7e;
   --c-border: #dde3ea;
   --c-accent: #047857;
   --c-accent-strong: #065f46;
@@ -29,7 +34,7 @@
   --c-surface2: #1e2630;
   --c-text: #e6edf3;
   --c-muted: #9daebe;
-  --c-faint: #708095;
+  --c-faint: #8290a3;
   --c-border: #2b3542;
   --c-accent: #34d399;
   --c-accent-strong: #6ee7b7;

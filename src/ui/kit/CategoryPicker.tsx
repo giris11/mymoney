@@ -1,6 +1,6 @@
 // Category pickers: single-select dropdown-tree and multi-select tree
 // (budgets). Both keyboard-usable.
-import { useMemo, useRef, useState, useEffect } from 'react';
+import { useId, useMemo, useRef, useState, useEffect } from 'react';
 import { useLive } from '../../db/useLive';
 import { categoryTree, type CategoryNode } from '../../domain/categories';
 import type { CategoryKind } from '../../db/types';
@@ -43,6 +43,12 @@ export function CategoryPicker({
   const [query, setQuery] = useState('');
   const [highlight, setHighlight] = useState(0);
   const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  // stable ids so the search box can point screen readers at the highlighted
+  // option — arrowing moves a visual highlight only, DOM focus never leaves
+  // the input (SPEC §9)
+  const listboxId = useId();
+  const optionId = (i: number) => `${listboxId}-opt-${i}`;
   const tree = useLive(() => categoryTree(kind), [kind]);
   const flat = useMemo(() => flatten(tree ?? []), [tree]);
   const byId = useMemo(() => new Map(flat.map((f) => [f.id, f])), [flat]);
@@ -76,6 +82,7 @@ export function CategoryPicker({
     <div ref={rootRef} className="relative">
       <button
         id={id}
+        ref={triggerRef}
         type="button"
         aria-haspopup="listbox"
         aria-expanded={open}
@@ -121,6 +128,11 @@ export function CategoryPicker({
           <div className="p-2">
             <Input
               autoFocus
+              role="combobox"
+              aria-expanded
+              aria-autocomplete="list"
+              aria-controls={listboxId}
+              aria-activedescendant={filtered[highlight] ? optionId(highlight) : undefined}
               value={query}
               placeholder="Search categories"
               aria-label="Search categories"
@@ -137,17 +149,33 @@ export function CategoryPicker({
                   const opt = filtered[highlight];
                   if (opt) pick(opt.id);
                 } else if (e.key === 'Escape') {
+                  // stop here: the window-level Modal listener would otherwise
+                  // read the same Escape and close the whole dialog
+                  e.preventDefault();
+                  e.stopPropagation();
                   setOpen(false);
+                  triggerRef.current?.focus();
                 }
               }}
             />
           </div>
-          <ul role="listbox" aria-label="Categories" className="max-h-64 overflow-y-auto pb-1">
+          <ul
+            id={listboxId}
+            role="listbox"
+            aria-label="Categories"
+            className="max-h-64 overflow-y-auto pb-1"
+          >
             {filtered.length === 0 && (
               <li className="px-3 py-2 text-sm text-faint">No matches</li>
             )}
             {filtered.map((f, i) => (
-              <li key={f.id} role="option" aria-selected={value === f.id}>
+              <li
+                key={f.id}
+                id={optionId(i)}
+                role="option"
+                aria-selected={i === highlight}
+                aria-current={value === f.id ? 'true' : undefined}
+              >
                 <button
                   type="button"
                   onClick={() => pick(f.id)}

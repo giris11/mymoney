@@ -1,7 +1,7 @@
 // Shared building blocks for the Settings area only (page shell, colour
 // swatches, inline rename). Cross-app widgets live in src/ui/kit — these are
 // deliberately settings-local.
-import { useState, type ReactNode } from 'react';
+import { useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { cn } from '../../lib/util';
 import { href } from '../router';
 import { IconButton, Input } from '../kit/kit';
@@ -58,6 +58,48 @@ export const ENTITY_COLOURS = [
   '#6b7280', // grey
 ];
 
+/** Names for the palette — a swatch that only announces "#2563eb" is useless. */
+const COLOUR_NAMES: Record<string, string> = {
+  '#2563eb': 'Blue',
+  '#0284c7': 'Sky',
+  '#0d9488': 'Teal',
+  '#059669': 'Green',
+  '#65a30d': 'Lime',
+  '#b45309': 'Amber',
+  '#ea580c': 'Orange',
+  '#dc2626': 'Red',
+  '#db2777': 'Pink',
+  '#7c3aed': 'Violet',
+  '#6b7280': 'Grey',
+};
+
+/** Accessible name for a swatch: the palette name, or the hex for a custom colour. */
+export function colourName(colour: string): string {
+  return COLOUR_NAMES[colour.toLowerCase()] ?? `Custom colour ${colour}`;
+}
+
+/**
+ * Where an arrow/Home/End key moves within a radio group, or `null` when the
+ * key isn't one we handle. Wraps, per the ARIA radio-group pattern.
+ */
+export function nextRadioIndex(key: string, index: number, count: number): number | null {
+  if (count === 0) return null;
+  switch (key) {
+    case 'ArrowRight':
+    case 'ArrowDown':
+      return (index + 1) % count;
+    case 'ArrowLeft':
+    case 'ArrowUp':
+      return (index - 1 + count) % count;
+    case 'Home':
+      return 0;
+    case 'End':
+      return count - 1;
+    default:
+      return null;
+  }
+}
+
 /** Radio-group row of colour swatches. Data colours, so inline style is OK. */
 export function ColourSwatches({
   value,
@@ -69,16 +111,32 @@ export function ColourSwatches({
   label?: string;
 }) {
   const colours = ENTITY_COLOURS.includes(value) ? ENTITY_COLOURS : [...ENTITY_COLOURS, value];
+  const btns = useRef<(HTMLButtonElement | null)[]>([]);
+  // ARIA radio group: one tab stop (the checked swatch), arrows move *and*
+  // select — so Tab never has to walk through eleven colours to leave the row.
+  const checked = Math.max(0, colours.indexOf(value));
+  const onKeyDown = (e: KeyboardEvent<HTMLButtonElement>, i: number) => {
+    const next = nextRadioIndex(e.key, i, colours.length);
+    if (next === null) return;
+    e.preventDefault();
+    onChange(colours[next]);
+    btns.current[next]?.focus();
+  };
   return (
     <div role="radiogroup" aria-label={label} className="flex flex-wrap gap-2">
-      {colours.map((c) => (
+      {colours.map((c, i) => (
         <button
           key={c}
+          ref={(el) => {
+            btns.current[i] = el;
+          }}
           type="button"
           role="radio"
           aria-checked={value === c}
-          aria-label={`Colour ${c}`}
+          aria-label={colourName(c)}
+          tabIndex={i === checked ? 0 : -1}
           onClick={() => onChange(c)}
+          onKeyDown={(e) => onKeyDown(e, i)}
           className={cn(
             'h-7 w-7 cursor-pointer rounded-full border-2 transition-transform',
             value === c ? 'scale-110 border-text' : 'border-transparent hover:scale-105',

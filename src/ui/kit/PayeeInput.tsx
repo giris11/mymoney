@@ -1,7 +1,7 @@
 // Payee combobox: autocompletes existing payees, free text creates new ones
 // on save (SPEC §4 quick add). Reports the picked payee's learned default
 // category so forms can pre-fill it (D17).
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { searchPayees } from '../../domain/payees';
 import type { Payee } from '../../db/types';
 import { cn } from '../../lib/util';
@@ -28,6 +28,10 @@ export function PayeeInput({
   const [highlight, setHighlight] = useState(0);
   const rootRef = useRef<HTMLDivElement>(null);
   const debounce = useRef<number>(0);
+  // arrowing moves a visual highlight while DOM focus stays in the input, so
+  // screen readers need the active option named explicitly (SPEC §9)
+  const listboxId = useId();
+  const optionId = (i: number) => `${listboxId}-opt-${i}`;
 
   useEffect(() => {
     window.clearTimeout(debounce.current);
@@ -54,12 +58,18 @@ export function PayeeInput({
     setOpen(false);
   };
 
+  const listboxOpen = open && options.length > 0;
+
   return (
     <div ref={rootRef} className="relative">
       <Input
         id={id}
         role="combobox"
-        aria-expanded={open && options.length > 0}
+        aria-expanded={listboxOpen}
+        aria-controls={listboxId}
+        aria-activedescendant={
+          listboxOpen && options[highlight] ? optionId(highlight) : undefined
+        }
         aria-autocomplete="list"
         autoComplete="off"
         autoFocus={autoFocus}
@@ -87,18 +97,23 @@ export function PayeeInput({
               setOpen(false);
             }
           } else if (e.key === 'Escape') {
+            // dismiss the suggestions only: without stopping here the
+            // window-level Modal listener closes the whole sheet and the draft
+            e.preventDefault();
+            e.stopPropagation();
             setOpen(false);
           }
         }}
       />
-      {open && options.length > 0 && (
+      {listboxOpen && (
         <ul
+          id={listboxId}
           role="listbox"
           aria-label="Payee suggestions"
           className="absolute z-30 mt-1 max-h-52 w-full overflow-y-auto rounded-lg border border-border bg-surface py-1 shadow-lg"
         >
           {options.map((p, i) => (
-            <li key={p.id} role="option" aria-selected={i === highlight}>
+            <li key={p.id} id={optionId(i)} role="option" aria-selected={i === highlight}>
               <button
                 type="button"
                 onMouseEnter={() => setHighlight(i)}

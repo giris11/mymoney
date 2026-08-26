@@ -3,7 +3,7 @@
 // per-row categories) and only commitImport — triggered from here — writes.
 // Plan mutations go through refreshPlanCounts + a forced re-render so the
 // summary chips stay live.
-import { useMemo, useReducer, type ReactNode } from 'react';
+import { useMemo, useReducer, useState, type ReactNode } from 'react';
 import { db } from '../../db/db';
 import { useLive } from '../../db/useLive';
 import { formatDate, nameKey } from '../../lib/util';
@@ -13,6 +13,13 @@ import { CategoryPicker } from '../kit/CategoryPicker';
 import { IconTransfer } from '../kit/icons';
 import { Amount, Button, Card, Checkbox, Chip, Segmented } from '../kit/kit';
 import { ChipList, Disclosure, StatChip, WizardFooter, plural } from './bits';
+import {
+  DATE_FORMAT_OPTIONS,
+  currencyMismatchNote,
+  dateFormatLabel,
+  exampleDateUnder,
+  type ImportDateFormat,
+} from './wizardLogic';
 
 const NEAR_DUP_DISPLAY_CAP = 50;
 
@@ -20,6 +27,9 @@ export function PreviewStep({
   plan,
   mwWarnings,
   baseCurrency,
+  dateFormat,
+  sampleDate,
+  onDateFormat,
   busy,
   onBack,
   onCommit,
@@ -29,6 +39,13 @@ export function PreviewStep({
   /** MoneyWiz parse warnings (empty for generic CSV imports). */
   mwWarnings: string[];
   baseCurrency: string;
+  /** MoneyWiz only: how the date column was read — MoneyWiz files skip the Map
+   *  step, so this is the user's only chance to correct an ambiguous export
+   *  (D20). null for generic CSV, which sets the format in the Map step. */
+  dateFormat?: ImportDateFormat | null;
+  /** A real date cell from the file, spelled out under `dateFormat`. */
+  sampleDate?: string | null;
+  onDateFormat?: (fmt: ImportDateFormat) => void;
   busy: boolean;
   onBack: () => void;
   onCommit: () => void;
@@ -36,6 +53,7 @@ export function PreviewStep({
 }) {
   // The plan object is mutated in place (engine contract); force() re-renders.
   const [, force] = useReducer((x: number) => x + 1, 0);
+  const [dateFormatOpen, setDateFormatOpen] = useState(false);
 
   const accounts = useLive(() => db.accounts.toArray(), []);
   const payees = useLive(() => db.payees.toArray(), []);
@@ -83,6 +101,11 @@ export function PreviewStep({
     pr.chosenCategoryId = id;
     force();
   };
+
+  // One worked example of the file's own dates under the current reading, so
+  // an ambiguous export (03/04 is either) can be checked at a glance.
+  const dateExample = dateFormat ? exampleDateUnder(sampleDate ?? null, dateFormat) : null;
+  const currencyNote = currencyMismatchNote(plan.currencyMismatchCount);
 
   const nearRows = plan.rows.filter((pr) => pr.action === 'needs_decision');
   const errorRows = plan.rows.filter((pr) => pr.action === 'error');
@@ -157,6 +180,47 @@ export function PreviewStep({
             MoneyWiz export detected{' '}
             <span className="font-normal text-muted">— {plural(plan.rows.length, 'row')}</span>
           </p>
+          {dateFormat && onDateFormat && (
+            <div className="mt-1.5">
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted">
+                <span>
+                  Dates read as{' '}
+                  <span className="font-medium text-text">{dateFormatLabel(dateFormat)}</span>
+                  {dateExample && (
+                    <>
+                      {' '}— “{sampleDate}” is{' '}
+                      <span className="text-text">{dateExample}</span>
+                    </>
+                  )}
+                </span>
+                <Button
+                  size="sm"
+                  aria-expanded={dateFormatOpen}
+                  onClick={() => setDateFormatOpen((o) => !o)}
+                >
+                  {dateFormatOpen ? 'Done' : 'Change'}
+                </Button>
+              </div>
+              {dateFormatOpen && (
+                <div className="mt-1.5">
+                  <Segmented<ImportDateFormat>
+                    label="How dates in this file are read"
+                    value={dateFormat}
+                    onChange={(f) => {
+                      if (!busy && f !== dateFormat) onDateFormat(f);
+                    }}
+                    options={DATE_FORMAT_OPTIONS.map((o) => ({
+                      value: o.value,
+                      label: o.label,
+                    }))}
+                  />
+                  <p className="mt-1 text-xs text-muted">
+                    Re-reads the whole file — near-duplicate decisions start over.
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
           {mwWarnings.length > 0 && (
             <ul className="mt-1.5 flex max-h-32 list-disc flex-col gap-0.5 overflow-y-auto pl-5 text-xs text-warn">
               {mwWarnings.map((w, i) => (
@@ -189,6 +253,7 @@ export function PreviewStep({
             <StatChip tone="danger">{plural(plan.errorCount, 'error')}</StatChip>
           )}
         </div>
+        {currencyNote && <p className="mt-1.5 text-sm text-warn">{currencyNote}</p>}
       </div>
 
       {newEntityCount > 0 && (

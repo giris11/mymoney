@@ -7,6 +7,7 @@ import { useLive } from '../../db/useLive';
 import {
   backupNudgeState,
   downloadBackup,
+  markBackupSaved,
   restoreBackup,
   validateBackup,
   type BackupFile,
@@ -17,7 +18,7 @@ import {
   storageEstimate,
   type PersistState,
 } from '../../lib/storage';
-import { formatDate } from '../../lib/util';
+import { formatDate, todayISO } from '../../lib/util';
 import { navigate } from '../router';
 import { Button, Card, ConfirmDialog } from '../kit/kit';
 import { IconDownload, IconTrash, IconUpload } from '../kit/icons';
@@ -45,6 +46,9 @@ export default function BackupSection() {
   const [persist, setPersist] = useState<PersistState | null>(null);
   const [estimate, setEstimate] = useState<{ usage: number; quota: number } | null>(null);
   const [pendingRestore, setPendingRestore] = useState<BackupFile | null>(null);
+  // Set when the browser took the file but cannot tell us it reached the disk:
+  // only the user can confirm that, and until they do we record nothing.
+  const [awaitingConfirm, setAwaitingConfirm] = useState(false);
   const [eraseOpen, setEraseOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -56,8 +60,30 @@ export default function BackupSection() {
 
   const exportBackupNow = async () => {
     try {
-      await downloadBackup();
-      toast('Backup downloaded', 'success');
+      const result = await downloadBackup();
+      if (result === 'saved') {
+        // The browser wrote the file where the user chose — observed, so it
+        // can be recorded without asking.
+        await markBackupSaved();
+        setAwaitingConfirm(false);
+        toast('Backup saved', 'success');
+      } else if (result === 'cancelled') {
+        setAwaitingConfirm(false);
+        toast('Backup cancelled — nothing was saved', 'info');
+      } else {
+        setAwaitingConfirm(true);
+      }
+    } catch (e) {
+      setAwaitingConfirm(false);
+      toast(errorMessage(e), 'error');
+    }
+  };
+
+  const confirmSaved = async () => {
+    try {
+      await markBackupSaved();
+      setAwaitingConfirm(false);
+      toast('Backup recorded', 'success');
     } catch (e) {
       toast(errorMessage(e), 'error');
     }
@@ -133,7 +159,9 @@ export default function BackupSection() {
         <p className="mt-1 text-sm">
           {settings &&
             (settings.lastBackupAt ? (
-              <span className="text-muted">Last backup: {formatDate(settings.lastBackupAt)}</span>
+              <span className="text-muted">
+                Last confirmed backup: {formatDate(settings.lastBackupAt)}
+              </span>
             ) : (
               <span className="text-warn">Never backed up.</span>
             ))}
@@ -161,6 +189,23 @@ export default function BackupSection() {
             }}
           />
         </div>
+        {awaitingConfirm && (
+          <div className="mt-3 rounded-lg border border-warn bg-surface2 p-3 text-sm">
+            <p className="text-text">
+              Your browser was handed <strong>mymoney-backup-{todayISO()}.json</strong>. It
+              can’t tell the app whether that file was really saved, so check your downloads —
+              then confirm below and it counts as your latest backup.
+            </p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              <Button size="sm" variant="primary" onClick={() => void confirmSaved()}>
+                Yes, I have the file
+              </Button>
+              <Button size="sm" onClick={() => setAwaitingConfirm(false)}>
+                Not saved
+              </Button>
+            </div>
+          </div>
+        )}
       </Card>
 
       <Card>

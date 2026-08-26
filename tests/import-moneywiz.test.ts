@@ -52,6 +52,10 @@ describe('parseMoneyWizCsv over the fixture', () => {
       tags: ['work'],
       notes: null,
       transferAccountName: null,
+      // The raw cell travels with the row so the importer can re-derive the
+      // amount at the account's real currency (see import-importer.test.ts).
+      amountText: '2,650.00',
+      amountRule: 'as-written',
       error: null,
     });
   });
@@ -139,6 +143,47 @@ describe('category path fallback', () => {
       'Account,Payee,Date,Amount,Tags\nCurrent,A,01/07/2026,-10.00,"work, travel"\n',
     );
     expect(r.rows[0].tags).toEqual(['work', 'travel']);
+  });
+});
+
+// D20 says an ambiguous date column falls back to en-GB dd/mm "overridable in
+// the mapping UI" — without an override an all-ambiguous US export (MM/DD)
+// imports every date transposed with no way to correct it.
+describe('date format override (D20)', () => {
+  const ambiguous =
+    'Account,Payee,Date,Amount\n' +
+    'Current,A,05/07/2026,-10.00\n' +
+    'Current,B,06/07/2026,-20.00\n';
+
+  it('reports what auto-detection chose, and still defaults to dd/mm', () => {
+    const r = parseMoneyWizCsv(ambiguous);
+    expect(r.detectedDateFormat).toBe('DMY');
+    expect(r.rows.map((x) => x.date)).toEqual(['2026-07-05', '2026-07-06']);
+  });
+
+  it('an explicit MDY override reads the same column as mm/dd', () => {
+    const r = parseMoneyWizCsv(ambiguous, 'MDY');
+    expect(r.rows.map((x) => x.date)).toEqual(['2026-05-07', '2026-06-07']);
+    expect(r.detectedDateFormat).toBe('DMY'); // still reports the guess it made
+  });
+
+  it('detection is unaffected by the override on an unambiguous column', () => {
+    const r = parseMoneyWizCsv(
+      'Account,Payee,Date,Amount\nCurrent,A,25/06/2026,-10.00\n',
+      'DMY',
+    );
+    expect(r.detectedDateFormat).toBe('DMY');
+    expect(r.rows[0].date).toBe('2026-06-25');
+  });
+
+  it('an override that makes a date impossible surfaces it as a row error', () => {
+    // 25/06 is only a date read dd/mm; forced MDY asks for month 25.
+    const r = parseMoneyWizCsv(
+      'Account,Payee,Date,Amount\nCurrent,A,25/06/2026,-10.00\n',
+      'MDY',
+    );
+    expect(r.rows[0].date).toBeNull();
+    expect(r.rows[0].error).toMatch(/date/i);
   });
 });
 

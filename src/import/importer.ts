@@ -12,9 +12,14 @@
 //    are no longer referenced by anything else (D18).
 //
 // Dedupe policy (SPEC §7.4): duplicates are only ever detected against the
-// EXISTING database. Rows that are identical WITHIN the one file are left as
-// plain 'import' — two identical same-day coffees in one export are
-// legitimate, and auto-skipping them would silently lose real spending.
+// EXISTING database, and each existing transaction can explain at most ONE
+// file row. Rows that are identical WITHIN the one file are left as plain
+// 'import' — two identical same-day coffees in one export are legitimate, and
+// auto-skipping them would silently lose real spending.
+//
+// Currency: an imported transaction is ALWAYS denominated in its account's
+// currency; a currency named in the file is metadata about the purchase and is
+// counted (plan.currencyMismatchCount) and noted, never converted (SPEC §6).
 import dayjs from 'dayjs';
 import { db } from '../db/db';
 import type { Account, Category, CategoryKind, ImportBatch, Payee, Transaction } from '../db/types';
@@ -22,7 +27,9 @@ import { findOrCreateByPath } from '../domain/categories';
 import { getOrCreatePayee, learnPayeeCategory } from '../domain/payees';
 import { getOrCreateTags } from '../domain/tags';
 import { nameKey, nowISO, uid } from '../lib/util';
+import { decimalsFor } from '../money/money';
 import { checkDuplicate, makeDedupeHash } from './dedupe';
+import { detectDecimalStyle, parseImportAmount } from './generic';
 import type { ImportPlan, ImportPlanRow, NewAccountPlan, ParsedRow } from './types';
 
 export interface BuildPlanOptions {
@@ -39,6 +46,60 @@ const ACCOUNT_PALETTE = ['#2563eb', '#059669', '#db2777', '#b45309', '#7c3aed', 
 
 const pathKey = (path: string[]): string => path.map(nameKey).join('>');
 
+/**
+ * The parsers must scale amounts at a GUESSED currency (the account isn't
+ * known yet) and detect the decimal style at 2 decimals, so their amountMinor
+ * is only final when the guess and the real currency both use 2 decimals.
+ * Otherwise it is 100× out (¥500 read as ¥50,000) or wrongly rejected
+ * (a valid 3-decimal "12.345" has more precision than GBP allows).
+ */
+function needsRescale(row: ParsedRow, currency: string): boolean {
+  return (
+    row.amountText !== null &&
+    (decimalsFor(currency) !== 2 || decimalsFor(row.currency ?? 'GBP') !== 2)
+  );
+}
+
+/**
+ * Decimal style stays a per-FILE decision (D27) but depends on the currency's
+ * decimals, so it is detected once per distinct scale — never per row.
+ */
+function decimalStyleDetector(rows: ParsedRow[]): (currency: string) => 'dot' | 'comma' {
+  const texts = rows.map((r) => r.amountText).filter((t): t is string => t !== null);
+  const byDecimals = new Map<number, 'dot' | 'comma'>();
+  return (currency) => {
+    const decimals = decimalsFor(currency);
+    let style = byDecimals.get(decimals);
+    if (style === undefined) {
+      style = detectDecimalStyle(texts, decimals);
+      byDecimals.set(decimals, style);
+    }
+    return style;
+  };
+}
+
+/**
+ * Re-derive a row's signed amount at `currency` from the raw cell text.
+ * Returns null when the text genuinely doesn't parse at this currency either —
+ * then it IS a row error.
+ */
+function amountAtCurrency(
+  row: ParsedRow,
+  currency: string,
+  decimal: 'dot' | 'comma',
+): number | null {
+  if (row.amountText === null) return null;
+  const parsed = parseImportAmount(row.amountText, currency, decimal);
+  if (parsed === null) return null;
+  const signed =
+    row.amountRule === 'debit'
+      ? -Math.abs(parsed)
+      : row.amountRule === 'flip'
+        ? -parsed
+        : parsed;
+  return signed === 0 ? 0 : signed; // never store -0
+}
+
 /** Is this plan row going to be written if committed right now? */
 function isEffectiveImport(plan: ImportPlan, pr: ImportPlanRow): boolean {
   if (pr.action === 'error' || pr.action === 'skip_exact_duplicate') return false;
@@ -54,6 +115,10 @@ export function refreshPlanCounts(plan: ImportPlan): void {
   plan.nearDuplicateCount = plan.rows.filter((r) => r.action === 'needs_decision').length;
   plan.errorCount = plan.rows.filter((r) => r.action === 'error').length;
   plan.importableCount = plan.rows.filter((r) => isEffectiveImport(plan, r)).length;
+  // Only rows that will actually be written can mislead the user about currency.
+  plan.currencyMismatchCount = plan.rows.filter(
+    (r) => r.currencyMismatch && isEffectiveImport(plan, r),
+  ).length;
 }
 
 export async function buildImportPlan(
@@ -75,46 +140,83 @@ export async function buildImportPlan(
   const planRows: ImportPlanRow[] = rows.map((row) => ({ row, action: 'import' }));
   const newAccounts: NewAccountPlan[] = [];
   const newAccountByKey = new Map<string, NewAccountPlan>();
+  const decimalStyleFor = decimalStyleDetector(rows);
 
-  // ---- 1. errors + account resolution ------------------------------------
+  // ---- 1. account resolution, amount scale, errors -----------------------
+  // Order matters: the ACCOUNT fixes the currency, the currency fixes the
+  // minor-unit scale, and only then can an amount be judged. The parsers had
+  // to guess a currency before the account was known, so a "500" bound for a
+  // JPY account is still 100× too big here, and a 3-decimal "12.345" was
+  // rejected outright at GBP's 2 decimals.
   for (const pr of planRows) {
     const { row } = pr;
-    if (row.error || row.date === null || row.amountMinor === null) {
+    if (row.date === null) {
       pr.action = 'error';
-      pr.row.error ??= 'Unparseable row';
+      row.error ??= 'Unparseable row';
       continue;
     }
-    if (fixedAccount) {
-      pr.accountId = fixedAccount.id;
-    } else if (row.accountName) {
-      const key = nameKey(row.accountName);
-      const existing = accountByKey.get(key);
-      if (existing) {
-        pr.accountId = existing.id;
-      } else if (!newAccountByKey.has(key)) {
-        const na: NewAccountPlan = {
-          name: row.accountName.trim().replace(/\s+/g, ' '),
-          currency: row.currency ?? opts.defaultCurrency,
-          create: true,
-        };
-        newAccounts.push(na);
-        newAccountByKey.set(key, na);
-      }
-      // rows for a new account keep action 'import'; accountId resolves at commit
-    } else {
+    const key = row.accountName ? nameKey(row.accountName) : '';
+    const existing = fixedAccount ?? (row.accountName ? accountByKey.get(key) : undefined);
+    if (!existing && !row.accountName) {
       pr.action = 'error';
-      pr.row.error ??= 'No account for this row';
+      row.error ??= 'No account for this row';
+      continue;
     }
+    // A transaction is ALWAYS denominated in its account's currency (SPEC §6,
+    // and saveTransaction enforces the same). A new account takes the row's
+    // declared currency; an existing one dictates it.
+    const currency =
+      existing?.currency ??
+      newAccountByKey.get(key)?.currency ??
+      row.currency ??
+      opts.defaultCurrency;
+    if (needsRescale(row, currency)) {
+      const rescaled = amountAtCurrency(row, currency, decimalStyleFor(currency));
+      row.amountMinor = rescaled;
+      // With a valid date, the only error a parser can still be carrying is
+      // about the amount — and it was reached at the wrong scale.
+      row.error = rescaled === null ? `Unrecognised amount “${row.amountText}”` : null;
+    }
+    if (row.amountMinor === null || row.error) {
+      pr.action = 'error';
+      row.error ??= 'Unparseable row';
+      continue; // error rows must not conjure accounts nobody will use
+    }
+    if (existing) {
+      pr.accountId = existing.id;
+    } else if (!newAccountByKey.has(key)) {
+      const na: NewAccountPlan = {
+        name: row.accountName!.trim().replace(/\s+/g, ' '),
+        currency,
+        create: true,
+      };
+      newAccounts.push(na);
+      newAccountByKey.set(key, na);
+    }
+    // rows for a new account keep action 'import'; accountId resolves at commit
+    pr.currencyMismatch = row.currency !== null && row.currency !== currency;
   }
 
-  const effCurrency = (pr: ImportPlanRow): string =>
-    pr.row.currency ??
+  /** The currency a row will be STORED in — its account's, never the file's. */
+  const accountCurrency = (pr: ImportPlanRow): string =>
     (pr.accountId
       ? accountById.get(pr.accountId)?.currency
       : newAccountByKey.get(nameKey(pr.row.accountName ?? ''))?.currency) ??
     opts.defaultCurrency;
 
-  // ---- 2. transfer pairing (greedy, each row at most once) ---------------
+  // ---- 2. transfer pairing (each row at most once) -----------------------
+  // Scanning in file order and taking the first still-unpaired opposite leg
+  // makes this "the k-th outgoing leg pairs with the k-th incoming leg" for a
+  // given (account pair, date) — i.e. FILE ORDER decides. That is the only
+  // signal available across currencies: SPEC §5 stores both legs' amounts
+  // explicitly and rates may never be guessed (SPEC §6), so -€100 and +£85
+  // cannot be matched by magnitude. Its limit: two same-day transfers between
+  // the same two accounts are mis-linked if the export lists the incoming legs
+  // in a different order from the outgoing ones — nothing in the file could
+  // tell us. Where the magnitudes CAN be compared (both accounts hold the same
+  // currency) they must match exactly, and that test uses each row's ACCOUNT
+  // currency, never the currency the file declares: a row's declared currency
+  // describes the purchase, while the ledger is always the account's (A1).
   for (let i = 0; i < planRows.length; i++) {
     const a = planRows[i];
     if (a.action === 'error' || a.transferPairIndex !== undefined || !a.row.transferAccountName) continue;
@@ -127,8 +229,9 @@ export async function buildImportPlan(
       const amountA = a.row.amountMinor!;
       const amountB = b.row.amountMinor!;
       if (!((amountA < 0 && amountB > 0) || (amountA > 0 && amountB < 0))) continue;
-      // same currency ⇒ magnitudes must match; cross-currency ⇒ both explicit
-      if (effCurrency(a) === effCurrency(b) && Math.abs(amountA) !== Math.abs(amountB)) continue;
+      if (accountCurrency(a) === accountCurrency(b) && Math.abs(amountA) !== Math.abs(amountB)) {
+        continue;
+      }
       a.transferPairIndex = j;
       b.transferPairIndex = i;
       break;
@@ -238,23 +341,46 @@ export async function buildImportPlan(
     const payeeNameById = new Map(payees.map((p) => [p.id, p.name]));
     const payeeNameOf = (t: Transaction): string =>
       t.payeeId ? (payeeNameById.get(t.payeeId) ?? '') : t.notes;
+    const labelOf = (pr: ImportPlanRow): string => pr.row.payeeName ?? pr.row.description ?? '';
+
+    // Each existing transaction may absorb at most ONE file row: a match is
+    // CONSUMED (spliced out of its account's candidate list). Without that,
+    // two legitimate identical rows in one file both match the single
+    // transaction already in the db and both get skipped — real money silently
+    // dropped. Re-importing the same file still skips everything, because N
+    // file rows then face N existing transactions.
+    // Exact matches run first so a near-duplicate can never steal the
+    // transaction an exact re-import needs.
+    const needsNearCheck: ImportPlanRow[] = [];
     for (const pr of dedupeRows) {
+      const candidates = existingByAccount.get(pr.accountId!) ?? [];
+      const hash = makeDedupeHash(pr.accountId!, pr.row.date!, pr.row.amountMinor!, labelOf(pr));
+      const i = candidates.findIndex((t) => t.dedupeHash === hash);
+      if (i >= 0) {
+        pr.action = 'skip_exact_duplicate';
+        candidates.splice(i, 1);
+      } else {
+        needsNearCheck.push(pr);
+      }
+    }
+    for (const pr of needsNearCheck) {
+      const candidates = existingByAccount.get(pr.accountId!) ?? [];
       const result = checkDuplicate(
         {
           accountId: pr.accountId!,
           date: pr.row.date!,
           amountMinor: pr.row.amountMinor!,
-          payeeOrDescription: pr.row.payeeName ?? pr.row.description ?? '',
+          payeeOrDescription: labelOf(pr),
         },
-        existingByAccount.get(pr.accountId!) ?? [],
+        candidates,
         payeeNameOf,
       );
-      if (result.exact) {
-        pr.action = 'skip_exact_duplicate';
-      } else if (result.nearDuplicateOf) {
+      if (result.nearDuplicateOf) {
         pr.action = 'needs_decision';
         pr.nearDuplicateOf = result.nearDuplicateOf;
         pr.decision = 'skip'; // never silently doubled — user must opt in
+        const j = candidates.indexOf(result.nearDuplicateOf);
+        if (j >= 0) candidates.splice(j, 1);
       }
     }
   }
@@ -270,6 +396,7 @@ export async function buildImportPlan(
     exactDuplicateCount: 0,
     nearDuplicateCount: 0,
     errorCount: 0,
+    currencyMismatchCount: 0,
     importableCount: 0,
   };
   refreshPlanCounts(plan);
@@ -290,6 +417,7 @@ export async function commitImport(plan: ImportPlan): Promise<ImportBatch> {
     createdGroupIds: [],
   };
   const payeesTouched = new Set<string>();
+  const decimalStyleFor = decimalStyleDetector(plan.rows.map((pr) => pr.row));
 
   await db.transaction('rw', db.tables, async () => {
     // The batch row goes in FIRST so a crash mid-import is still undoable.
@@ -390,6 +518,25 @@ export async function commitImport(plan: ImportPlan): Promise<ImportBatch> {
 
       const tagIds = row.tags.length > 0 ? (await getOrCreateTags(row.tags)).map((t) => t.id) : [];
 
+      // A transaction's amount is ALWAYS denominated in its ACCOUNT's currency
+      // — saveTransaction enforces it and balances/net worth sum amountMinor
+      // per account with no currency check, so a EUR row banked in a GBP
+      // account would silently corrupt every total. A different currency in
+      // the file describes the purchase, not the ledger (MoneyWiz exports the
+      // account-currency figure in Amount); record it in the notes and never
+      // guess a conversion (SPEC §6).
+      const currency = account.currency;
+      const mismatchedCurrency = row.currency !== null && row.currency !== currency;
+
+      // The account is authoritative for SCALE too: re-derive the amount at
+      // its currency whenever the parser's guess can't be trusted (the preview
+      // can also have changed a new account's currency since the plan was
+      // built). Idempotent — re-deriving an already-correct row is a no-op.
+      let amountMinor = row.amountMinor!;
+      if (needsRescale(row, currency)) {
+        amountMinor = amountAtCurrency(row, currency, decimalStyleFor(currency)) ?? amountMinor;
+      }
+
       // notes := join(description-if-different-from-payee, row.notes, ' — ');
       // an UNPAIRED transfer leg additionally gets '(transfer)' appended.
       const noteParts: string[] = [];
@@ -398,16 +545,14 @@ export async function commitImport(plan: ImportPlan): Promise<ImportBatch> {
       }
       if (row.notes) noteParts.push(row.notes);
       if (row.transferAccountName && !paired) noteParts.push('(transfer)');
-
-      // currency := account currency unless the row explicitly differs
-      const currency = row.currency && row.currency !== account.currency ? row.currency : account.currency;
+      if (mismatchedCurrency) noteParts.push(`originally ${row.currency}`);
 
       const timestamp = nowISO();
       const tx: Transaction = {
         id: uid(),
         accountId: account.id,
         date: row.date!,
-        amountMinor: row.amountMinor!,
+        amountMinor,
         currency,
         payeeId,
         categoryId,
@@ -422,7 +567,7 @@ export async function commitImport(plan: ImportPlan): Promise<ImportBatch> {
         dedupeHash: makeDedupeHash(
           account.id,
           row.date!,
-          row.amountMinor!,
+          amountMinor,
           row.payeeName ?? row.description ?? '',
         ),
         createdAt: timestamp,
@@ -451,11 +596,15 @@ export async function commitImport(plan: ImportPlan): Promise<ImportBatch> {
 }
 
 export async function undoImport(batchId: string): Promise<void> {
+  const payeesTouched = new Set<string>();
+
   await db.transaction('rw', db.tables, async () => {
     const batch = await db.importBatches.get(batchId);
     if (!batch) return;
 
     // 1. the batch's transactions
+    const doomed = await db.transactions.where('importBatchId').equals(batchId).toArray();
+    for (const t of doomed) if (t.payeeId) payeesTouched.add(t.payeeId);
     await db.transactions.where('importBatchId').equals(batchId).delete();
 
     // 2. created accounts with no remaining transactions
@@ -506,7 +655,16 @@ export async function undoImport(batchId: string): Promise<void> {
 
     // 6. sample-batch extras (D19), then groups no account references
     for (const id of batch.createdBudgetIds ?? []) await db.budgets.delete(id);
-    for (const id of batch.createdFxRateIds ?? []) await db.fxRates.delete(id);
+    // An fxRates row has a fixed primary key (`EUR:GBP`), so editing the rate
+    // the sample wrote OVERWRITES it rather than adding a row — after which it
+    // is the user's own rate and deleting it would drop their EUR accounts out
+    // of net worth. Batch-created rates are stamped with the batch's timestamp
+    // (see domain/sample.ts); any later edit moves asOf, which is the proof
+    // that the row is no longer the one this batch created.
+    for (const id of batch.createdFxRateIds ?? []) {
+      const rate = await db.fxRates.get(id);
+      if (rate && rate.asOf === batch.importedAt) await db.fxRates.delete(id);
+    }
     for (const id of batch.createdGroupIds) {
       // groupId is nullable — index lookups can't see null, filter() can
       const used = await db.accounts.filter((a) => a.groupId === id).count();
@@ -516,6 +674,13 @@ export async function undoImport(batchId: string): Promise<void> {
     // 7. finally the batch row itself
     await db.importBatches.delete(batchId);
   });
+
+  // commitImport learned payee → category from what it wrote (D17); undoing it
+  // must un-learn, or a badly categorised import that the user REJECTED keeps
+  // dictating suggestions from transactions that no longer exist.
+  for (const payeeId of payeesTouched) {
+    if (await db.payees.get(payeeId)) await learnPayeeCategory(payeeId);
+  }
 }
 
 export async function listImportBatches(): Promise<ImportBatch[]> {

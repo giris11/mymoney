@@ -48,6 +48,8 @@ export function TagsInput({
     setText('');
   };
 
+  const listOpen = open && suggestions.length > 0;
+
   return (
     <div ref={rootRef} className="relative">
       <div className="flex flex-wrap items-center gap-1.5 rounded-lg border border-border bg-surface px-2 py-1.5">
@@ -86,12 +88,18 @@ export function TagsInput({
             } else if (e.key === 'Backspace' && !text && value.length > 0) {
               onChange(value.slice(0, -1));
             } else if (e.key === 'Escape') {
+              // with nothing showing, Escape belongs to the surrounding dialog;
+              // when the suggestions ARE showing it must not reach the
+              // window-level Modal listener, which would close the whole sheet
+              if (!listOpen) return;
+              e.preventDefault();
+              e.stopPropagation();
               setOpen(false);
             }
           }}
         />
       </div>
-      {open && suggestions.length > 0 && (
+      {listOpen && (
         <ul
           role="listbox"
           aria-label="Tag suggestions"

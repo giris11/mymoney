@@ -225,6 +225,27 @@ describe('fileSignature', () => {
       'date|description|paid out|paid in|balance',
     );
   });
+
+  it('a HEADERLESS file keys on its shape, never on data values', () => {
+    // Two exports of the same headerless bank format, a month apart: the first
+    // row is data, so a value-based signature would never match again.
+    const july = ['01/07/2026', 'TESCO', '-45.60', ''];
+    const august = ['03/08/2026', 'BOOTS', '', '12.00'];
+    expect(fileSignature(july, false)).toBe(fileSignature(august, false));
+    // …and it can't be confused with a real header row of the same width.
+    expect(fileSignature(july, false)).not.toBe(fileSignature(july, true));
+    expect(fileSignature(['Date', 'Payee', 'Out', 'In'], true)).not.toBe(
+      fileSignature(july, false),
+    );
+    // Column count still separates unrelated headerless layouts.
+    expect(fileSignature(['01/07/2026', 'TESCO', '-45.60'], false)).not.toBe(
+      fileSignature(july, false),
+    );
+  });
+
+  it('defaults to header behaviour (existing callers unchanged)', () => {
+    expect(fileSignature(['Date', 'Amount'])).toBe(fileSignature(['Date', 'Amount'], true));
+  });
 });
 
 // -------------------------------------------------------- parseWithMapping
@@ -295,6 +316,42 @@ describe('parseWithMapping', () => {
     expect(rows[0].error).toMatch(/date/i);
     expect(rows[1].error).toMatch(/amount/i);
     expect(rows[2].error).toBeNull();
+  });
+
+  it('keeps the raw amount cell (and how it was signed) for re-derivation', () => {
+    // The account — and so the real currency and minor-unit scale — is not
+    // known during parsing, so the plan re-derives from this text.
+    const data = [
+      ['Date', 'Description', 'Paid Out', 'Paid In'],
+      ['2026-07-01', 'TESCO', '45.60', ''],
+      ['2026-07-02', 'SALARY', '', '2,650.00'],
+      ['2026-07-03', 'ODD', '10.00', '5.00'],
+    ];
+    const map = { ...emptyMapping(), date: 0, payee: 1, debit: 2, credit: 3 };
+    const rows = parseWithMapping(data, map, 'GBP');
+    expect(rows[0]).toMatchObject({ amountText: '45.60', amountRule: 'debit', amountMinor: -4560 });
+    expect(rows[1]).toMatchObject({ amountText: '2,650.00', amountRule: 'as-written' });
+    // Both columns filled ⇒ the amount is a combination, so no single cell
+    // can stand in for it.
+    expect(rows[2].amountText).toBeNull();
+
+    const single = parseWithMapping(
+      [['Date', 'Description', 'Amount'], ['2026-07-01', 'TESCO', '45.60']],
+      { ...emptyMapping(), date: 0, payee: 1, amount: 2, negate: true },
+      'GBP',
+    );
+    expect(single[0]).toMatchObject({ amountText: '45.60', amountRule: 'flip', amountMinor: -4560 });
+  });
+
+  it('decimal-style detection follows the currency it will be read at', () => {
+    // "12.345" is thousands-grouped in a 2-decimal currency but a plain amount
+    // in a 3-decimal one (KWD) — the same column, two honest readings.
+    expect(detectDecimalStyle(['12.345', '9.500'])).toBe('comma');
+    expect(detectDecimalStyle(['12.345', '9.500'], 3)).toBe('dot');
+    // A 0-decimal currency (JPY) can have no decimal separator at all, so any
+    // separator it shows is grouping — and must not blow up the regex.
+    expect(detectDecimalStyle(['1.000', '2.500'], 0)).toBe('comma');
+    expect(detectDecimalStyle(['1,000', '2,500'], 0)).toBe('dot');
   });
 
   it('fixedCurrency fills rows and a currency column overrides it', () => {

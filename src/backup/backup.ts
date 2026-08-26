@@ -10,8 +10,11 @@
 //  * restoring a backup with schemaVersion older than current applies the
 //    necessary upgrades (see upgradeBackupData); newer than current → refuse
 //    with a clear error;
-//  * downloadBackup triggers a JSON file download and stamps
-//    settings.lastBackupAt;
+//  * downloadBackup hands the JSON file to the user and reports whether the
+//    save was OBSERVED, merely delivered, or cancelled — it never stamps
+//    settings.lastBackupAt itself (D30);
+//  * markBackupSaved is the only writer of settings.lastBackupAt: call it for
+//    an observed save, or when the user confirms the file landed;
 //  * nudge: due when transactions exist and lastBackupAt is null or >7 days
 //    ago (SPEC §8.1.9).
 import { ALL_TABLES, db, getSettings, SCHEMA_VERSION, updateSettings } from '../db/db';
@@ -143,19 +146,88 @@ export async function restoreBackup(file: BackupFile): Promise<void> {
   });
 }
 
-/** Browser-only: create the file and hand it to the user; updates lastBackupAt. */
-export async function downloadBackup(): Promise<void> {
+/**
+ * What actually happened to the file (D30):
+ *  * 'saved' — the browser confirmed the bytes were written to a location the
+ *    user chose. The only outcome we can honestly call a backup.
+ *  * 'delivered' — the file was handed to the browser's downloader, which
+ *    reports nothing back: it may be on disk, or the user may have cancelled
+ *    the "where to save?" dialog, or the download may have been blocked. The
+ *    caller must ask the user before recording it.
+ *  * 'cancelled' — the user dismissed the save dialog; nothing was written.
+ */
+export type BackupSaveResult = 'saved' | 'delivered' | 'cancelled';
+
+interface SaveFilePickerWindow {
+  showSaveFilePicker?: (options: {
+    suggestedName?: string;
+    types?: { description: string; accept: Record<string, string[]> }[];
+  }) => Promise<{
+    createWritable: () => Promise<{
+      write: (data: string) => Promise<void>;
+      close: () => Promise<void>;
+    }>;
+  }>;
+}
+
+const isAbort = (e: unknown): boolean =>
+  typeof e === 'object' && e !== null && (e as { name?: unknown }).name === 'AbortError';
+
+/**
+ * File System Access API path (Chrome/Edge desktop): the write resolving is
+ * proof the file exists, and a cancel is reported instead of being invisible.
+ * Returns 'unsupported' when the API is absent or refused up front, so the
+ * caller falls back to the <a download> path. A failing WRITE throws — a
+ * half-written backup must surface as an error, not a shrug.
+ */
+async function saveViaFilePicker(
+  json: string,
+  fileName: string,
+): Promise<BackupSaveResult | 'unsupported'> {
+  if (typeof window === 'undefined') return 'unsupported';
+  const picker = (window as unknown as SaveFilePickerWindow).showSaveFilePicker;
+  if (typeof picker !== 'function') return 'unsupported';
+  let handle;
+  try {
+    handle = await picker.call(window, {
+      suggestedName: fileName,
+      types: [{ description: 'MyMoney backup', accept: { 'application/json': ['.json'] } }],
+    });
+  } catch (e) {
+    if (isAbort(e)) return 'cancelled';
+    return 'unsupported'; // blocked (e.g. permissions policy) — try the anchor
+  }
+  const writable = await handle.createWritable();
+  await writable.write(json);
+  await writable.close();
+  return 'saved';
+}
+
+/**
+ * Browser-only: build the snapshot and hand it to the user. Deliberately does
+ * NOT touch settings.lastBackupAt — a browser cannot tell us that an
+ * <a download> reached the disk, and telling someone they have a backup they
+ * do not have is the worst failure this app can have (SPEC §9). Callers stamp
+ * via markBackupSaved() on 'saved', or after the user confirms a 'delivered'
+ * file arrived.
+ */
+export async function downloadBackup(): Promise<BackupSaveResult> {
   if (typeof document === 'undefined' || typeof Blob === 'undefined') {
     // Guarded so importing (and calling by mistake) in Node tests is safe.
     throw new Error('downloadBackup requires a browser environment');
   }
   const json = serializeBackup(await exportBackup());
+  const fileName = `mymoney-backup-${todayISO()}.json`;
+
+  const picked = await saveViaFilePicker(json, fileName);
+  if (picked !== 'unsupported') return picked;
+
   const blob = new Blob([json], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   try {
     const a = document.createElement('a');
     a.href = url;
-    a.download = `mymoney-backup-${todayISO()}.json`;
+    a.download = fileName;
     a.rel = 'noopener';
     document.body.appendChild(a);
     a.click();
@@ -164,7 +236,16 @@ export async function downloadBackup(): Promise<void> {
     // Delay revocation: some browsers (Safari) start the download async.
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
-  await updateSettings({ lastBackupAt: nowISO() });
+  return 'delivered';
+}
+
+/**
+ * Record a backup that actually landed — either observed by the browser or
+ * confirmed by the user. The single writer of settings.lastBackupAt, so the
+ * 7-day nudge can never be reset by an unverified export (D30).
+ */
+export async function markBackupSaved(when: string = nowISO()): Promise<void> {
+  await updateSettings({ lastBackupAt: when });
 }
 
 export interface BackupNudge {

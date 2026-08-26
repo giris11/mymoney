@@ -10,7 +10,8 @@
 //    negatives, and decimal commas (auto-detected per file).
 //  * Date format auto-detected by scanning the WHOLE column (any first
 //    component >12 ⇒ DMY, any middle >12 ⇒ MDY, 4-digit lead ⇒ YMD; ambiguous
-//    ⇒ DMY per en-GB).
+//    ⇒ DMY per en-GB) — and overridable by the caller (D20), since an
+//    all-ambiguous US export is indistinguishable from an en-GB one.
 //  * Rows whose Transfers column names another account are transfer legs;
 //    the importer pairs them by (date, ±amount, account↔account).
 import {
@@ -26,6 +27,9 @@ export interface MoneyWizParseResult {
   rows: ParsedRow[];
   headers: string[];
   warnings: string[];
+  /** What auto-detection made of the Date column — reported even when the
+   * caller forced a format, so the UI can show what it would have picked. */
+  detectedDateFormat: 'DMY' | 'MDY' | 'YMD';
 }
 
 type MwField =
@@ -86,7 +90,16 @@ export function isMoneyWizCsv(headers: string[]): boolean {
 const splitTags = (v: string): string[] =>
   v ? v.split(/[;,]/).map((t) => t.trim()).filter(Boolean) : [];
 
-export function parseMoneyWizCsv(text: string): MoneyWizParseResult {
+/**
+ * `dateFormat` overrides the auto-detection. An all-ambiguous column (every
+ * value ≤12/12) is indistinguishable between dd/mm and mm/dd, so D20 picks
+ * en-GB dd/mm and the caller must be able to correct it — a US MM/DD export
+ * would otherwise import every date transposed with no way to fix it.
+ */
+export function parseMoneyWizCsv(
+  text: string,
+  dateFormat: 'auto' | 'DMY' | 'MDY' | 'YMD' = 'auto',
+): MoneyWizParseResult {
   const { data, errors } = parseCsv(text);
   const warnings: string[] = [...errors];
   const headers = (data[0] ?? []).map((h) => h.trim());
@@ -98,7 +111,8 @@ export function parseMoneyWizCsv(text: string): MoneyWizParseResult {
     i >= 0 && i < r.length ? (r[i] ?? '').trim() : '';
 
   // Column-level detection, ONCE per file.
-  const dateFmt = detectDateFormat(raw.map((r) => cell(r, cols.date)));
+  const detectedDateFormat = detectDateFormat(raw.map((r) => cell(r, cols.date)));
+  const dateFmt = dateFormat === 'auto' ? detectedDateFormat : dateFormat;
   const decimal = detectDecimalStyle(raw.map((r) => cell(r, cols.amount)));
   // ' > ' is the MoneyWiz path separator; '/' fallback ONLY when no '>' occurs
   // anywhere in the column (a file using '/' paths never contains '>').
@@ -111,7 +125,9 @@ export function parseMoneyWizCsv(text: string): MoneyWizParseResult {
     const date = dateRaw ? parseDateString(dateRaw, dateFmt) : null;
     const amountRaw = cell(r, cols.amount);
     // Minor-unit scale needs a currency; rows without one use the 2-decimal
-    // default (GBP) — the importer later assigns account/default currency.
+    // default (GBP). This is a GUESS — the account isn't known here — so the
+    // raw text travels with the row and buildImportPlan re-derives the amount
+    // at the account's real currency (¥/KWD scales differ from 2 decimals).
     const amountMinor = amountRaw ? parseImportAmount(amountRaw, currency ?? 'GBP', decimal) : null;
     let error: string | null = null;
     if (date === null) error = `Unrecognised date “${dateRaw}”`;
@@ -136,6 +152,8 @@ export function parseMoneyWizCsv(text: string): MoneyWizParseResult {
       tags: splitTags(cell(r, cols.tags)),
       notes: cell(r, cols.memo) || null,
       transferAccountName: cell(r, cols.transfers) || null,
+      amountText: amountRaw || null,
+      amountRule: 'as-written',
       error,
     };
   });
@@ -159,5 +177,5 @@ export function parseMoneyWizCsv(text: string): MoneyWizParseResult {
     warnings.push('No Currency column — amounts assume the account/base currency');
   }
 
-  return { rows, headers, warnings };
+  return { rows, headers, warnings, detectedDateFormat };
 }

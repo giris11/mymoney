@@ -161,6 +161,34 @@ export function Field({
 }
 
 // ---------------------------------------------------------------- Segmented
+/**
+ * Where the focus goes for a radiogroup key press (WAI-ARIA radio pattern):
+ * arrows wrap around, Home/End jump to the ends, anything else is not ours.
+ * `current` is the index of the focused option (-1 if none).
+ */
+export function radioGroupNextIndex(
+  key: string,
+  current: number,
+  count: number,
+): number | null {
+  if (count <= 0) return null;
+  const at = current >= 0 && current < count ? current : -1;
+  switch (key) {
+    case 'ArrowRight':
+    case 'ArrowDown':
+      return at < 0 ? 0 : (at + 1) % count;
+    case 'ArrowLeft':
+    case 'ArrowUp':
+      return at < 0 ? count - 1 : (at - 1 + count) % count;
+    case 'Home':
+      return 0;
+    case 'End':
+      return count - 1;
+    default:
+      return null;
+  }
+}
+
 export function Segmented<T extends string>({
   options,
   value,
@@ -174,19 +202,37 @@ export function Segmented<T extends string>({
   label: string;
   className?: string;
 }) {
+  const refs = useRef<(HTMLButtonElement | null)[]>([]);
+  const selectedIndex = options.findIndex((o) => o.value === value);
+  // Roving tabindex: a radiogroup is ONE tab stop; arrows move and select
+  // (SPEC §9 — a screen reader announces "1 of 3" and expects arrows to work).
+  const tabbableIndex = selectedIndex < 0 ? 0 : selectedIndex;
   return (
     <div
       role="radiogroup"
       aria-label={label}
       className={cn('inline-flex rounded-lg border border-border bg-surface2 p-0.5', className)}
     >
-      {options.map((o) => (
+      {options.map((o, i) => (
         <button
           key={o.value}
+          ref={(el) => {
+            refs.current[i] = el;
+          }}
           type="button"
           role="radio"
           aria-checked={value === o.value}
+          tabIndex={i === tabbableIndex ? 0 : -1}
           onClick={() => onChange(o.value)}
+          onKeyDown={(e) => {
+            const next = radioGroupNextIndex(e.key, i, options.length);
+            if (next === null) return;
+            e.preventDefault();
+            const opt = options[next];
+            if (!opt) return;
+            onChange(opt.value);
+            refs.current[next]?.focus();
+          }}
           className={cn(
             'rounded-md px-3 py-1.5 text-sm transition-colors cursor-pointer',
             value === o.value ? 'bg-surface text-text shadow-sm font-medium' : 'text-muted hover:text-text',
@@ -200,6 +246,35 @@ export function Segmented<T extends string>({
 }
 
 // ---------------------------------------------------------------- Modal
+// Dialogs stack: a ConfirmDialog opened from an editor mounts as a *sibling*
+// Modal, and each one used to close itself on any window-level Escape — so one
+// Escape backing out of "Delete?" also closed the editor and binned the user's
+// unsaved edits. Every open Modal registers a token here; only the topmost one
+// reacts to Escape.
+const modalStack: object[] = [];
+/** Exported for tests — treat as internal to Modal. */
+export function pushModalToken(token: object): void {
+  removeModalToken(token);
+  modalStack.push(token);
+}
+export function removeModalToken(token: object): void {
+  const i = modalStack.lastIndexOf(token);
+  if (i >= 0) modalStack.splice(i, 1);
+}
+export function isTopModalToken(token: object): boolean {
+  return modalStack.length > 0 && modalStack[modalStack.length - 1] === token;
+}
+
+const FOCUSABLE_SELECTOR =
+  'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+function focusablesIn(panel: HTMLElement): HTMLElement[] {
+  return Array.from(panel.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter(
+    // tabIndex >= 0 keeps roving-tabindex members (Segmented) out of the tab
+    // order, exactly as the browser would; rects rule out hidden controls
+    (el) => el.tabIndex >= 0 && el.getClientRects().length > 0,
+  );
+}
+
 export function Modal({
   open,
   onClose,
@@ -216,10 +291,47 @@ export function Modal({
   wide?: boolean;
 }) {
   const panelRef = useRef<HTMLDivElement>(null);
+  const tokenRef = useRef<object>({});
+  // Callers pass inline arrows, so onClose changes identity on every render;
+  // keeping it in a ref lets the effect depend on `open` alone — re-running it
+  // would re-register the modal and push a *lower* dialog back to the top.
+  const onCloseRef = useRef(onClose);
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  });
   useEffect(() => {
     if (!open) return;
+    const token = tokenRef.current;
+    pushModalToken(token);
+    const opener = document.activeElement as HTMLElement | null;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      if (!isTopModalToken(token)) return; // stacked dialogs: topmost only
+      if (e.key === 'Escape') {
+        onCloseRef.current();
+        return;
+      }
+      if (e.key !== 'Tab') return;
+      // Keep Tab inside the dialog — without this, Shift+Tab off the first
+      // control lands on the page behind the backdrop (SPEC §9).
+      const panel = panelRef.current;
+      if (!panel) return;
+      const items = focusablesIn(panel);
+      if (items.length === 0) {
+        e.preventDefault();
+        panel.focus();
+        return;
+      }
+      const first = items[0];
+      const last = items[items.length - 1];
+      const active = document.activeElement as HTMLElement | null;
+      const inside = !!active && panel.contains(active);
+      if (e.shiftKey && (!inside || active === first)) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && (!inside || active === last)) {
+        e.preventDefault();
+        first.focus();
+      }
     };
     window.addEventListener('keydown', onKey);
     // move focus into the dialog
@@ -232,8 +344,12 @@ export function Modal({
     return () => {
       window.removeEventListener('keydown', onKey);
       clearTimeout(t);
+      removeModalToken(token);
+      // hand focus back to whatever opened the dialog rather than dropping it
+      // on <body>, where the next Tab restarts at the top of the page
+      if (opener?.isConnected) opener.focus();
     };
-  }, [open, onClose]);
+  }, [open]);
 
   if (!open) return null;
   return createPortal(
@@ -359,6 +475,16 @@ export function Amount({
 }
 
 /**
+ * The single rule MoneyInput reports by: whatever is visible in the field,
+ * read in the field's *current* currency. Exported so the currency-switch
+ * behaviour is testable — "5.00" is 500 minor in GBP and not a valid JPY
+ * amount at all.
+ */
+export function moneyTextToMinor(text: string, currency: string): number | null {
+  return text.trim() === '' ? null : parseAmountToMinor(text, currency);
+}
+
+/**
  * Amount input working in minor units. Shows/edits a decimal string; reports
  * integer minor units (or null while invalid/empty) via onValue.
  */
@@ -383,12 +509,33 @@ export function MoneyInput({
 }) {
   const [text, setText] = useState(valueMinor === null ? '' : formatMinorPlain(valueMinor, currency));
   const lastReported = useRef(valueMinor);
-  // adopt external changes (e.g. form reset)
+  const lastCurrency = useRef(currency);
+  // the effect needs the text as it is *now*, without re-running per keystroke
+  const textRef = useRef(text);
+  const putText = (t: string) => {
+    textRef.current = t;
+    setText(t);
+  };
   useEffect(() => {
+    const currencyChanged = currency !== lastCurrency.current;
+    lastCurrency.current = currency;
+    // adopt external changes (e.g. form reset) — an explicit new value wins
     if (valueMinor !== lastReported.current) {
-      setText(valueMinor === null ? '' : formatMinorPlain(valueMinor, currency));
+      putText(valueMinor === null ? '' : formatMinorPlain(valueMinor, currency));
       lastReported.current = valueMinor;
+      return;
     }
+    if (!currencyChanged) return;
+    // Same digits, different currency = a different amount: "5.00" typed
+    // against a GBP account is 500 minor, but as JPY it is not an amount at
+    // all. Re-derive from what the user can see so the stored value can never
+    // silently drift from the display (100× errors on GBP→JPY).
+    const parsed = moneyTextToMinor(textRef.current, currency);
+    if (parsed === lastReported.current) return;
+    lastReported.current = parsed;
+    onValue(parsed);
+    // deliberately NOT depending on onValue: callers pass inline arrows, and
+    // re-running on every render would let a stale prop overwrite live typing
   }, [valueMinor, currency]);
   return (
     <Input
@@ -401,8 +548,8 @@ export function MoneyInput({
       value={text}
       onChange={(e) => {
         const t = e.target.value;
-        setText(t);
-        const parsed = t.trim() === '' ? null : parseAmountToMinor(t, currency);
+        putText(t);
+        const parsed = moneyTextToMinor(t, currency);
         lastReported.current = parsed;
         onValue(parsed);
       }}

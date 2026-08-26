@@ -25,8 +25,26 @@ export default function ImportsSection() {
   const batches = useLive(() => listImportBatches(), []);
   const sampleBatch = useLive(() => sampleDataBatchId(), []);
   const [wizardOpen, setWizardOpen] = useState(false);
+  // The wizard holds an unwritten import once a file is loaded; a backdrop
+  // click must not silently throw that away (half-decided near-duplicates and
+  // all). The wizard tells us when it has work worth protecting.
+  const [wizardDirty, setWizardDirty] = useState(false);
+  const [discardOpen, setDiscardOpen] = useState(false);
   const [undoTarget, setUndoTarget] = useState<ImportBatch | null>(null);
   const [busy, setBusy] = useState(false);
+
+  const closeWizard = () => {
+    setDiscardOpen(false);
+    setWizardDirty(false);
+    setWizardOpen(false);
+  };
+  const requestCloseWizard = () => {
+    // Escape reaches both dialogs at once; while confirming, the wizard's own
+    // dismissal is a no-op so the confirmation isn't immediately re-triggered.
+    if (discardOpen) return;
+    if (wizardDirty) setDiscardOpen(true);
+    else closeWizard();
+  };
 
   // The sample batch has its own block below — keep it out of the history list.
   const history = (batches ?? []).filter((b) => b.source !== 'sample');
@@ -135,26 +153,32 @@ export default function ImportsSection() {
         </div>
       </Card>
 
-      <Modal
-        open={wizardOpen}
-        onClose={() => setWizardOpen(false)}
-        title="Import transactions"
-        wide
-      >
+      <Modal open={wizardOpen} onClose={requestCloseWizard} title="Import transactions" wide>
         <Suspense
           fallback={<p className="py-10 text-center text-sm text-muted">Loading importer…</p>}
         >
           {wizardOpen && (
             <ImportWizard
               onDone={() => {
-                setWizardOpen(false);
+                closeWizard();
                 toast('Import complete', 'success');
               }}
-              onCancel={() => setWizardOpen(false)}
+              onCancel={closeWizard}
+              onDirtyChange={setWizardDirty}
             />
           )}
         </Suspense>
       </Modal>
+
+      <ConfirmDialog
+        open={discardOpen}
+        title="Discard this import?"
+        danger
+        confirmLabel="Discard import"
+        message="Nothing has been saved yet — closing now discards the file you loaded and every decision you have made about it."
+        onConfirm={closeWizard}
+        onCancel={() => setDiscardOpen(false)}
+      />
 
       <ConfirmDialog
         open={undoTarget !== null}

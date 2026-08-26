@@ -112,10 +112,22 @@ export function parseDateString(
 
 const countOf = (s: string, ch: string): number => s.split(ch).length - 1;
 
-/** Detect '1,234.56' vs '1.234,56' style from a column of samples. */
-export function detectDecimalStyle(values: string[]): 'dot' | 'comma' {
+/**
+ * Detect '1,234.56' vs '1.234,56' style from a column of samples.
+ *
+ * `decimals` is how many decimal places the target currency actually has,
+ * because that decides what a trailing group can be: "12.345" is thousands-
+ * grouped in a 2-decimal currency but a plain amount in a 3-decimal one (KWD),
+ * and a 0-decimal currency (JPY) can have no decimal separator at all — every
+ * separator it shows is grouping.
+ */
+export function detectDecimalStyle(values: string[], decimals = 2): 'dot' | 'comma' {
   let comma = 0;
   let dot = 0;
+  const isDecimalTail = (s: string, sep: '.' | ','): boolean =>
+    decimals > 0 &&
+    countOf(s, sep) === 1 &&
+    new RegExp(`\\d\\${sep}\\d{1,${decimals}}$`).test(s);
   for (const raw of values) {
     const s = (raw ?? '').replace(/[^\d.,]/g, '');
     if (!s) continue;
@@ -128,10 +140,10 @@ export function detectDecimalStyle(values: string[]): 'dot' | 'comma' {
     } else if (hasC) {
       // ',' + 1–2 trailing digits ⇒ decimal comma ('45,67'); ',' + 3 digits or
       // repeated commas ⇒ thousands grouping ('1,234', '1,234,567') ⇒ dot.
-      if (/\d,\d{1,2}$/.test(s) && countOf(s, ',') === 1) comma++;
+      if (isDecimalTail(s, ',')) comma++;
       else dot++;
     } else if (hasD) {
-      if (/\d\.\d{1,2}$/.test(s) && countOf(s, '.') === 1) dot++;
+      if (isDecimalTail(s, '.')) dot++;
       else comma++; // dot-thousands like '1.234' ⇒ comma-style file
     }
   }
@@ -298,8 +310,20 @@ export function guessMapping(headers: string[], sampleRows: string[][]): ColumnM
   return map;
 }
 
-/** Stable signature of a header row — key for saved mappings (SPEC §7.2). */
-export function fileSignature(headers: string[]): string {
+/**
+ * Stable signature of a file — key for saved mappings (SPEC §7.2).
+ *
+ * With a header row the headers ARE the signature. A headerless export has no
+ * such key: `headers` is then the first DATA row, and keying on it would mint
+ * a new signature every month (different dates, payees, amounts), so a saved
+ * mapping could never be reused. Fall back to the column count — the one
+ * property of a bank's headerless layout that doesn't vary row to row.
+ * Per-column "shape" (date-ish/amount-ish) is deliberately NOT used: a debit/
+ * credit file leaves one of the two cells empty on any given row, so the shape
+ * flips between exports of the same file format.
+ */
+export function fileSignature(headers: string[], headerRow = true): string {
+  if (!headerRow) return `nohdr:${headers.length}`;
   return headers.map((h) => h.trim().toLowerCase()).join('|');
 }
 
@@ -360,9 +384,22 @@ export function parseWithMapping(
     if (date === null) error = mapping.date >= 0 ? `Unrecognised date “${dateRaw}”` : 'No date column mapped';
 
     let amountMinor: number | null = null;
+    // The raw cell + how it was signed, so buildImportPlan can re-derive the
+    // amount at the account's real currency (minorCurrency is a guess here —
+    // the account isn't known during parsing).
+    let amountText: string | null = null;
+    let amountRule: ParsedRow['amountRule'] = 'as-written';
     if (mapping.debit >= 0 || mapping.credit >= 0) {
       const debitRaw = cell(r, mapping.debit);
       const creditRaw = cell(r, mapping.credit);
+      // Only a single cell can be re-derived later; when BOTH are filled the
+      // amount is a combination of two cells, so leave amountText null.
+      if (debitRaw && !creditRaw) {
+        amountText = debitRaw;
+        amountRule = 'debit';
+      } else if (creditRaw && !debitRaw) {
+        amountText = creditRaw;
+      }
       const debit = debitRaw ? parseImportAmount(debitRaw, minorCurrency, decimal) : 0;
       const credit = creditRaw ? parseImportAmount(creditRaw, minorCurrency, decimal) : 0;
       if (debit === null || credit === null) {
@@ -374,6 +411,8 @@ export function parseWithMapping(
       }
     } else if (mapping.amount >= 0) {
       const amountRaw = cell(r, mapping.amount);
+      amountText = amountRaw || null;
+      amountRule = mapping.negate ? 'flip' : 'as-written';
       const parsed = amountRaw ? parseImportAmount(amountRaw, minorCurrency, decimal) : null;
       if (parsed === null) error ??= `Unrecognised amount “${amountRaw}”`;
       else amountMinor = mapping.negate ? -parsed : parsed; // negate: single-column only
@@ -393,6 +432,8 @@ export function parseWithMapping(
       tags: splitTags(cell(r, mapping.tags)),
       notes: cell(r, mapping.notes) || null,
       transferAccountName: null, // generic CSVs have no transfers column
+      amountText,
+      amountRule,
       error,
     };
   });

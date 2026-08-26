@@ -7,6 +7,7 @@ import {
   CURRENT_SCHEMA_VERSION,
   downloadBackup,
   exportBackup,
+  markBackupSaved,
   restoreBackup,
   serializeBackup,
   validateBackup,
@@ -450,11 +451,140 @@ describe('restoreBackup atomicity', () => {
 
 // ---------------------------------------------------------------- download
 
+/**
+ * downloadBackup is browser-only, so these tests install the minimum browser
+ * surface it touches on globalThis and always remove it again (the Node-guard
+ * test below depends on `document` being absent).
+ */
+async function withBrowser<T>(
+  opts: { picker?: 'saved' | 'cancelled' | 'blocked' | 'write-fails' },
+  fn: (seen: { clicks: number; written: string[] }) => Promise<T>,
+): Promise<T> {
+  const seen = { clicks: 0, written: [] as string[] };
+  const anchor = {
+    href: '',
+    download: '',
+    rel: '',
+    click: () => {
+      seen.clicks += 1;
+    },
+    remove: () => {},
+  };
+  const win: Record<string, unknown> = {};
+  if (opts.picker) {
+    win.showSaveFilePicker = async () => {
+      if (opts.picker === 'cancelled') {
+        const err = new Error('The user aborted a request.');
+        err.name = 'AbortError';
+        throw err;
+      }
+      if (opts.picker === 'blocked') throw new Error('Blocked by permissions policy');
+      return {
+        createWritable: async () => ({
+          write: async (data: string) => {
+            if (opts.picker === 'write-fails') throw new Error('Disk full');
+            seen.written.push(data);
+          },
+          close: async () => {},
+        }),
+      };
+    };
+  }
+  const g = globalThis as unknown as Record<string, unknown>;
+  g.window = win;
+  g.document = { createElement: () => anchor, body: { appendChild: () => {} } };
+  try {
+    return await fn(seen);
+  } finally {
+    delete g.window;
+    delete g.document;
+  }
+}
+
 describe('downloadBackup', () => {
   it('refuses cleanly outside a browser and does not stamp lastBackupAt', async () => {
     await seedAll();
     await expect(downloadBackup()).rejects.toThrow(/browser/);
     expect((await getSettings()).lastBackupAt).toBe(null);
+  });
+
+  it('an <a download> is only "delivered": no lastBackupAt, nudge stays due', async () => {
+    await seedAll();
+    const result = await withBrowser({}, async (seen) => {
+      const r = await downloadBackup();
+      expect(seen.clicks).toBe(1); // the file was handed to the browser
+      return r;
+    });
+    // The browser reports nothing back, so nothing may be recorded: a
+    // cancelled "where to save?" dialog must not look like a backup.
+    expect(result).toBe('delivered');
+    expect((await getSettings()).lastBackupAt).toBe(null);
+    expect((await backupNudgeState()).due).toBe(true);
+  });
+
+  it('a file-picker save is observed: reports "saved" with the real snapshot', async () => {
+    await seedAll();
+    const { result, written } = await withBrowser({ picker: 'saved' }, async (seen) => {
+      const r = await downloadBackup();
+      expect(seen.clicks).toBe(0); // no anchor fallback when the picker worked
+      return { result: r, written: seen.written };
+    });
+    expect(result).toBe('saved');
+    // The bytes handed over are a complete, restorable backup.
+    const parsed: unknown = JSON.parse(written[0]);
+    const check = validateBackup(parsed);
+    expect(check.ok).toBe(true);
+    expect((parsed as BackupFile).tables.transactions).toHaveLength(seedTransactions.length);
+    // Even an observed save is recorded by the caller, never here.
+    expect((await getSettings()).lastBackupAt).toBe(null);
+  });
+
+  it('a cancelled file picker reports "cancelled" and writes nothing', async () => {
+    await seedAll();
+    const result = await withBrowser({ picker: 'cancelled' }, async (seen) => {
+      const r = await downloadBackup();
+      expect(seen.clicks).toBe(0); // cancelling means cancelled — no silent retry
+      return r;
+    });
+    expect(result).toBe('cancelled');
+    expect((await getSettings()).lastBackupAt).toBe(null);
+    expect((await backupNudgeState()).due).toBe(true);
+  });
+
+  it('falls back to the anchor when the file picker is blocked', async () => {
+    await seedAll();
+    const result = await withBrowser({ picker: 'blocked' }, async (seen) => {
+      const r = await downloadBackup();
+      expect(seen.clicks).toBe(1);
+      return r;
+    });
+    expect(result).toBe('delivered');
+  });
+
+  it('a failed write surfaces as an error rather than a silent success', async () => {
+    await seedAll();
+    await withBrowser({ picker: 'write-fails' }, async () => {
+      await expect(downloadBackup()).rejects.toThrow(/Disk full/);
+    });
+    expect((await getSettings()).lastBackupAt).toBe(null);
+  });
+});
+
+describe('markBackupSaved', () => {
+  it('is what records a backup, and clears the nudge', async () => {
+    await seedAll();
+    expect((await backupNudgeState()).due).toBe(true);
+    await markBackupSaved();
+    const settings = await getSettings();
+    expect(settings.lastBackupAt).not.toBe(null);
+    expect(Date.now() - Date.parse(settings.lastBackupAt!)).toBeLessThan(60_000);
+    expect((await backupNudgeState()).due).toBe(false);
+  });
+
+  it('accepts an explicit timestamp', async () => {
+    await seedAll();
+    await markBackupSaved('2026-08-20T09:00:00.000Z');
+    expect((await getSettings()).lastBackupAt).toBe('2026-08-20T09:00:00.000Z');
   });
 });
 
