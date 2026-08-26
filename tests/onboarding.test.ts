@@ -92,7 +92,7 @@ describe('createAccountsAndSettings is idempotent', () => {
     await createAccountsAndSettings(freshRows(), 'GBP');
     const imported: Account = {
       id: 'imported-1',
-      name: 'Barclays (from MoneyWiz)',
+      name: 'Northwind Bank (from MoneyWiz)',
       type: 'current',
       currency: 'GBP',
       openingBalanceMinor: 4567,

@@ -7,17 +7,25 @@ import { useMemo, useReducer, useState, type ReactNode } from 'react';
 import { db } from '../../db/db';
 import { useLive } from '../../db/useLive';
 import { formatDate, nameKey } from '../../lib/util';
+import { formatMinor } from '../../money/money';
 import { refreshPlanCounts } from '../../import/importer';
 import type { ImportPlan, ImportPlanRow, NewAccountPlan } from '../../import/types';
 import { CategoryPicker } from '../kit/CategoryPicker';
 import { IconTransfer } from '../kit/icons';
 import { Amount, Button, Card, Checkbox, Chip, Segmented } from '../kit/kit';
+import { AccountBalancesPanel } from './AccountBalancesPanel';
 import { ChipList, Disclosure, StatChip, WizardFooter, plural } from './bits';
+import {
+  plannedOpeningMinor,
+  reportAccountLines,
+  type ReportAccount,
+} from './reportFormat';
 import {
   DATE_FORMAT_OPTIONS,
   currencyMismatchNote,
   dateFormatLabel,
   exampleDateUnder,
+  willImportRow,
   type ImportDateFormat,
 } from './wizardLogic';
 
@@ -47,6 +55,7 @@ export function PreviewStep({
   dateFormat,
   sampleDate,
   onDateFormat,
+  reportAccounts,
   busy,
   onBack,
   onCommit,
@@ -63,6 +72,10 @@ export function PreviewStep({
   /** A real date cell from the file, spelled out under `dateFormat`. */
   sampleDate?: string | null;
   onDateFormat?: (fmt: ImportDateFormat) => void;
+  /** MoneyWiz *Report* layout only: one summary per account in the file
+   *  (name, currency, closing balance, derived opening balance). Null for
+   *  every other format — the accounts panel is what a report import is for. */
+  reportAccounts?: ReportAccount[] | null;
   busy: boolean;
   onBack: () => void;
   onCommit: () => void;
@@ -90,14 +103,9 @@ export function PreviewStep({
           ?.currency) ??
     baseCurrency;
 
-  /** Display-only mirror of the engine's effective-import rule. */
-  const willImport = (pr: ImportPlanRow): boolean => {
-    if (pr.action === 'error' || pr.action === 'skip_exact_duplicate') return false;
-    if (pr.action === 'needs_decision' && pr.decision !== 'import') return false;
-    if (pr.accountId) return true;
-    const na = plan.newAccounts.find((n) => nameKey(n.name) === nameKey(pr.row.accountName ?? ''));
-    return na?.create === true;
-  };
+  /** Display-only mirror of the engine's effective-import rule (shared with
+   *  the accounts panel, which sums exactly these rows — see wizardLogic). */
+  const willImport = (pr: ImportPlanRow): boolean => willImportRow(plan, pr);
 
   const decide = (pr: ImportPlanRow, d: 'import' | 'skip') => {
     pr.decision = d;
@@ -124,6 +132,27 @@ export function PreviewStep({
   const dateExample = dateFormat ? exampleDateUnder(sampleDate ?? null, dateFormat) : null;
   const currencyNote = currencyMismatchNote(plan.currencyMismatchCount);
   const unpairedNote = unpairedTransferNote(plan.unpairedTransferCount);
+
+  // Which of the file's accounts we already have. Taken from the database AND
+  // from the plan (a row that resolved to an accountId matched an existing
+  // account), so the panel is right on the first paint too — before the live
+  // account query has come back, the plan alone still knows.
+  const existingAccountKeys = useMemo(() => {
+    const keys = new Set<string>();
+    for (const a of accounts ?? []) keys.add(nameKey(a.name));
+    for (const pr of plan.rows) {
+      if (pr.accountId && pr.row.accountName) keys.add(nameKey(pr.row.accountName));
+    }
+    return keys;
+  }, [accounts, plan]);
+
+  // Deliberately NOT memoised on `plan`: the plan is mutated in place by this
+  // screen (untick an account, decide a near-duplicate) and only force() tells
+  // us. These lines must move when those numbers move, or the balances shown
+  // would be the ones from before the user's last click.
+  const accountLines = reportAccounts
+    ? reportAccountLines(reportAccounts, plan, existingAccountKeys, baseCurrency)
+    : [];
 
   const nearRows = plan.rows.filter((pr) => pr.action === 'needs_decision');
   const errorRows = plan.rows.filter((pr) => pr.action === 'error');
@@ -205,9 +234,23 @@ export function PreviewStep({
       {plan.source === 'moneywiz' && (
         <Card className="p-3">
           <p className="text-sm font-medium text-text">
-            MoneyWiz export detected{' '}
-            <span className="font-normal text-muted">— {plural(plan.rows.length, 'row')}</span>
+            {reportAccounts
+              ? 'MoneyWiz report export detected'
+              : 'MoneyWiz export detected'}{' '}
+            <span className="font-normal text-muted">
+              —{' '}
+              {reportAccounts
+                ? `${plural(reportAccounts.length, 'account')}, ${plural(plan.rows.length, 'transaction')}`
+                : plural(plan.rows.length, 'row')}
+            </span>
           </p>
+          {reportAccounts && (
+            <p className="mt-1 text-xs text-muted">
+              This layout states a closing balance for each account, so each account’s opening
+              balance is worked out from it — closing balance minus that account’s transactions.
+              Check the balances below before importing.
+            </p>
+          )}
           {dateFormat && onDateFormat && (
             <div className="mt-1.5">
               <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted">
@@ -290,25 +333,42 @@ export function PreviewStep({
         {currencyNote && <p className="mt-1.5 text-sm text-warn">{currencyNote}</p>}
       </div>
 
+      {/* A report export is imported FOR its balances, so they come before the
+          entity lists — this is the panel to read, not scroll past. */}
+      {accountLines.length > 0 && (
+        <AccountBalancesPanel
+          lines={accountLines}
+          existingWithOpeningBalance={plan.existingAccountsWithOpeningBalance}
+        />
+      )}
+
       {newEntityCount > 0 && (
         <section aria-label="New entities" className="flex flex-col gap-2">
           <h3 className="text-sm font-semibold text-text">Will be created</h3>
           {plan.newAccounts.length > 0 && (
             <Disclosure title="New accounts" count={plan.newAccounts.length} defaultOpen>
               <div className="flex flex-col gap-1.5">
-                {plan.newAccounts.map((na) => (
-                  <Checkbox
-                    key={na.name}
-                    checked={na.create}
-                    onChange={(v) => toggleAccount(na, v)}
-                    label={
-                      <span className="flex items-center gap-1.5">
-                        Create <span className="font-medium">{na.name}</span>
-                        <Chip>{na.currency}</Chip>
-                      </span>
-                    }
-                  />
-                ))}
+                {plan.newAccounts.map((na) => {
+                  const opening = plannedOpeningMinor(na);
+                  return (
+                    <Checkbox
+                      key={na.name}
+                      checked={na.create}
+                      onChange={(v) => toggleAccount(na, v)}
+                      label={
+                        <span className="flex items-center gap-1.5">
+                          Create <span className="font-medium">{na.name}</span>
+                          <Chip>{na.currency}</Chip>
+                          {opening !== null && (
+                            <span className="text-xs text-muted">
+                              opening {formatMinor(opening, na.currency)}
+                            </span>
+                          )}
+                        </span>
+                      }
+                    />
+                  );
+                })}
               </div>
               <p className="mt-2 text-xs text-muted">
                 Unticked accounts are not created and their rows are not imported.

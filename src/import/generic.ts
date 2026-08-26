@@ -15,10 +15,36 @@ import Papa from 'papaparse';
 import { parseAmountToMinor } from '../money/money';
 import type { ColumnMapping, ParsedRow } from './types';
 
+/**
+ * Drop a leading Excel separator hint (`sep=,`) — the line some exporters
+ * (MoneyWiz's Report export among them) put ABOVE the header row to tell Excel
+ * which delimiter follows. It is a directive to a spreadsheet, not data: left
+ * in place it becomes "row 1", so the real header row is read as data, every
+ * column mapping is off, and PapaParse's delimiter guess is fed a one-comma
+ * line that disagrees with the rest of the file.
+ *
+ * ONLY a line that is exactly `sep=` plus one delimiter character is dropped.
+ * That test also settles the "remaining cells are empty" requirement by
+ * construction: `sep=,` splits into `['sep=', '']`, and any real header whose
+ * first column is literally named `sep=…` necessarily has more on the line
+ * (`sep=,Date,Amount`, or a quoted `"sep=,",Date,Amount` which cannot match a
+ * regex anchored on a bare `s`). Such a file keeps all of its rows.
+ *
+ * Consequence worth knowing: reported row numbers count from the header row,
+ * so they are one lower than the physical line number in a hinted file.
+ */
+function stripSeparatorHint(text: string): string {
+  const nl = text.indexOf('\n');
+  const firstLine = (nl === -1 ? text : text.slice(0, nl)).replace(/\r$/, '');
+  if (!/^sep=.$/i.test(firstLine)) return text;
+  return nl === -1 ? '' : text.slice(nl + 1);
+}
+
 /** Parse CSV text into rows of cells (PapaParse under the hood). */
 export function parseCsv(text: string): { data: string[][]; errors: string[] } {
-  // Strip a UTF-8 BOM so the first header cell matches synonyms cleanly.
-  const clean = text.replace(/^﻿/, '');
+  // Strip a UTF-8 BOM so the first header cell matches synonyms cleanly, then
+  // an Excel `sep=,` hint line (BOM comes first in the file, so in that order).
+  const clean = stripSeparatorHint(text.replace(/^﻿/, ''));
   const result = Papa.parse<string[]>(clean, {
     skipEmptyLines: 'greedy', // drops blank lines AND whitespace-only lines
     // delimiter omitted → PapaParse auto-detects (',', ';', '\t', '|', …)

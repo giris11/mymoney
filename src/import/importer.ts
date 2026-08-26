@@ -39,6 +39,26 @@ export interface BuildPlanOptions {
   fixedAccountId?: string;
   /** Currency for rows without one (usually the base currency). */
   defaultCurrency: string;
+  /**
+   * Opening balance per account NAME (matched case/whitespace-insensitively),
+   * in that account's minor units. Only a layout that states each account's
+   * final balance can supply it — MoneyWiz's Report export, via
+   * `reportPlanOptions()`. Applied ONLY to accounts this import creates:
+   * an account that already exists keeps the opening balance it has, and is
+   * named in `plan.existingAccountsWithOpeningBalance` so the preview can say
+   * its total may not match the file.
+   */
+  accountOpeningBalances?: Map<string, number>;
+  /**
+   * Currency per account NAME, as the file declares it (not as a row guesses
+   * it). Two jobs: it beats a row's Currency column when a new account's
+   * currency is chosen, and — because it is the only place a currency can come
+   * from for an account with no rows — it lets an account the file declares
+   * but no transaction uses still be created (with its opening balance). Those
+   * balance-only accounts hold real money; dropping them silently would leave
+   * net worth short with nothing on screen to explain it.
+   */
+  accountCurrencies?: Map<string, string>;
 }
 
 /** Colour rotation for accounts created by an import. */
@@ -170,6 +190,17 @@ export async function buildImportPlan(
   const newAccounts: NewAccountPlan[] = [];
   const newAccountByKey = new Map<string, NewAccountPlan>();
   const decimalStyleFor = decimalStyleDetector(rows);
+  // Both file-declared maps are re-keyed the same way account lookups are, so
+  // "Everyday  Current" in the header row still finds "Everyday Current".
+  const byNameKey = <T,>(m: Map<string, T> | undefined): Map<string, T> =>
+    new Map([...(m ?? new Map<string, T>())].map(([name, v]) => [nameKey(name), v]));
+  const openingByKey = byNameKey(opts.accountOpeningBalances);
+  const declaredCurrencyByKey = byNameKey(opts.accountCurrencies);
+  /** A new account's opening balance, only when the file stated a usable one. */
+  const openingFor = (key: string): number | undefined => {
+    const v = openingByKey.get(key);
+    return v !== undefined && Number.isSafeInteger(v) ? v : undefined;
+  };
 
   // ---- 1. account resolution, amount scale, errors -----------------------
   // Order matters: the ACCOUNT fixes the currency, the currency fixes the
@@ -197,6 +228,11 @@ export async function buildImportPlan(
     const currency =
       existing?.currency ??
       newAccountByKey.get(key)?.currency ??
+      // The file's own declaration for this account beats the row's Currency
+      // column: a Report export states the account's currency on its header
+      // row, which is the account's ledger currency, while a row's currency
+      // describes the purchase (SPEC §6).
+      declaredCurrencyByKey.get(key) ??
       row.currency ??
       opts.defaultCurrency;
     if (needsRescale(row, currency)) {
@@ -219,11 +255,44 @@ export async function buildImportPlan(
         currency,
         create: true,
       };
+      const opening = openingFor(key);
+      if (opening !== undefined) na.openingBalanceMinor = opening;
       newAccounts.push(na);
       newAccountByKey.set(key, na);
     }
     // rows for a new account keep action 'import'; accountId resolves at commit
     pr.currencyMismatch = row.currency !== null && row.currency !== currency;
+  }
+
+  // ---- 1b. accounts the file declares but no row uses --------------------
+  // A Report export lists every account, including ones with no transactions
+  // in the exported window — and three of those in the owner's real file hold
+  // real money. Nothing in `rows` can conjure them, so they are added here
+  // from the file's own declarations. They arrive like any other new account:
+  // listed in the preview, tickable, and removed again by undoImport (which
+  // deletes created accounts that ended up with no transactions).
+  for (const [name, currency] of opts.accountCurrencies ?? []) {
+    const key = nameKey(name);
+    if (accountByKey.has(key) || newAccountByKey.has(key)) continue;
+    const opening = openingFor(key);
+    if (opening === undefined) continue; // nothing to import for it at all
+    const na: NewAccountPlan = {
+      name: name.trim().replace(/\s+/g, ' '),
+      currency,
+      create: true,
+      openingBalanceMinor: opening,
+    };
+    newAccounts.push(na);
+    newAccountByKey.set(key, na);
+  }
+
+  // Accounts the file states a balance for that we already hold. Their opening
+  // balance is NOT rewritten (that would move money the user never touched),
+  // so the preview has to name them as possibly-not-matching.
+  const existingAccountsWithOpeningBalance: string[] = [];
+  for (const key of openingByKey.keys()) {
+    const existing = accountByKey.get(key);
+    if (existing) existingAccountsWithOpeningBalance.push(existing.name);
   }
 
   /** The currency a row will be STORED in — its account's, never the file's. */
@@ -485,6 +554,7 @@ export async function buildImportPlan(
     currencyMismatchCount: 0,
     unpairedTransferCount: 0,
     importableCount: 0,
+    existingAccountsWithOpeningBalance,
   };
   refreshPlanCounts(plan);
   return plan;
@@ -527,7 +597,12 @@ export async function commitImport(plan: ImportPlan): Promise<ImportBatch> {
         name: na.name,
         type: 'current',
         currency: na.currency,
-        openingBalanceMinor: 0,
+        // Stated by the file (MoneyWiz Report) or 0 — which is what every
+        // other format has always produced. Guarded because a plan can be
+        // edited in the preview before it gets here.
+        openingBalanceMinor: Number.isSafeInteger(na.openingBalanceMinor)
+          ? na.openingBalanceMinor!
+          : 0,
         colour: ACCOUNT_PALETTE[batch.createdAccountIds.length % ACCOUNT_PALETTE.length],
         groupId: null,
         sortOrder: sortOrder++,

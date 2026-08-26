@@ -20,6 +20,13 @@ import { FileStep } from './FileStep';
 import { MapStep } from './MapStep';
 import { PreviewStep } from './PreviewStep';
 import {
+  isMoneyWizReportCsv,
+  parseMoneyWizReportCsv,
+  reportBuildOptions,
+  type MoneyWizReportResult,
+  type ReportAccount,
+} from './reportFormat';
+import {
   findSavedMapping,
   firstDateCell,
   needsDiscardConfirm,
@@ -45,6 +52,13 @@ interface LoadedFile {
   headers: string[];
   parseErrors: string[];
   source: 'moneywiz' | 'csv';
+  /** Which MoneyWiz shape this file is: the flat one-row-per-transaction
+   *  export, or the Report layout that interleaves account rows carrying each
+   *  account's closing balance. Both skip the Map step; only the report one
+   *  brings opening balances. */
+  mwLayout: 'flat' | 'report' | null;
+  /** Report layout only: one summary per account in the file. */
+  reportAccounts: ReportAccount[] | null;
   mwWarnings: string[];
   /** How the MoneyWiz parser read the date column (null for generic CSV). */
   dateFormat: ImportDateFormat | null;
@@ -78,11 +92,31 @@ export default function ImportWizard({ onDone, onCancel, onDirtyChange }: Import
     onDirtyChange?.(dirty);
   }, [dirty, onDirtyChange]);
 
+  /**
+   * The plan for a report-format parse. Identical to every other import call
+   * except for one thing: the opening balances the parser derived travel with
+   * it, so each new account is created at the balance the file implies rather
+   * than at zero. That is the whole point of supporting this layout — SPEC §6
+   * makes an account's balance opening + Σ amounts, so without the opening
+   * every account would land short by exactly its opening balance.
+   */
+  const planForReport = (
+    mw: MoneyWizReportResult,
+    fileName: string,
+    defaultCurrency: string,
+  ): Promise<ImportPlan> =>
+    buildImportPlan(
+      mw.rows,
+      reportBuildOptions({ source: 'moneywiz', fileName, defaultCurrency }, mw.accounts),
+    );
+
   async function handleFile(f: File) {
     setBusy(true);
     setFileError(null);
     try {
       const text = await f.text();
+      // parseCsv drops a leading Excel `sep=,` hint (report exports open with
+      // one), so data[0] is the real header row for every layout.
       const { data, errors } = parseCsv(text);
       if (data.length === 0) {
         setFileError('No rows found in this file — is it a CSV export?');
@@ -97,7 +131,33 @@ export default function ImportWizard({ onDone, onCancel, onDirtyChange }: Import
       setMapping(null);
       setFixedAccountId('');
 
-      if (isMoneyWizCsv(headers)) {
+      // ORDER MATTERS. A report export also passes the flat MoneyWiz header
+      // test — it has Account, Date, Amount and Payee columns — but the two
+      // layouts mean opposite things by them: in a report file the "Account"
+      // column holds the account's CURRENCY on account rows and the account
+      // NAME on transaction rows. Read as a flat export it would import
+      // account headers as transactions and file everything under accounts
+      // called "GBP" and "TRY". So the report test goes first, always.
+      if (isMoneyWizReportCsv(headers)) {
+        const mw = parseMoneyWizReportCsv(text);
+        setFile({
+          name: f.name,
+          sizeBytes: f.size,
+          text,
+          data,
+          headers,
+          parseErrors: errors,
+          source: 'moneywiz',
+          mwLayout: 'report',
+          reportAccounts: mw.accounts,
+          mwWarnings: mw.warnings,
+          dateFormat: mw.detectedDateFormat,
+          savedMappingLoaded: false,
+          baseCurrency: settings.baseCurrency,
+        });
+        setPlan(await planForReport(mw, f.name, settings.baseCurrency));
+        setStep('preview');
+      } else if (isMoneyWizCsv(headers)) {
         const mw = parseMoneyWizCsv(text);
         setFile({
           name: f.name,
@@ -107,6 +167,8 @@ export default function ImportWizard({ onDone, onCancel, onDirtyChange }: Import
           headers,
           parseErrors: errors,
           source: 'moneywiz',
+          mwLayout: 'flat',
+          reportAccounts: null,
           mwWarnings: mw.warnings,
           dateFormat: mw.detectedDateFormat,
           savedMappingLoaded: false,
@@ -132,6 +194,8 @@ export default function ImportWizard({ onDone, onCancel, onDirtyChange }: Import
           headers,
           parseErrors: errors,
           source: 'csv',
+          mwLayout: null,
+          reportAccounts: null,
           mwWarnings: [],
           dateFormat: null,
           savedMappingLoaded: !!saved,
@@ -154,6 +218,21 @@ export default function ImportWizard({ onDone, onCancel, onDirtyChange }: Import
     if (!file || file.source !== 'moneywiz') return;
     setBusy(true);
     try {
+      if (file.mwLayout === 'report') {
+        // Re-reading changes every date, so it changes which transfer legs
+        // pair and which rows look like duplicates — and therefore the sums
+        // behind every opening balance. The account summaries have to come
+        // from the SAME parse as the rows, never be carried over.
+        const mw = parseMoneyWizReportCsv(file.text, fmt);
+        setFile({
+          ...file,
+          reportAccounts: mw.accounts,
+          mwWarnings: mw.warnings,
+          dateFormat: fmt,
+        });
+        setPlan(await planForReport(mw, file.name, file.baseCurrency));
+        return;
+      }
       const mw = parseMoneyWizCsv(file.text, fmt);
       // The parser reports what it *detected*; once the user overrides it, the
       // chosen ordering is what the rows were actually read with.
@@ -272,6 +351,7 @@ export default function ImportWizard({ onDone, onCancel, onDirtyChange }: Import
           dateFormat={file.dateFormat}
           sampleDate={firstDateCell(file.data, file.headers)}
           onDateFormat={handleDateFormat}
+          reportAccounts={file.reportAccounts}
           busy={busy}
           onBack={() => setStep(file.source === 'moneywiz' ? 'file' : 'map')}
           onCommit={handleCommit}

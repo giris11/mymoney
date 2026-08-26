@@ -5,6 +5,8 @@
 import dayjs from 'dayjs';
 import type { ColumnMapping } from '../../db/types';
 import { fileSignature, parseDateString } from '../../import/generic';
+import type { ImportPlan, ImportPlanRow } from '../../import/types';
+import { nameKey } from '../../lib/util';
 
 export type WizardStep = 'file' | 'map' | 'preview' | 'done';
 
@@ -88,4 +90,20 @@ export function currencyMismatchNote(count: number): string | null {
   return count === 1
     ? '1 row is in a different currency from its account — it’ll be imported in the account’s currency.'
     : `${count} rows are in a different currency from their account — they’ll be imported in the account’s currency.`;
+}
+
+/**
+ * Display-only mirror of the engine's `isEffectiveImport`: will this plan row
+ * be written if the user commits right now? Kept here (pure, no DOM) because
+ * two different views need the same answer — the row table's status chips and
+ * the report-format account-balance panel, which sums exactly these rows.
+ * If the two ever disagreed, the preview would promise a balance the commit
+ * does not deliver, so there is deliberately ONE copy of the rule.
+ */
+export function willImportRow(plan: ImportPlan, pr: ImportPlanRow): boolean {
+  if (pr.action === 'error' || pr.action === 'skip_exact_duplicate') return false;
+  if (pr.action === 'needs_decision' && pr.decision !== 'import') return false;
+  if (pr.accountId) return true;
+  const na = plan.newAccounts.find((n) => nameKey(n.name) === nameKey(pr.row.accountName ?? ''));
+  return na?.create === true;
 }

@@ -66,6 +66,15 @@ export interface NewAccountPlan {
   currency: string;
   /** User can untick creation in the preview; rows for it then error out. */
   create: boolean;
+  /**
+   * Opening balance for the account this import will CREATE, in that account's
+   * minor units. Only layouts that state each account's final balance can
+   * supply it (MoneyWiz's Report export: opening = stated balance − the sum of
+   * that account's rows, which is order-independent and so immune to the
+   * intra-day ordering the running-balance column disagrees about). Absent ⇒
+   * created with 0, which is what every other format does.
+   */
+  openingBalanceMinor?: number;
 }
 
 export interface ImportPlan {
@@ -95,4 +104,13 @@ export interface ImportPlan {
   unpairedTransferCount: number;
   /** Rows that will be written if committed now (respects decisions). */
   importableCount: number;
+  /**
+   * Accounts the file states an opening balance for that ALREADY exist here.
+   * Their opening balance is deliberately left alone — silently rewriting a
+   * balance the user set (or a previous import derived from a longer history)
+   * would move money they never touched. The cost is that these accounts can
+   * end up disagreeing with the figure in the file, so the preview has to say
+   * which ones. Names as they appear in this app.
+   */
+  existingAccountsWithOpeningBalance: string[];
 }
