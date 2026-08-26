@@ -25,7 +25,7 @@ Status of every Phase 1 spec feature. Updated as work lands. (Phase 2/3 items ar
 | 2 | Transactions CRUD, splits, transfers, refunds, pending/cleared, tags, notes | ✅ | transfer legs sync; refund = positive amount in expense category (D14) |
 | 2b | Virtualised register, instant search + filters | ✅ | @tanstack/react-virtual; all seven filter axes; deep links from sidebar/reports/budgets |
 | 3 | Categories (multi-level, seeded, editable), payees w/ autocomplete, tags | ✅ | payee→category learning; Settings rules list (D17) |
-| 4 | Multi-currency + manual rates table | ✅ | display-time conversion only; missing rate surfaced, never guessed |
+| 4 | Multi-currency + manual + **live** rates | ✅ | display-time conversion only; missing rate surfaced, never guessed. Live rates (D34) pulled forward from Phase 2 at your request: free no-key sources, LKR/INR verified end-to-end, manual rates never overwritten, offline-safe |
 | 5 | MoneyWiz CSV import (detect, map, preview, dedupe, undo) | ✅ | verified in-browser: 27-row import, re-import → 27/27 exact duplicates auto-skipped |
 | 5b | Generic CSV import with column-mapping UI + saved mappings | ✅ | mapping saved per header signature; debit/credit pairs, decimal commas, date formats |
 | 6 | Budgets: per period, progress bars, over/under | ✅ | descendants included; period navigation; missing-rate chip |
@@ -34,7 +34,7 @@ Status of every Phase 1 spec feature. Updated as work lands. (Phase 2/3 items ar
 | 9 | Backup export / restore / 7-day nudge | ✅ | all-or-nothing restore with typed confirmation; round-trip tested |
 | 10 | PWA: installable, offline, icons, subpath-safe | 🟡 | SW + manifest + icons verified on production build; iOS per-device splash images deferred (D26) — icons/standalone/offline all in place |
 | 11 | Dark/light mode, responsive, onboarding, sample data | ✅ | sample data is one undoable batch, groups labelled "Sample ·" |
-| — | Test suite (spec §10) | ✅ | 351 tests: money maths, balances, import parsing incl. edge cases, dedupe + near-dups, budget periods, backup round-trip, golden hand-calculated month, plus 93 regression tests from the review pass |
+| — | Test suite (spec §10) | ✅ | 387 tests: money maths, balances, import parsing incl. edge cases, dedupe + near-dups, budget periods, backup round-trip, golden hand-calculated month, plus 93 regression tests from the review pass |
 
 ## Definition of done (spec §12) — status
 
@@ -76,6 +76,33 @@ so dark mode no longer flashes white on launch (D29).
 Two findings were investigated and judged **not** real: a proposed transfer-pairing
 rewrite (proved equivalent to the existing code over 774 permutations) and a
 QuickAdd first-open path that was already correct.
+
+## Live exchange rates + LKR/INR (added 2026-08-26 on request)
+
+**Currencies:** LKR added, INR was already there. Both use 100 minor units, so
+the existing money math needed no change; en-GB formats them as `LKR 1,234.56`
+and `₹1,234.56`. The picker was widened with regional neighbours (PKR, BDT, NPR,
+MYR, PHP, IDR, AED, SAR…). Live rates cover 160+ currencies regardless.
+
+**Live rates** are a Phase 2 item (SPEC §8.2) pulled forward at your request —
+logged as D34 rather than editing your spec. What that means in practice:
+
+- **"Real-time" = today's rate.** Free no-key providers publish once daily;
+  intraday ticks exist only behind paid APIs, which the zero-cost constraint
+  rules out. Daily reference rates are the right granularity for personal
+  finance and what MoneyWiz uses. The UI says this plainly.
+- **Two independent free sources**, both verified live at build time and both
+  carrying LKR and INR, cross-checking to within 0.1%.
+- **On by default**, because you asked for it — one switch in Settings → Rates
+  returns the app to making no network requests at all. Onboarding now names
+  that single request rather than overstating the privacy promise.
+- **Rates you type are never overwritten**, in either direction; refreshes
+  report which ones they kept.
+- **Offline is a non-event**: saved rates stay in use, nothing is guessed.
+
+Verified in the browser against the live API: ₹130,000.00 → £998.81 and
+LKR 500,000.00 → £1,116.27, with net worth matching a hand calculation to the
+penny, and a deliberately sabotaged fetch leaving every figure untouched.
 
 ## Open items for Girish
 
