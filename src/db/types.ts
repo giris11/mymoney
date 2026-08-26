@@ -146,4 +146,14 @@ export interface Settings {
   lastUsedAccountId: string | null;
   savedMappings: Record<string, ColumnMapping>; // key = file signature
   createdAt: string;
+  /**
+   * Live FX rates (D34). SPEC §8.2 lists auto rates as Phase 2; pulled forward
+   * at Girish's request. When enabled the app makes ONE outbound request to a
+   * free, no-key rates source — the single network call SPEC §2.3 permits.
+   * Manual rates are never overwritten by it.
+   */
+  autoFxEnabled: boolean;
+  lastFxSyncAt: string | null;
+  /** Human-readable name of the source that last supplied rates. */
+  lastFxSyncSource: string | null;
 }

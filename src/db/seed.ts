@@ -112,7 +112,11 @@ export const ACCOUNT_TYPE_LABELS: Record<AccountType, string> = {
   investment: 'Investment',
 };
 
+// Both rupees use 100 minor units (paise / cents), so the default 2 decimals in
+// src/money/money.ts is correct for them — no special-casing needed.
 export const COMMON_CURRENCIES = [
-  'GBP', 'EUR', 'USD', 'INR', 'JPY', 'AUD', 'CAD', 'CHF', 'CNY', 'SEK', 'NOK', 'DKK',
-  'PLN', 'CZK', 'AED', 'SGD', 'HKD', 'NZD', 'ZAR', 'THB',
+  'GBP', 'EUR', 'USD', 'INR', 'LKR', 'JPY', 'AUD', 'CAD', 'CHF', 'CNY', 'SEK', 'NOK',
+  'DKK', 'PLN', 'CZK', 'AED', 'SGD', 'HKD', 'NZD', 'ZAR', 'THB', 'MYR', 'PKR', 'BDT',
+  'NPR', 'PHP', 'IDR', 'VND', 'SAR', 'QAR', 'KWD', 'BHD', 'OMR', 'TRY', 'MXN', 'BRL',
+  'KRW', 'TWD', 'ILS', 'EGP', 'NGN', 'KES', 'GHS', 'MUR', 'MVR',
 ];

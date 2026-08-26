@@ -75,11 +75,24 @@ export function defaultSettings(): Settings {
     lastUsedAccountId: null,
     savedMappings: {},
     createdAt: new Date().toISOString(),
+    // On by default because live rates were explicitly asked for (D34); one
+    // switch in Settings turns the app back into a zero-request island.
+    autoFxEnabled: true,
+    lastFxSyncAt: null,
+    lastFxSyncSource: null,
   };
 }
 
+/**
+ * Settings row, normalised over the current defaults. Spreading the stored row
+ * over defaultSettings() means a row written by an older build gains any newly
+ * added field with its default instead of surfacing `undefined` — so adding a
+ * setting never needs a schema migration, and restoring an older backup keeps
+ * working (SPEC §9).
+ */
 export async function getSettings(): Promise<Settings> {
-  return (await db.settings.get('app')) ?? defaultSettings();
+  const stored = await db.settings.get('app');
+  return stored ? { ...defaultSettings(), ...stored } : defaultSettings();
 }
 
 export async function updateSettings(patch: Partial<Omit<Settings, 'id'>>): Promise<Settings> {

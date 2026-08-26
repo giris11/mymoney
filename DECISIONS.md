@@ -71,6 +71,41 @@ Every non-obvious choice made while building, per Working Agreement §2. Newest 
   click gives no completion signal, so `lastBackupAt` is no longer stamped on
   the strength of the click alone — the app does not reset the 7-day nudge for
   a save it could not observe.
+- **D34. Live exchange rates — a deliberate Phase 2 pull-forward.** SPEC §8.1.4
+  puts Phase 1 on manual rates and §8.2 lists auto-FX as Phase 2. Girish asked
+  for real-time rates (and LKR/INR) on 2026-08-26, so the module is being built
+  now. Everything the spec attaches to it still holds:
+  - **Free, no-key sources only.** Primary `open.er-api.com` (166 currencies),
+    fallback `latest.currency-api.pages.dev` (341). Both verified live at build
+    time as §8.2 requires: no key, no account, `access-control-allow-origin: *`,
+    and both carry LKR and INR. Cross-checked against each other (INR 130.16 vs
+    130.01, LKR 447.92 vs 447.81). Zero cost, no signup, no quota to exceed at
+    one call a day. (Frankfurter/ECB was rejected — it has no LKR.)
+  - **"Real-time" means today's rate.** Free no-key providers publish once
+    daily; intraday ticks only exist behind paid APIs, which the zero-fee
+    constraint forbids. Daily reference rates are also the right granularity
+    for personal finance — and what MoneyWiz itself uses. The UI says so
+    rather than implying live ticks.
+  - **This is the app's only outbound request, ever** — the single exception
+    SPEC §2.3 carves out. Nothing else phones anywhere.
+  - **Default ON**, because live rates are what was asked for; one switch in
+    Settings → Rates returns the app to making no network requests at all.
+  - **Manual rates are never overwritten.** A rate you typed is your explicit
+    statement; refreshes skip those pairs and report them as kept. Switching a
+    pair to live is an explicit, confirmed action.
+  - **Offline changes nothing.** A failed fetch is a non-event: saved rates stay
+    in use, missing rates still show the "no rate" marker, and no number is ever
+    guessed (SPEC §6).
+- **D35. Currency coverage.** LKR added to the picker alongside INR (which was
+  already there), plus regional and common-trade currencies (PKR, BDT, NPR, MYR,
+  PHP, IDR, AED, SAR, and others). Both rupees use 100 minor units, so the
+  default 2 decimals in `money.ts` is already correct — no special-casing. Live
+  rates cover far more than the picker lists; the picker is just the shortlist.
+- **D36. Settings rows are normalised over defaults on read.** `getSettings()`
+  now spreads the stored row over `defaultSettings()`, so a row written by an
+  older build gains newly added fields with their defaults instead of
+  `undefined`. Adding a setting therefore needs no schema migration, and older
+  backups keep restoring cleanly (SPEC §9).
 
 ## UX
 

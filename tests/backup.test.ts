@@ -1,7 +1,7 @@
 // Backup export/restore tests (SPEC §8.1.9, §10: backup round-trip equality).
 import 'fake-indexeddb/auto';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { ALL_TABLES, db, getSettings, SCHEMA_VERSION, updateSettings } from '../src/db/db';
+import { ALL_TABLES, db, getSettings, SCHEMA_VERSION, updateSettings, defaultSettings } from '../src/db/db';
 import {
   backupNudgeState,
   CURRENT_SCHEMA_VERSION,
@@ -205,7 +205,10 @@ const seedBatches: ImportBatch[] = [
   },
 ];
 
+// Built over defaultSettings() so adding a setting never breaks this fixture —
+// the same forward-compatibility getSettings() relies on.
 const seedSettings: Settings = {
+  ...defaultSettings(),
   id: 'app',
   schemaVersion: SCHEMA_VERSION,
   baseCurrency: 'GBP',
