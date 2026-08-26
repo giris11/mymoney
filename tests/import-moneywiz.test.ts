@@ -144,6 +144,48 @@ describe('category path fallback', () => {
     );
     expect(r.rows[0].tags).toEqual(['work', 'travel']);
   });
+
+  // C4: a cell that uses ';' has already told us what its separator is, so a
+  // comma inside it belongs to the tag name. Splitting on both invented a
+  // third tag and destroyed a name the file stated unambiguously.
+  it('a comma inside a semicolon-separated cell stays part of the tag', () => {
+    const r = parseMoneyWizCsv(
+      'Account,Payee,Date,Amount,Tags\nCurrent,A,01/07/2026,-10.00,"Holiday, Spain;work"\n',
+    );
+    expect(r.rows[0].tags).toEqual(['Holiday, Spain', 'work']);
+  });
+
+  it('still splits a semicolon-only cell on every semicolon', () => {
+    const r = parseMoneyWizCsv(
+      'Account,Payee,Date,Amount,Tags\nCurrent,A,01/07/2026,-10.00,food;weekly;car\n',
+    );
+    expect(r.rows[0].tags).toEqual(['food', 'weekly', 'car']);
+  });
+
+  // C6: the '/' fallback is documented (D20) but it INVENTS a category level.
+  // It must never happen silently — PreviewStep renders these warnings.
+  it("warns, naming the count and an example, when '/' created the levels", () => {
+    const r = parseMoneyWizCsv(
+      'Account,Payee,Category,Date,Amount\n' +
+        'Current,A,Kids/School,01/07/2026,-10.00\n' +
+        'Current,B,Kids/School,02/07/2026,-11.00\n' +
+        'Current,C,Food/Groceries,03/07/2026,-12.00\n' +
+        'Current,D,Transport,04/07/2026,-5.00\n',
+    );
+    const warning = r.warnings.find((w) => w.includes('“/”'));
+    expect(warning).toBeDefined();
+    expect(warning).toContain('2 category paths'); // distinct paths, not rows
+    expect(warning).toContain('Kids › School');
+  });
+
+  it("says nothing when the file uses '>' and '/' is left literal", () => {
+    const r = parseMoneyWizCsv(
+      'Account,Payee,Category,Date,Amount\n' +
+        'Current,A,Food > Groceries,01/07/2026,-10.00\n' +
+        'Current,B,Taxi/Ride,02/07/2026,-5.00\n',
+    );
+    expect(r.warnings.some((w) => w.includes('“/”'))).toBe(false);
+  });
 });
 
 // D20 says an ambiguous date column falls back to en-GB dd/mm "overridable in

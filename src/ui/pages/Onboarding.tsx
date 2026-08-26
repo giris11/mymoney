@@ -5,9 +5,15 @@
 // creates the ticked accounts, requests persistent storage and lands on the
 // dashboard. `onboarded: true` is written LAST so a mid-flight failure leaves
 // onboarding safely retryable and the app never shows a half-set-up state.
+//
+// Retryable means the writes must be idempotent: the account/settings write
+// lives in onboarding/setup.ts and asks the DATABASE whether accounts already
+// exist, so a reload, an abandoned import wizard or a crash before the
+// `onboarded` flip can never create a second set of accounts.
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { APP_NAME } from '../../config';
 import { db, getSettings, updateSettings } from '../../db/db';
+import { useLive } from '../../db/useLive';
 import { COMMON_CURRENCIES } from '../../db/seed';
 import { loadSampleData } from '../../domain/sample';
 import { requestPersistence } from '../../lib/storage';
@@ -21,10 +27,10 @@ import { useToast } from '../kit/toast';
 import {
   AccountsStep,
   accountsStepError,
-  buildAccounts,
   defaultAccountRows,
   type AccountRowState,
 } from '../onboarding/AccountsStep';
+import { completeRestore, createAccountsAndSettings } from '../onboarding/setup';
 import { DataStep, type DataChoice } from '../onboarding/DataStep';
 
 const TOTAL_STEPS = 4;
@@ -82,8 +88,13 @@ export default function Onboarding() {
   const [restoring, setRestoring] = useState(false);
   const [busyChoice, setBusyChoice] = useState<DataChoice | null>(null);
 
-  // Guards: never create the accounts twice, never run finish twice.
-  const accountsCreatedRef = useRef(false);
+  // Accounts already on the device: an earlier run of this wizard that never
+  // reached the `onboarded` flip, or accounts an import created. Live, because
+  // an import inside onboarding can create them while this page is open.
+  const existingAccounts = useLive(() => db.accounts.count(), []) ?? 0;
+
+  // Guard: never run finish twice within this page (the durable guard against
+  // duplicate accounts lives in the database — see onboarding/setup.ts).
   const finishingRef = useRef(false);
 
   // Re-entry safety: if onboarding somehow renders after it's already done,
@@ -98,23 +109,12 @@ export default function Onboarding() {
     };
   }, []);
 
-  /** Write base currency + ticked accounts once, atomically. */
-  const createAccountsAndSettings = async () => {
-    if (accountsCreatedRef.current) return;
-    const accounts = buildAccounts(rows, baseCurrency);
-    await db.transaction('rw', db.accounts, db.settings, async () => {
-      await updateSettings({ baseCurrency });
-      if (accounts.length > 0) await db.accounts.bulkAdd(accounts);
-    });
-    accountsCreatedRef.current = true;
-  };
-
   /** One finish flow for every path (import already created the accounts). */
   const finish = async (withSample: boolean) => {
     if (finishingRef.current) return;
     finishingRef.current = true;
     try {
-      await createAccountsAndSettings();
+      await createAccountsAndSettings(rows, baseCurrency);
       if (withSample) await loadSampleData();
       await updateSettings({ onboarded: true }); // flips App to the main layout
       void requestPersistence(); // fire and forget (result surfaced in Settings)
@@ -132,7 +132,7 @@ export default function Onboarding() {
     if (choice === 'import') {
       // Accounts + settings FIRST so the import can match against them.
       try {
-        await createAccountsAndSettings();
+        await createAccountsAndSettings(rows, baseCurrency);
         setImporting(true);
       } catch (err) {
         toast(err instanceof Error ? err.message : 'Could not create your accounts.', 'error');
@@ -155,11 +155,16 @@ export default function Onboarding() {
     return (
       <div className="flex min-h-dvh items-center justify-center bg-bg p-4 py-8">
         <div className="w-full max-w-lg rounded-2xl border border-border bg-surface p-6 shadow-sm sm:p-8">
+          {/* standalone: without it this screen has no heading and no way back
+              — a dead end you can only leave by reloading. */}
           <RestoreFromBackup
+            standalone
             onDone={() => {
               // The backup carries its own settings row, so the app leaves
-              // onboarding on its own once the data lands.
-              navigate('/dashboard');
+              // onboarding on its own once the data lands. completeRestore
+              // still asks for persistent storage, which finish() would have
+              // done on every other path (SPEC §9).
+              completeRestore();
             }}
             onCancel={() => setRestoring(false)}
           />
@@ -172,13 +177,18 @@ export default function Onboarding() {
     return (
       <div className="min-h-dvh overflow-y-auto bg-bg">
         <div className="mx-auto w-full max-w-3xl p-4 lg:p-6">
-          <ImportWizard onDone={() => void finish(false)} onCancel={() => void finish(false)} />
+          {/* Cancel means BACK, not "finish": completing onboarding here would
+              land the user on an empty dashboard and throw away the file they
+              had loaded, with no confirmation. */}
+          <ImportWizard onDone={() => void finish(false)} onCancel={() => setImporting(false)} />
         </div>
       </div>
     );
   }
 
-  const accountsError = accountsStepError(rows);
+  const accountsError = accountsStepError(rows, baseCurrency, {
+    hasExistingAccounts: existingAccounts > 0,
+  });
 
   return (
     <div className="flex min-h-dvh items-center justify-center bg-bg p-4 py-8">
@@ -235,9 +245,18 @@ export default function Onboarding() {
           <div className="mt-6 flex flex-col gap-5">
             <StepHeading
               title="Set up your accounts"
-              subtitle="Tick the ones you use and rename anything. You can add more later in Settings."
+              subtitle={
+                existingAccounts > 0
+                  ? 'Your accounts are already on this device.'
+                  : 'Tick the ones you use and rename anything. You can add more later in Settings.'
+              }
             />
-            <AccountsStep rows={rows} onRowsChange={setRows} baseCurrency={baseCurrency} />
+            <AccountsStep
+              rows={rows}
+              onRowsChange={setRows}
+              baseCurrency={baseCurrency}
+              existingAccounts={existingAccounts}
+            />
           </div>
         )}
 

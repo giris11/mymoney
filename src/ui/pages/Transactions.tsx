@@ -1,6 +1,13 @@
 // Transaction register (SPEC §8.1.2): virtualised list with instant search
 // and combinable filters; honours deep links (?account/?category/?payee/?tag/
 // ?from/?to) and reacts when they change while on the page.
+//
+// SCALE (SPEC §9): the register opens on a date window (see
+// `defaultRegisterRange`) so `queryTransactions` narrows on the `date` index
+// instead of reading and sorting the whole table on every keystroke and every
+// write. The window is stated in the summary line with a one-click widen — it
+// is a visible default, not a hidden filter — and a deep link carrying its own
+// ?from/?to replaces it.
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { db, getSettings } from '../../db/db';
@@ -15,10 +22,14 @@ import { FilterBar } from '../tx/FilterBar';
 import { TxRow } from '../tx/TxRow';
 import TxEditor from '../tx/TxEditor';
 import {
+  DEFAULT_RANGE_DAYS,
   REGISTER_GRID,
   countActiveFilters,
+  defaultRegisterRange,
   emptyFilters,
   hasAnyFilter,
+  hasNonDateFilter,
+  rangeSummary,
   sumByCurrency,
   toTxFilter,
   type FilterState,
@@ -135,6 +146,10 @@ export default function Transactions() {
     if (paramsKey) navigate('/transactions');
   };
 
+  // The visible escape hatch from the default window, and the way back.
+  const toggleAllDates = () =>
+    patchFilters({ range: filters.range ? null : defaultRegisterRange() });
+
   // ----------------------------------------------------------- virtual list
   const data = rows ?? [];
   const listRef = useRef<HTMLDivElement>(null);
@@ -148,6 +163,9 @@ export default function Transactions() {
 
   const totals = useMemo(() => sumByCurrency(data), [data]);
   const activeCount = countActiveFilters(filters);
+  // An empty list caused by the date window alone gets a different story from
+  // one caused by the filters — the two must never be confused.
+  const emptyByDateOnly = !!filters.range && !hasNonDateFilter(filters);
   const anyActive = hasAnyFilter(filters) || searchText.trim() !== '';
   const openEditor = (tx: Transaction | null) => setEditor({ open: true, tx });
 
@@ -198,7 +216,8 @@ export default function Transactions() {
         onClearAll={clearAll}
       />
 
-      {/* Summary line: count + per-currency net totals (no conversion) */}
+      {/* Summary line: count + per-currency net totals (no conversion) + the
+          date window the register is on, which is never left implicit. */}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
         <span>
           {rows === undefined
@@ -210,6 +229,18 @@ export default function Transactions() {
             Net <Amount minor={minor} currency={cur} signColour />
           </span>
         ))}
+        <span className="inline-flex items-center gap-1.5">
+          <span>
+            Showing <span className="font-medium text-text">{rangeSummary(filters.range)}</span>
+          </span>
+          <button
+            type="button"
+            onClick={toggleAllDates}
+            className="cursor-pointer rounded-full border border-border px-2 py-0.5 font-medium text-accent transition-colors hover:bg-surface2"
+          >
+            {filters.range ? 'Show all dates' : `Back to last ${DEFAULT_RANGE_DAYS} days`}
+          </button>
+        </span>
       </div>
 
       {/* Register */}
@@ -245,11 +276,37 @@ export default function Transactions() {
             }
           />
         ) : rows !== undefined && data.length === 0 ? (
+          // An empty list must never read as "you have no transactions" when it
+          // only means "none in this window" — say which, and say how many there
+          // really are.
           <EmptyState
             icon={<IconSearch size={40} />}
-            title="Nothing matches your filters"
-            message="Try widening the date range or clearing some filters."
-            action={<Button onClick={clearAll}>Clear all filters</Button>}
+            title={
+              emptyByDateOnly
+                ? `Nothing in ${rangeSummary(filters.range)}`
+                : 'Nothing matches your filters'
+            }
+            message={
+              <>
+                You have {(totalCount ?? 0).toLocaleString('en-GB')} transaction
+                {totalCount === 1 ? '' : 's'} in total
+                {emptyByDateOnly
+                  ? ' — none of them in this date window.'
+                  : '. Try widening the date window or clearing a filter.'}
+              </>
+            }
+            action={
+              <div className="flex flex-wrap items-center justify-center gap-2">
+                {filters.range && (
+                  <Button variant="primary" onClick={toggleAllDates}>
+                    Show all dates
+                  </Button>
+                )}
+                <Button onClick={clearAll} disabled={!anyActive}>
+                  Clear all filters
+                </Button>
+              </div>
+            }
           />
         ) : (
           <div style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>

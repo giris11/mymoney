@@ -5,7 +5,9 @@
 //    when it has an Amount column, a Date column, an Account column and at
 //    least one of Payee/Description/Category (case-insensitive).
 //  * Category paths split on ' > ' (fallback '/' only when no '>' appears
-//    anywhere in the column); tags split on ';' or ','.
+//    anywhere in the column — reported as a warning, since it invents a level);
+//    tags split on ';', or on ',' when the cell holds no ';' (D20, refined so a
+//    quoted "Holiday, Spain;work" stays two tags).
 //  * Amounts tolerate currency symbols, thousands separators, parentheses
 //    negatives, and decimal commas (auto-detected per file).
 //  * Date format auto-detected by scanning the WHOLE column (any first
@@ -87,8 +89,16 @@ export function isMoneyWizCsv(headers: string[]): boolean {
   );
 }
 
+/**
+ * Tags are separated by ';' when the cell contains one, and only otherwise by
+ * ','. Splitting on both at once tore a properly quoted `"Holiday, Spain;work"`
+ * into three tags and threw away information the file had stated
+ * unambiguously — a comma inside a semicolon-separated cell is part of the
+ * tag name, not a separator. A cell with no semicolon keeps the old
+ * comma-splitting, which is how single-separator exports read.
+ */
 const splitTags = (v: string): string[] =>
-  v ? v.split(/[;,]/).map((t) => t.trim()).filter(Boolean) : [];
+  v ? v.split(v.includes(';') ? ';' : ',').map((t) => t.trim()).filter(Boolean) : [];
 
 /**
  * `dateFormat` overrides the auto-detection. An all-ambiguous column (every
@@ -117,6 +127,8 @@ export function parseMoneyWizCsv(
   // ' > ' is the MoneyWiz path separator; '/' fallback ONLY when no '>' occurs
   // anywhere in the column (a file using '/' paths never contains '>').
   const columnHasGt = raw.some((r) => cell(r, cols.category).includes('>'));
+  /** Distinct category cells the '/' fallback turned into multi-level paths. */
+  const slashPaths = new Set<string>();
 
   const rows: ParsedRow[] = raw.map((r, i): ParsedRow => {
     const currencyRaw = cell(r, cols.currency);
@@ -139,6 +151,11 @@ export function parseMoneyWizCsv(
       : (columnHasGt ? catRaw.split(/\s*>\s*/) : catRaw.split('/'))
           .map((p) => p.trim())
           .filter(Boolean);
+    // A '/' read as a path separator invents a category level the user never
+    // had ('Kids/School' ⇒ Kids › School). That is the documented fallback
+    // (D20) and it is usually right, but it is a guess about HIS data, so the
+    // preview has to say it happened.
+    if (!columnHasGt && categoryPath.length > 1) slashPaths.add(catRaw);
 
     return {
       index: i + 1,
@@ -175,6 +192,15 @@ export function parseMoneyWizCsv(
   }
   if (cols.currency === -1) {
     warnings.push('No Currency column — amounts assume the account/base currency');
+  }
+  if (slashPaths.size > 0) {
+    const [example] = slashPaths;
+    warnings.push(
+      `${slashPaths.size} category ${slashPaths.size === 1 ? 'path was' : 'paths were'} split on ` +
+        `“/” because the file contains no “>” — “${example}” becomes ` +
+        `“${example.split('/').map((p) => p.trim()).filter(Boolean).join(' › ')}”. ` +
+        'Rename them after importing if they should stay one category.',
+    );
   }
 
   return { rows, headers, warnings, detectedDateFormat };

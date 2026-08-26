@@ -32,7 +32,7 @@ import { PayeeInput } from '../kit/PayeeInput';
 import { TagsInput } from '../kit/TagsInput';
 import { useToast } from '../kit/toast';
 import { IconPlus, IconTrash, IconX } from '../kit/icons';
-import { errMsg, type TxKind } from './txShared';
+import { errMsg, isSaveableAmount, txSaveDisabled, type TxKind } from './txShared';
 import {
   TransferFields,
   emptyTransferDraft,
@@ -237,14 +237,21 @@ export default function TxEditor({
   const toAcc = accounts.find((a) => a.id === transfer.toAccountId);
   const transferCross = !!fromAcc && !!toAcc && fromAcc.currency !== toAcc.currency;
 
-  const saveDisabled =
-    saving ||
-    (mode === 'transfer'
-      ? !fromAcc ||
-        !toAcc ||
-        transfer.amountFromMinor === null ||
-        (transferCross && transfer.amountToMinor === null)
-      : amount === null || !accountId || (splits.length > 0 && splitIssue !== null));
+  const saveDisabled = txSaveDisabled({
+    mode,
+    saving,
+    amountMinor: amount,
+    accountId,
+    splitCount: splits.length,
+    splitIssue,
+    transfer: {
+      hasFromAccount: !!fromAcc,
+      hasToAccount: !!toAcc,
+      amountFromMinor: transfer.amountFromMinor,
+      amountToMinor: transfer.amountToMinor,
+      crossCurrency: transferCross,
+    },
+  });
 
   const typeOptions: { value: TxKind; label: string }[] = !tx
     ? [
@@ -314,7 +321,10 @@ export default function TxEditor({
         );
         toast('Transfer saved', 'success');
       } else {
-        if (amount === null) throw new Error('Enter an amount');
+        // Belt and braces with the disabled Save button above (D4): the
+        // editor and Quick Add agree that a zero-amount row is not a
+        // transaction.
+        if (!isSaveableAmount(amount)) throw new Error('Enter an amount');
         await saveTransaction({
           id: tx?.id,
           accountId,

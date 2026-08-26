@@ -403,6 +403,46 @@ describe('near-duplicate flow (same amount/payee, one day off)', () => {
     expect(plan.nearDuplicateCount).toBe(1);
   });
 
+  // The near-duplicate pass is bucketed by amount+date rather than scanned
+  // (C2b). These pin the two things that bucketing must not change: which
+  // candidate wins, and which candidates are eligible at all.
+  it('prefers the same-date candidate over the day-before one', async () => {
+    const account = await addAccount('Current');
+    const payee = await addPayee('Cafe');
+    await addTx(account.id, '2026-07-10', -350, payee.id, 'Cafe');
+    await addTx(account.id, '2026-07-11', -350, payee.id, 'Cafe');
+
+    const plan = await buildImportPlan(
+      [makeRow({ date: '2026-07-11', amountMinor: -350, payeeName: 'Cafe Nero', accountName: 'Current' })],
+      mwOpts,
+    );
+    expect(plan.rows[0].action).toBe('needs_decision');
+    expect(plan.rows[0].nearDuplicateOf?.date).toBe('2026-07-11');
+  });
+
+  it('a different amount is not a near-duplicate, however close the date', async () => {
+    const account = await addAccount('Current');
+    const payee = await addPayee('Cafe');
+    await addTx(account.id, '2026-07-10', -350, payee.id, 'Cafe');
+    const plan = await buildImportPlan(
+      [makeRow({ date: '2026-07-10', amountMinor: -351, payeeName: 'Cafe', accountName: 'Current' })],
+      mwOpts,
+    );
+    expect(plan.rows[0].action).toBe('import');
+    expect(plan.nearDuplicateCount).toBe(0);
+  });
+
+  it('a date two days out is not a near-duplicate', async () => {
+    const account = await addAccount('Current');
+    const payee = await addPayee('Cafe');
+    await addTx(account.id, '2026-07-10', -350, payee.id, 'Cafe');
+    const plan = await buildImportPlan(
+      [makeRow({ date: '2026-07-12', amountMinor: -350, payeeName: 'Cafe', accountName: 'Current' })],
+      mwOpts,
+    );
+    expect(plan.rows[0].action).toBe('import');
+  });
+
   it('an exact match claims its transaction before a near-duplicate can', async () => {
     const account = await addAccount('Current');
     const payee = await addPayee('Cafe');
@@ -595,6 +635,200 @@ describe('minor-unit scale follows the resolved account currency', () => {
   });
 });
 
+// ------------------------------------------------------------------ tags (C2)
+// Tag resolution is hoisted out of the per-row loop (one indexed lookup per
+// DISTINCT tag for the whole file instead of one per tag per row). These are
+// the semantics that must survive that: only rows that are actually written
+// create tags, and a row keeps its own order with duplicates collapsed.
+describe('tag resolution for a whole import', () => {
+  it('creates tags only for written rows, and keeps per-row order', async () => {
+    const account = await addAccount('Current');
+    const payee = await addPayee('Cafe');
+    await addTx(account.id, '2026-07-10', -350, payee.id, 'Cafe');
+
+    const plan = await buildImportPlan(
+      [
+        // An exact duplicate — skipped, so its tag must never be created.
+        makeRow({
+          date: '2026-07-10', amountMinor: -350, payeeName: 'Cafe',
+          accountName: 'Current', tags: ['ghost'],
+        }),
+        makeRow({
+          index: 2, date: '2026-07-11', amountMinor: -800, payeeName: 'Deli',
+          accountName: 'Current', tags: ['weekly', '  food ', 'WEEKLY'],
+        }),
+      ],
+      mwOpts,
+    );
+    expect(plan.rows[0].action).toBe('skip_exact_duplicate');
+
+    const batch = await commitImport(plan);
+    expect((await db.tags.toArray()).map((t) => t.name).sort()).toEqual(['food', 'weekly']);
+    expect(batch.createdTagIds).toHaveLength(2);
+
+    const tagNameById = new Map((await db.tags.toArray()).map((t) => [t.id, t.name]));
+    const written = (await db.transactions.where('importBatchId').equals(batch.id).first())!;
+    expect(written.tagIds.map((id) => tagNameById.get(id))).toEqual(['weekly', 'food']);
+  });
+
+  it('reuses an existing tag instead of creating a second one', async () => {
+    await addAccount('Current');
+    await db.tags.add({ id: uid(), name: 'Food', nameLower: nameKey('Food') });
+    const plan = await buildImportPlan(
+      [makeRow({ accountName: 'Current', payeeName: 'Deli', tags: ['food'] })],
+      mwOpts,
+    );
+    const batch = await commitImport(plan);
+    expect(await db.tags.count()).toBe(1);
+    expect(batch.createdTagIds).toEqual([]);
+    const written = (await db.transactions.where('importBatchId').equals(batch.id).first())!;
+    expect(written.tagIds).toHaveLength(1);
+  });
+});
+
+// ------------------------------------------------- transfer legs (C1, SPEC §7.4)
+// An unpaired leg is written as an ordinary transaction with categoryId null,
+// and every report classifies an uncategorised transaction BY SIGN — so a leg
+// left behind invents real income or real spending. Two defences: pair more of
+// them honestly (±1 day, as real exports book them), and never let one slip
+// through uncounted.
+describe('transfer pairing across a day boundary', () => {
+  const leg = (
+    index: number,
+    accountName: string,
+    other: string,
+    date: string,
+    amountMinor: number,
+  ) => makeRow({ index, accountName, transferAccountName: other, date, amountMinor });
+
+  const twoAccounts = async (): Promise<void> => {
+    await addAccount('Current');
+    await addAccount('Savings');
+  };
+
+  it('pairs legs the export booked a day apart', async () => {
+    await twoAccounts();
+    const plan = await buildImportPlan(
+      [
+        leg(1, 'Current', 'Savings', '2026-07-05', -50000),
+        leg(2, 'Savings', 'Current', '2026-07-06', 50000),
+      ],
+      mwOpts,
+    );
+    expect(plan.rows.map((r) => r.transferPairIndex)).toEqual([1, 0]);
+    expect(plan.unpairedTransferCount).toBe(0);
+
+    await commitImport(plan);
+    const txs = await db.transactions.toArray();
+    expect(txs).toHaveLength(2);
+    expect(txs[0].transferGroupId).not.toBeNull();
+    expect(txs[0].transferGroupId).toBe(txs[1].transferGroupId);
+    expect(txs.every((t) => t.categoryId === null)).toBe(true);
+    // …and therefore no '(transfer)' fallback note and no phantom £500 income.
+    expect(txs.every((t) => !t.notes.includes('(transfer)'))).toBe(true);
+  });
+
+  it('still prefers a same-date partner over a day-apart one', async () => {
+    await twoAccounts();
+    const plan = await buildImportPlan(
+      [
+        leg(1, 'Current', 'Savings', '2026-07-06', -10000),
+        leg(2, 'Savings', 'Current', '2026-07-05', 10000), // a day early…
+        leg(3, 'Savings', 'Current', '2026-07-06', 10000), // …but this is the one
+      ],
+      mwOpts,
+    );
+    expect(plan.rows.map((r) => r.transferPairIndex)).toEqual([2, undefined, 0]);
+    expect(plan.unpairedTransferCount).toBe(1); // the stray +100 is disclosed
+  });
+
+  it('does not cross-link two transfers that each straddle a day', async () => {
+    await twoAccounts();
+    const plan = await buildImportPlan(
+      [
+        leg(1, 'Current', 'Savings', '2026-07-05', -10000),
+        leg(2, 'Savings', 'Current', '2026-07-06', 10000),
+        leg(3, 'Current', 'Savings', '2026-07-07', -10000),
+        leg(4, 'Savings', 'Current', '2026-07-08', 10000),
+      ],
+      mwOpts,
+    );
+    expect(plan.rows.map((r) => r.transferPairIndex)).toEqual([1, 0, 3, 2]);
+    expect(plan.unpairedTransferCount).toBe(0);
+    await commitImport(plan);
+    const groups = new Set((await db.transactions.toArray()).map((t) => t.transferGroupId));
+    expect(groups.size).toBe(2); // two transfers, not one four-legged mess
+  });
+
+  it('counts a leg nothing can pair with, and imports it as an ordinary row', async () => {
+    await twoAccounts();
+    const plan = await buildImportPlan(
+      [
+        leg(1, 'Current', 'Savings', '2026-07-05', -50000),
+        leg(2, 'Savings', 'Current', '2026-07-09', 50000), // four days later
+      ],
+      mwOpts,
+    );
+    expect(plan.rows.map((r) => r.transferPairIndex)).toEqual([undefined, undefined]);
+    expect(plan.unpairedTransferCount).toBe(2);
+    expect(plan.importableCount).toBe(2); // never dropped — just disclosed
+
+    await commitImport(plan);
+    const txs = await db.transactions.toArray();
+    expect(txs.every((t) => t.transferGroupId === null)).toBe(true);
+    expect(txs.every((t) => t.categoryId === null)).toBe(true);
+    expect(txs.every((t) => t.notes.includes('(transfer)'))).toBe(true);
+  });
+
+  it('recounts when a preview edit strands a leg (refreshPlanCounts)', async () => {
+    await addAccount('Current'); // 'Savings' is new — the user can untick it
+    const plan = await buildImportPlan(
+      [
+        leg(1, 'Current', 'Savings', '2026-07-05', -50000),
+        leg(2, 'Savings', 'Current', '2026-07-05', 50000),
+      ],
+      mwOpts,
+    );
+    expect(plan.unpairedTransferCount).toBe(0);
+
+    plan.newAccounts.find((a) => a.name === 'Savings')!.create = false;
+    refreshPlanCounts(plan);
+    // The surviving leg now lands as an ordinary -£500 expense: say so.
+    expect(plan.importableCount).toBe(1);
+    expect(plan.unpairedTransferCount).toBe(1);
+  });
+
+  it('counts a leg whose partner is skipped as an exact duplicate', async () => {
+    const current = await addAccount('Current');
+    await addAccount('Savings');
+    // The outgoing leg is already in the db from an earlier overlapping export.
+    await addTx(current.id, '2026-07-05', -50000, null, '');
+    const plan = await buildImportPlan(
+      [
+        leg(1, 'Current', 'Savings', '2026-07-05', -50000),
+        leg(2, 'Savings', 'Current', '2026-07-05', 50000),
+      ],
+      mwOpts,
+    );
+    expect(plan.rows[0].action).toBe('skip_exact_duplicate');
+    expect(plan.unpairedTransferCount).toBe(1);
+
+    await commitImport(plan);
+    const written = await db.transactions.where('accountId').equals(plan.rows[1].accountId!).first();
+    expect(written!.transferGroupId).toBeNull();
+    expect(written!.notes).toContain('(transfer)');
+  });
+
+  it('is zero for a file with no transfer columns at all', async () => {
+    await addAccount('Current');
+    const plan = await buildImportPlan(
+      [makeRow({ accountName: 'Current', payeeName: 'Tesco' })],
+      mwOpts,
+    );
+    expect(plan.unpairedTransferCount).toBe(0);
+  });
+});
+
 // ----------------------------------------------------------------- undoImport
 describe('undoImport', () => {
   it('returns the db to the pre-import state and keeps pre-existing records', async () => {
@@ -664,6 +898,50 @@ describe('undoImport', () => {
     // The payee predates the import so it survives — but with no transactions
     // left there is nothing to suggest from.
     expect((await db.payees.get(amazon.id))!.defaultCategoryId).toBeNull();
+  });
+
+  // C2/C3: the "is this category still used?" test is now answered from one
+  // pass over the transactions instead of a full table scan per candidate
+  // category. These pin the answers that pass has to keep giving.
+  it('keeps a created category that only a SPLIT still references', async () => {
+    const { rows } = parseMoneyWizCsv(fixture('moneywiz.csv'));
+    const batch = await commitImport(await buildImportPlan(rows, mwOpts));
+    const hobbies = (await db.categories.filter((c) => c.name === 'Hobbies').first())!;
+    const boardGames = (await db.categories.filter((c) => c.name === 'Board Games').first())!;
+    const current = (await db.accounts.filter((a) => a.name === 'Current Account').first())!;
+
+    // The user later splits a transaction of his own into the imported leaf —
+    // a split categoryId lives inside an array, where no index can see it.
+    await db.transactions.add({
+      id: uid(), accountId: current.id, date: '2026-08-20', amountMinor: -1000,
+      currency: 'GBP', payeeId: null, categoryId: null, tagIds: [], notes: 'Game night',
+      status: 'cleared',
+      splits: [
+        { categoryId: boardGames.id, amountMinor: -600 },
+        { categoryId: null, amountMinor: -400 },
+      ],
+      transferGroupId: null, importBatchId: null,
+      dedupeHash: makeDedupeHash(current.id, '2026-08-20', -1000, 'Game night'),
+      createdAt: '2026-08-20T00:00:00.000Z', updatedAt: '2026-08-20T00:00:00.000Z',
+    });
+
+    await undoImport(batch.id);
+    expect(await db.categories.get(boardGames.id)).toBeDefined();
+    // …and its parent survives with it, or the leaf is orphaned.
+    expect(await db.categories.get(hobbies.id)).toBeDefined();
+  });
+
+  it('keeps a created category that a BUDGET references', async () => {
+    const { rows } = parseMoneyWizCsv(fixture('moneywiz.csv'));
+    const batch = await commitImport(await buildImportPlan(rows, mwOpts));
+    const boardGames = (await db.categories.filter((c) => c.name === 'Board Games').first())!;
+    await db.budgets.add({
+      id: uid(), name: 'Games', categoryIds: [boardGames.id], amountMinor: 5000,
+      period: 'monthly', startDate: '2026-08-01', rollover: false, archived: false,
+    });
+
+    await undoImport(batch.id);
+    expect(await db.categories.get(boardGames.id)).toBeDefined();
   });
 
   it('keeps created entities that gained references outside the batch', async () => {

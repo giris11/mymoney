@@ -45,9 +45,12 @@ export default function BackupSection() {
   const nudge = useLive(() => backupNudgeState(), []);
   const [persist, setPersist] = useState<PersistState | null>(null);
   const [estimate, setEstimate] = useState<{ usage: number; quota: number } | null>(null);
-  // Set when the browser took the file but cannot tell us it reached the disk:
-  // only the user can confirm that, and until they do we record nothing.
-  const [awaitingConfirm, setAwaitingConfirm] = useState(false);
+  // Set when the file left the app but nothing can prove it reached storage:
+  // 'delivered' = handed to the browser's downloader (no signal at all),
+  // 'shared' = the OS share sheet completed (a real signal, but not proof the
+  // destination kept it). Only the user can settle either, and until they do
+  // we record nothing (D33).
+  const [pending, setPending] = useState<'shared' | 'delivered' | null>(null);
   const [eraseOpen, setEraseOpen] = useState(false);
   const [busy, setBusy] = useState(false);
 
@@ -63,16 +66,16 @@ export default function BackupSection() {
         // The browser wrote the file where the user chose — observed, so it
         // can be recorded without asking.
         await markBackupSaved();
-        setAwaitingConfirm(false);
+        setPending(null);
         toast('Backup saved', 'success');
       } else if (result === 'cancelled') {
-        setAwaitingConfirm(false);
+        setPending(null);
         toast('Backup cancelled — nothing was saved', 'info');
       } else {
-        setAwaitingConfirm(true);
+        setPending(result);
       }
     } catch (e) {
-      setAwaitingConfirm(false);
+      setPending(null);
       toast(errorMessage(e), 'error');
     }
   };
@@ -80,7 +83,7 @@ export default function BackupSection() {
   const confirmSaved = async () => {
     try {
       await markBackupSaved();
-      setAwaitingConfirm(false);
+      setPending(null);
       toast('Backup recorded', 'success');
     } catch (e) {
       toast(errorMessage(e), 'error');
@@ -140,18 +143,31 @@ export default function BackupSection() {
           </Button>
           <RestoreFromBackup onDone={() => navigate('/dashboard')} />
         </div>
-        {awaitingConfirm && (
+        {pending && (
           <div className="mt-3 rounded-lg border border-warn bg-surface2 p-3 text-sm">
+            {/* Deliberately demanding wording: confirming stamps this as the
+                latest backup, and a backup you only THINK you have is the
+                worst failure this app can have (SPEC §9). */}
             <p className="text-text">
-              Your browser was handed <strong>mymoney-backup-{todayISO()}.json</strong>. It
-              can’t tell the app whether that file was really saved, so check your downloads —
-              then confirm below and it counts as your latest backup.
+              {pending === 'shared' ? (
+                <>
+                  <strong>mymoney-backup-{todayISO()}.json</strong> went to the share sheet. The
+                  app can’t see where it ended up, so only confirm if you actually saved it —
+                  in Files, iCloud Drive, or wherever you keep it.
+                </>
+              ) : (
+                <>
+                  Your browser was handed <strong>mymoney-backup-{todayISO()}.json</strong>. It
+                  can’t tell the app whether that file was really saved, so go and look: open
+                  your downloads and check the file is there, with a size, before you confirm.
+                </>
+              )}
             </p>
             <div className="mt-2 flex flex-wrap gap-2">
               <Button size="sm" variant="primary" onClick={() => void confirmSaved()}>
-                Yes, I have the file
+                {pending === 'shared' ? 'I saved it' : 'I can see the file'}
               </Button>
-              <Button size="sm" onClick={() => setAwaitingConfirm(false)}>
+              <Button size="sm" onClick={() => setPending(null)}>
                 Not saved
               </Button>
             </div>

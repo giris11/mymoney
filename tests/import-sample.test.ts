@@ -4,14 +4,17 @@ import 'fake-indexeddb/auto';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { db, getSettings, updateSettings } from '../src/db/db';
 import { todayISO } from '../src/lib/util';
-import { seedCategoriesIfEmpty } from '../src/db/seed';
+import { ACCOUNT_TEMPLATES, accountFromTemplate, seedCategoriesIfEmpty } from '../src/db/seed';
 import { sumSplits } from '../src/money/money';
 import { setManualRate } from '../src/domain/fx';
 import {
   loadSampleData,
   removeSampleData,
+  SAMPLE_PREFIX,
   sampleDataBatchId,
 } from '../src/domain/sample';
+import { backupNudgeState } from '../src/backup/backup';
+import { visibleNotices } from '../src/ui/layout/BackupNudge';
 
 const clearAll = async (): Promise<void> => {
   await Promise.all(db.tables.map((t) => t.clear()));
@@ -102,12 +105,101 @@ describe('loadSampleData', () => {
     expect(txs.every((t) => t.date <= today)).toBe(true);
   });
 
+  // E1: the first-five-minutes path — accept the four pre-ticked starter
+  // accounts in onboarding, then tap "Load sample data". Before the fix that
+  // produced eight accounts with three DUPLICATED names (Current Account,
+  // Savings, Cash) and ~£12k of demo money hidden inside one net-worth figure.
+  it('never collides with the onboarding starter accounts', async () => {
+    const starters = ACCOUNT_TEMPLATES.map((t, i) => ({
+      ...accountFromTemplate(t, 'GBP', i),
+      openingBalanceMinor: 500_000, // real money, as in the audit's run
+    }));
+    await db.accounts.bulkAdd(starters);
+
+    await loadSampleData();
+
+    const accounts = await db.accounts.toArray();
+    expect(accounts).toHaveLength(8);
+    const names = accounts.map((a) => a.name);
+    expect(new Set(names).size).toBe(names.length); // no duplicated names at all
+
+    // Every one of the user's own accounts is untouched…
+    for (const starter of starters) {
+      expect(await db.accounts.get(starter.id)).toEqual(starter);
+    }
+    // …and every sample account says what it is, wherever it is shown.
+    const batchId = (await sampleDataBatchId())!;
+    const batch = (await db.importBatches.get(batchId))!;
+    expect(batch.createdAccountIds).toHaveLength(4);
+    for (const id of batch.createdAccountIds) {
+      expect((await db.accounts.get(id))!.name.startsWith(SAMPLE_PREFIX)).toBe(true);
+    }
+  });
+
+  it('labels the sample groups and budgets too (SPEC §4)', async () => {
+    await loadSampleData();
+    for (const g of await db.accountGroups.toArray()) {
+      expect(g.name.startsWith(SAMPLE_PREFIX)).toBe(true);
+    }
+    for (const b of await db.budgets.toArray()) {
+      expect(b.name.startsWith(SAMPLE_PREFIX)).toBe(true);
+    }
+  });
+
+  // E2: demo data is not worth backing up, and one tap removes it.
+  it('does not make the backup nudge due, however old the install is', async () => {
+    await updateSettings({ createdAt: '2020-01-01T00:00:00.000Z', lastBackupAt: null });
+    await loadSampleData();
+    const nudge = await backupNudgeState();
+    expect(nudge.txCount).toBeGreaterThan(0);
+    expect(nudge.realTxCount).toBe(0);
+    expect(nudge.due).toBe(false);
+  });
+
   it('is idempotent — a second load does not duplicate', async () => {
     await loadSampleData();
     const count = await db.transactions.count();
     await loadSampleData();
     expect(await db.transactions.count()).toBe(count);
     expect(await db.importBatches.count()).toBe(1);
+  });
+});
+
+// E1(b): loaded sample data must be visible from ANYWHERE, not only from
+// Settings → Imports — the demo money merges into one net-worth figure that
+// cannot label itself. The banner shares App's notice slot with the backup
+// nudge; this is the slot's policy (the markup around it needs a DOM the test
+// suite does not have).
+describe('sample-data notice', () => {
+  const input = (over: Partial<Parameters<typeof visibleNotices>[0]> = {}) => ({
+    sampleBatchId: null as string | null | undefined,
+    sampleDismissed: false,
+    backupDue: false as boolean | undefined,
+    backupDismissed: false,
+    ...over,
+  });
+
+  it('shows while a sample batch exists, and stops when it is removed', async () => {
+    expect(visibleNotices(input({ sampleBatchId: await sampleDataBatchId() }))).toEqual([]);
+    await loadSampleData();
+    expect(visibleNotices(input({ sampleBatchId: await sampleDataBatchId() }))).toEqual(['sample']);
+    await removeSampleData();
+    expect(visibleNotices(input({ sampleBatchId: await sampleDataBatchId() }))).toEqual([]);
+  });
+
+  it('never hides the backup nudge — both notices can show at once', () => {
+    expect(visibleNotices(input({ sampleBatchId: 'b1', backupDue: true }))).toEqual([
+      'sample',
+      'backup',
+    ]);
+    expect(visibleNotices(input({ sampleBatchId: 'b1', backupDue: true, sampleDismissed: true })))
+      .toEqual(['backup']);
+    expect(visibleNotices(input({ sampleBatchId: 'b1', backupDue: true, backupDismissed: true })))
+      .toEqual(['sample']);
+  });
+
+  it('shows nothing while the queries are still loading', () => {
+    expect(visibleNotices(input({ sampleBatchId: undefined, backupDue: undefined }))).toEqual([]);
   });
 });
 

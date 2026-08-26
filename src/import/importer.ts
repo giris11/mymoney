@@ -28,7 +28,7 @@ import { getOrCreatePayee, learnPayeeCategory } from '../domain/payees';
 import { getOrCreateTags } from '../domain/tags';
 import { nameKey, nowISO, uid } from '../lib/util';
 import { decimalsFor } from '../money/money';
-import { checkDuplicate, makeDedupeHash } from './dedupe';
+import { makeDedupeHash, similarPayee } from './dedupe';
 import { detectDecimalStyle, parseImportAmount } from './generic';
 import type { ImportPlan, ImportPlanRow, NewAccountPlan, ParsedRow } from './types';
 
@@ -45,6 +45,18 @@ export interface BuildPlanOptions {
 const ACCOUNT_PALETTE = ['#2563eb', '#059669', '#db2777', '#b45309', '#7c3aed', '#0e7490'];
 
 const pathKey = (path: string[]): string => path.map(nameKey).join('>');
+
+/** Whole days between two 'YYYY-MM-DD' calendar dates (order-independent). */
+const dayGap = (a: string, b: string): number =>
+  Math.abs(Date.parse(`${a}T00:00:00Z`) - Date.parse(`${b}T00:00:00Z`)) / 86_400_000;
+
+/** The ±1-day neighbourhood of a date, nearest first (matches checkDuplicate's
+ *  preference for a same-date match, then the earlier of the two neighbours). */
+const dateWindow = (date: string): string[] => [
+  date,
+  dayjs(date).subtract(1, 'day').format('YYYY-MM-DD'),
+  dayjs(date).add(1, 'day').format('YYYY-MM-DD'),
+];
 
 /**
  * The parsers must scale amounts at a GUESSED currency (the account isn't
@@ -109,6 +121,22 @@ function isEffectiveImport(plan: ImportPlan, pr: ImportPlanRow): boolean {
   return na?.create === true;
 }
 
+/**
+ * A row that will be written as an ORDINARY transaction even though the file
+ * called it a transfer leg: either nothing paired with it, or its partner is
+ * not being written (skipped duplicate, untick'd account, user decision).
+ * commitImport applies exactly this test when it appends '(transfer)' to the
+ * notes and leaves categoryId null — and an uncategorised transaction is
+ * classified BY SIGN in every report, so each of these silently becomes real
+ * income or real spending. Counted so the preview can warn (SPEC §7.4).
+ */
+function importsAsPlainTransfer(plan: ImportPlan, pr: ImportPlanRow): boolean {
+  if (!pr.row.transferAccountName) return false;
+  if (!isEffectiveImport(plan, pr)) return false;
+  const partner = pr.transferPairIndex !== undefined ? plan.rows[pr.transferPairIndex] : undefined;
+  return partner === undefined || !isEffectiveImport(plan, partner);
+}
+
 /** Recompute the counters after preview edits (decisions, untick account). */
 export function refreshPlanCounts(plan: ImportPlan): void {
   plan.exactDuplicateCount = plan.rows.filter((r) => r.action === 'skip_exact_duplicate').length;
@@ -119,6 +147,7 @@ export function refreshPlanCounts(plan: ImportPlan): void {
   plan.currencyMismatchCount = plan.rows.filter(
     (r) => r.currencyMismatch && isEffectiveImport(plan, r),
   ).length;
+  plan.unpairedTransferCount = plan.rows.filter((r) => importsAsPlainTransfer(plan, r)).length;
 }
 
 export async function buildImportPlan(
@@ -217,26 +246,41 @@ export async function buildImportPlan(
   // currency) they must match exactly, and that test uses each row's ACCOUNT
   // currency, never the currency the file declares: a row's declared currency
   // describes the purchase, while the ledger is always the account's (A1).
-  for (let i = 0; i < planRows.length; i++) {
-    const a = planRows[i];
-    if (a.action === 'error' || a.transferPairIndex !== undefined || !a.row.transferAccountName) continue;
-    for (let j = i + 1; j < planRows.length; j++) {
-      const b = planRows[j];
-      if (b.action === 'error' || b.transferPairIndex !== undefined || !b.row.transferAccountName) continue;
-      if (nameKey(a.row.transferAccountName) !== nameKey(b.row.accountName ?? '')) continue;
-      if (nameKey(b.row.transferAccountName) !== nameKey(a.row.accountName ?? '')) continue;
-      if (a.row.date !== b.row.date) continue;
-      const amountA = a.row.amountMinor!;
-      const amountB = b.row.amountMinor!;
-      if (!((amountA < 0 && amountB > 0) || (amountA > 0 && amountB < 0))) continue;
-      if (accountCurrency(a) === accountCurrency(b) && Math.abs(amountA) !== Math.abs(amountB)) {
-        continue;
+  //
+  // The two legs need not share a date: real exports routinely book the money
+  // leaving on one day and arriving the next. A leg left unpaired is written
+  // as an ordinary uncategorised transaction, which reports then read BY SIGN
+  // as genuine income or spending — so the same ±1-day window the duplicate
+  // check already uses applies here (SPEC §7.4). A same-date partner always
+  // wins over a day-apart one; everything else about the match is unchanged.
+  const pairTransfers = (maxGapDays: number): void => {
+    for (let i = 0; i < planRows.length; i++) {
+      const a = planRows[i];
+      if (a.action === 'error' || a.transferPairIndex !== undefined || !a.row.transferAccountName) continue;
+      for (let j = i + 1; j < planRows.length; j++) {
+        const b = planRows[j];
+        if (b.action === 'error' || b.transferPairIndex !== undefined || !b.row.transferAccountName) continue;
+        if (nameKey(a.row.transferAccountName) !== nameKey(b.row.accountName ?? '')) continue;
+        if (nameKey(b.row.transferAccountName) !== nameKey(a.row.accountName ?? '')) continue;
+        if (dayGap(a.row.date!, b.row.date!) > maxGapDays) continue;
+        const amountA = a.row.amountMinor!;
+        const amountB = b.row.amountMinor!;
+        if (!((amountA < 0 && amountB > 0) || (amountA > 0 && amountB < 0))) continue;
+        if (accountCurrency(a) === accountCurrency(b) && Math.abs(amountA) !== Math.abs(amountB)) {
+          continue;
+        }
+        a.transferPairIndex = j;
+        b.transferPairIndex = i;
+        break;
       }
-      a.transferPairIndex = j;
-      b.transferPairIndex = i;
-      break;
     }
-  }
+  };
+  // Two passes, so a same-date partner is never lost to a day-apart one: the
+  // first pass is exactly the original same-date rule, the second only gets
+  // the legs it left over (a leg with a same-date partner cannot survive the
+  // first pass, so the second can only ever pair across a day).
+  pairTransfers(0);
+  pairTransfers(1);
 
   // ---- 3. category paths --------------------------------------------------
   const roots = categories.filter((c) => c.parentId === null);
@@ -337,50 +381,92 @@ export async function buildImportPlan(
           .toArray(),
       ),
     );
-    const existingByAccount = new Map(accountIds.map((id, i) => [id, lists[i]]));
     const payeeNameById = new Map(payees.map((p) => [p.id, p.name]));
     const payeeNameOf = (t: Transaction): string =>
       t.payeeId ? (payeeNameById.get(t.payeeId) ?? '') : t.notes;
     const labelOf = (pr: ImportPlanRow): string => pr.row.payeeName ?? pr.row.description ?? '';
 
     // Each existing transaction may absorb at most ONE file row: a match is
-    // CONSUMED (spliced out of its account's candidate list). Without that,
-    // two legitimate identical rows in one file both match the single
-    // transaction already in the db and both get skipped — real money silently
-    // dropped. Re-importing the same file still skips everything, because N
-    // file rows then face N existing transactions.
+    // CONSUMED. Without that, two legitimate identical rows in one file both
+    // match the single transaction already in the db and both get skipped —
+    // real money silently dropped. Re-importing the same file still skips
+    // everything, because N file rows then face N existing transactions.
     // Exact matches run first so a near-duplicate can never steal the
     // transaction an exact re-import needs.
+    //
+    // Both passes are INDEXED rather than scanned: a linear findIndex per row
+    // over the account's candidates made a first import (20k rows against 50k
+    // existing) quadratic — seventeen seconds of frozen main thread. The exact
+    // pass keys candidates by dedupeHash (a queue per hash, consumed from the
+    // front, so identical existing transactions are still absorbed one row at
+    // a time). The near pass buckets by amountMinor + date, which are the two
+    // conditions checkDuplicate insists on exactly, so only plausible
+    // candidates ever reach the payee-similarity comparison. Consumed entries
+    // are dropped lazily from their bucket, keeping the whole thing linear.
+    interface AccountIndex {
+      byHash: Map<string, { items: Transaction[]; next: number }>;
+      byAmountDate: Map<string, Transaction[]>;
+      consumed: Set<string>;
+    }
+    const amountDateKey = (amountMinor: number, date: string): string => `${amountMinor}|${date}`;
+    const indexByAccount = new Map<string, AccountIndex>();
+    accountIds.forEach((id, i) => {
+      const idx: AccountIndex = { byHash: new Map(), byAmountDate: new Map(), consumed: new Set() };
+      // Insertion order follows the [accountId+date] index — date ascending,
+      // exactly the order the old linear scan saw, so "first match wins" and
+      // "prefer the nearest date" resolve to the same transaction as before.
+      for (const t of lists[i]) {
+        const queue = idx.byHash.get(t.dedupeHash);
+        if (queue) queue.items.push(t);
+        else idx.byHash.set(t.dedupeHash, { items: [t], next: 0 });
+        const key = amountDateKey(t.amountMinor, t.date);
+        const bucket = idx.byAmountDate.get(key);
+        if (bucket) bucket.push(t);
+        else idx.byAmountDate.set(key, [t]);
+      }
+      indexByAccount.set(id, idx);
+    });
+
     const needsNearCheck: ImportPlanRow[] = [];
     for (const pr of dedupeRows) {
-      const candidates = existingByAccount.get(pr.accountId!) ?? [];
+      const idx = indexByAccount.get(pr.accountId!)!;
       const hash = makeDedupeHash(pr.accountId!, pr.row.date!, pr.row.amountMinor!, labelOf(pr));
-      const i = candidates.findIndex((t) => t.dedupeHash === hash);
-      if (i >= 0) {
+      const queue = idx.byHash.get(hash);
+      if (queue && queue.next < queue.items.length) {
         pr.action = 'skip_exact_duplicate';
-        candidates.splice(i, 1);
+        idx.consumed.add(queue.items[queue.next].id);
+        queue.next++;
       } else {
         needsNearCheck.push(pr);
       }
     }
     for (const pr of needsNearCheck) {
-      const candidates = existingByAccount.get(pr.accountId!) ?? [];
-      const result = checkDuplicate(
-        {
-          accountId: pr.accountId!,
-          date: pr.row.date!,
-          amountMinor: pr.row.amountMinor!,
-          payeeOrDescription: labelOf(pr),
-        },
-        candidates,
-        payeeNameOf,
-      );
-      if (result.nearDuplicateOf) {
+      const idx = indexByAccount.get(pr.accountId!)!;
+      const label = labelOf(pr);
+      let found: Transaction | null = null;
+      // No exact-hash candidate can remain here (the pass above drained every
+      // queue it matched), so this only has to find the nearest similar row.
+      for (const date of dateWindow(pr.row.date!)) {
+        const bucket = idx.byAmountDate.get(amountDateKey(pr.row.amountMinor!, date));
+        if (!bucket) continue;
+        for (let k = 0; k < bucket.length; k++) {
+          const t = bucket[k];
+          if (idx.consumed.has(t.id)) {
+            bucket.splice(k--, 1); // lazy cleanup keeps the scan amortised O(1)
+            continue;
+          }
+          if (!similarPayee(label, payeeNameOf(t))) continue;
+          found = t;
+          bucket.splice(k, 1);
+          break;
+        }
+        if (found) break;
+      }
+      if (found) {
         pr.action = 'needs_decision';
-        pr.nearDuplicateOf = result.nearDuplicateOf;
+        pr.nearDuplicateOf = found;
         pr.decision = 'skip'; // never silently doubled — user must opt in
-        const j = candidates.indexOf(result.nearDuplicateOf);
-        if (j >= 0) candidates.splice(j, 1);
+        idx.consumed.add(found.id);
       }
     }
   }
@@ -397,6 +483,7 @@ export async function buildImportPlan(
     nearDuplicateCount: 0,
     errorCount: 0,
     currencyMismatchCount: 0,
+    unpairedTransferCount: 0,
     importableCount: 0,
   };
   refreshPlanCounts(plan);
@@ -431,6 +518,7 @@ export async function commitImport(plan: ImportPlan): Promise<ImportBatch> {
     // ---- accounts ---------------------------------------------------------
     const accountsNow = await db.accounts.toArray();
     const accountByKey = new Map(accountsNow.map((a) => [nameKey(a.name), a]));
+    const accountById = new Map(accountsNow.map((a) => [a.id, a]));
     let sortOrder = accountsNow.reduce((m, a) => Math.max(m, a.sortOrder), -1) + 1;
     for (const na of plan.newAccounts) {
       if (!na.create || accountByKey.has(nameKey(na.name))) continue;
@@ -447,6 +535,7 @@ export async function commitImport(plan: ImportPlan): Promise<ImportBatch> {
       };
       await db.accounts.add(account);
       accountByKey.set(nameKey(account.name), account);
+      accountById.set(account.id, account);
       batch.createdAccountIds.push(account.id);
     }
 
@@ -472,16 +561,57 @@ export async function commitImport(plan: ImportPlan): Promise<ImportBatch> {
       leafByPathKey.set(key, leaf.id);
     }
 
+    // ---- tags --------------------------------------------------------------
+    // Resolved ONCE for the whole file, exactly as payees are: a per-row
+    // getOrCreateTags meant an indexed lookup per tag per row (two awaited
+    // round-trips on a typical row), which is most of what made a day-one
+    // import of years of history freeze the tab. Only tags on rows that will
+    // actually be written are created, which is what the per-row call did.
+    const tagNamesInPlan: string[] = [];
+    const seenTagKeys = new Set<string>();
+    for (const pr of plan.rows) {
+      if (!effective(pr)) continue;
+      for (const raw of pr.row.tags) {
+        const clean = raw.trim().replace(/\s+/g, ' ');
+        if (!clean) continue;
+        const key = nameKey(clean);
+        if (seenTagKeys.has(key)) continue;
+        seenTagKeys.add(key);
+        tagNamesInPlan.push(clean);
+      }
+    }
+    const tagIdByKey = new Map<string, string>();
+    if (tagNamesInPlan.length > 0) {
+      for (const tag of await getOrCreateTags(tagNamesInPlan)) {
+        tagIdByKey.set(tag.nameLower, tag.id);
+      }
+    }
+    /** Tag ids for one row: row order, de-duplicated, blanks dropped. */
+    const tagIdsFor = (names: string[]): string[] => {
+      const out: string[] = [];
+      const seen = new Set<string>();
+      for (const raw of names) {
+        const key = nameKey(raw.trim().replace(/\s+/g, ' '));
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        const id = tagIdByKey.get(key);
+        if (id) out.push(id);
+      }
+      return out;
+    };
+
     // ---- transactions ------------------------------------------------------
     const transferGroupByPair = new Map<string, string>();
     const payeeCache = new Map<string, Payee>();
-    let written = 0;
+    const toWrite: Transaction[] = [];
     for (let i = 0; i < plan.rows.length; i++) {
       const pr = plan.rows[i];
       if (!effective(pr)) continue;
       const row = pr.row;
+      // The account map is already in hand — re-fetching it per row was one
+      // awaited round-trip per row for a record we had.
       const account = pr.accountId
-        ? (await db.accounts.get(pr.accountId))!
+        ? accountById.get(pr.accountId)
         : accountByKey.get(nameKey(row.accountName ?? ''));
       if (!account) continue; // new account was unticked — row errors out
 
@@ -516,7 +646,7 @@ export async function commitImport(plan: ImportPlan): Promise<ImportBatch> {
         }
       }
 
-      const tagIds = row.tags.length > 0 ? (await getOrCreateTags(row.tags)).map((t) => t.id) : [];
+      const tagIds = row.tags.length > 0 ? tagIdsFor(row.tags) : [];
 
       // A transaction's amount is ALWAYS denominated in its ACCOUNT's currency
       // — saveTransaction enforces it and balances/net worth sum amountMinor
@@ -573,11 +703,13 @@ export async function commitImport(plan: ImportPlan): Promise<ImportBatch> {
         createdAt: timestamp,
         updatedAt: timestamp,
       };
-      await db.transactions.add(tx);
-      written++;
+      toWrite.push(tx);
     }
+    // One bulk write instead of an awaited add per row — same records, same
+    // order, inside the same rw transaction.
+    if (toWrite.length > 0) await db.transactions.bulkAdd(toWrite);
 
-    batch.rowCount = written;
+    batch.rowCount = toWrite.length;
     batch.createdCategoryIds = (await db.categories.toCollection().primaryKeys()).filter(
       (id) => !categoryIdsBefore.has(id),
     );
@@ -617,6 +749,22 @@ export async function undoImport(batchId: string): Promise<void> {
     //    children, no budget references. Loop to a fixpoint so leaves are
     //    removed before their (also-created) parents.
     const pendingCategories = new Set(batch.createdCategoryIds);
+    // Split categories live inside an array field, so no index can find them —
+    // it takes a scan. ONE scan, though: the old code ran a full-table filter
+    // per candidate category, so undoing an import that created twenty
+    // categories walked every transaction twenty times. Nothing below deletes
+    // transactions, so this set stays valid for the whole fixpoint loop.
+    // Budgets get the same treatment (categoryIds is an array field too).
+    const splitCategoryIds = new Set<string>();
+    const budgetCategoryIds = new Set<string>();
+    if (pendingCategories.size > 0) {
+      await db.transactions.each((t) => {
+        for (const s of t.splits) if (s.categoryId) splitCategoryIds.add(s.categoryId);
+      });
+      await db.budgets.each((b) => {
+        for (const id of b.categoryIds) budgetCategoryIds.add(id);
+      });
+    }
     let progress = true;
     while (progress && pendingCategories.size > 0) {
       progress = false;
@@ -624,10 +772,8 @@ export async function undoImport(batchId: string): Promise<void> {
         const children = await db.categories.where('parentId').equals(id).count();
         if (children > 0) continue; // try again after children are removed
         const direct = await db.transactions.where('categoryId').equals(id).count();
-        const inSplits = direct > 0
-          ? 1
-          : await db.transactions.filter((t) => t.splits.some((s) => s.categoryId === id)).count();
-        const inBudgets = await db.budgets.filter((b) => b.categoryIds.includes(id)).count();
+        const inSplits = splitCategoryIds.has(id) ? 1 : 0;
+        const inBudgets = budgetCategoryIds.has(id) ? 1 : 0;
         if (direct > 0 || inSplits > 0 || inBudgets > 0) {
           pendingCategories.delete(id); // still in use — keep it
           continue;

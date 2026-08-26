@@ -83,6 +83,16 @@ export interface ImportPlan {
    * amount is stored as the account's currency and the file's currency is
    * noted on the transaction, so the preview can say so honestly (SPEC §6). */
   currencyMismatchCount: number;
+  /**
+   * Rows that WILL be written and name another account in the file's
+   * Transfers column, but whose opposite leg is not being written (no partner
+   * row was found, or the partner is a skipped duplicate / an untick'd
+   * account). Each becomes an ORDINARY transaction with `categoryId: null` —
+   * and reports classify an uncategorised transaction by its sign, so every
+   * one of these shows up as real income or real spending. The preview must
+   * say so out loud: a silently unpaired £500 leg invents £500 of income.
+   */
+  unpairedTransferCount: number;
   /** Rows that will be written if committed now (respects decisions). */
   importableCount: number;
 }

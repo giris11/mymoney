@@ -10,13 +10,16 @@
 //  * restoring a backup with schemaVersion older than current applies the
 //    necessary upgrades (see upgradeBackupData); newer than current → refuse
 //    with a clear error;
-//  * downloadBackup hands the JSON file to the user and reports whether the
-//    save was OBSERVED, merely delivered, or cancelled — it never stamps
-//    settings.lastBackupAt itself (D30);
+//  * downloadBackup hands the JSON file to the user by the most observable
+//    route the device offers (file picker > OS share sheet > <a download>) and
+//    reports which of them happened — it never stamps settings.lastBackupAt
+//    itself (D33);
 //  * markBackupSaved is the only writer of settings.lastBackupAt: call it for
 //    an observed save, or when the user confirms the file landed;
-//  * nudge: due when transactions exist and lastBackupAt is null or >7 days
-//    ago (SPEC §8.1.9).
+//  * nudge: due when the user's OWN transactions exist (sample rows don't
+//    count) and it is 7+ days since the last backup — or, with no backup ever,
+//    7+ days since the install (settings.createdAt). SPEC §8.1.9 says "no
+//    backup in 7+ days", not "no backup yet".
 import { ALL_TABLES, db, getSettings, SCHEMA_VERSION, updateSettings } from '../db/db';
 import { nowISO, todayISO } from '../lib/util';
 
@@ -43,9 +46,36 @@ export async function exportBackup(): Promise<BackupFile> {
   };
 }
 
-/** Pretty JSON (2-space indent) — humans may inspect their backups. */
+/**
+ * Total rows above which a backup is written COMPACT (E3).
+ *
+ * Pretty-printing costs ~45% of the file size — measured 26.5 MB vs 18.2 MB at
+ * 50,000 transactions, ~53 MB vs ~36 MB at 100,000. That is a real burden when
+ * the file has to travel off a phone, and nobody reads a 50,000-row JSON file
+ * by eye anyway. Below the threshold the readability is free and occasionally
+ * useful (a demo or a first week's data can be eyeballed in a text editor), so
+ * small backups stay indented. ~2,000 rows is a few years of a light user or a
+ * couple of months of a heavy one, and pretty-prints to well under 1 MB.
+ *
+ * Restore does not care either way: it is JSON.parse.
+ */
+export const PRETTY_PRINT_ROW_LIMIT = 2000;
+
+/** Count every row in the snapshot, across all tables. */
+function totalRows(file: BackupFile): number {
+  let n = 0;
+  for (const rows of Object.values(file.tables)) if (Array.isArray(rows)) n += rows.length;
+  return n;
+}
+
+/**
+ * Serialize a backup: indented while it is small enough for a human to read,
+ * compact once it is big enough for the size to matter (PRETTY_PRINT_ROW_LIMIT).
+ */
 export function serializeBackup(file: BackupFile): string {
-  return JSON.stringify(file, null, 2);
+  return totalRows(file) > PRETTY_PRINT_ROW_LIMIT
+    ? JSON.stringify(file)
+    : JSON.stringify(file, null, 2);
 }
 
 export type BackupValidation = { ok: true; file: BackupFile } | { ok: false; error: string };
@@ -150,13 +180,18 @@ export async function restoreBackup(file: BackupFile): Promise<void> {
  * What actually happened to the file (D30):
  *  * 'saved' — the browser confirmed the bytes were written to a location the
  *    user chose. The only outcome we can honestly call a backup.
+ *  * 'shared' — the OS share sheet ran to completion with the file attached
+ *    (iOS/Android). Stronger than 'delivered': the user picked a destination
+ *    and a cancel would have rejected. Still not proof that the destination
+ *    KEPT the file (a share into a mail draft that is then discarded looks the
+ *    same), so the caller still asks — but asks about a specific, real event.
  *  * 'delivered' — the file was handed to the browser's downloader, which
  *    reports nothing back: it may be on disk, or the user may have cancelled
  *    the "where to save?" dialog, or the download may have been blocked. The
  *    caller must ask the user before recording it.
- *  * 'cancelled' — the user dismissed the save dialog; nothing was written.
+ *  * 'cancelled' — the user dismissed the save/share dialog; nothing was written.
  */
-export type BackupSaveResult = 'saved' | 'delivered' | 'cancelled';
+export type BackupSaveResult = 'saved' | 'shared' | 'delivered' | 'cancelled';
 
 interface SaveFilePickerWindow {
   showSaveFilePicker?: (options: {
@@ -203,13 +238,65 @@ async function saveViaFilePicker(
   return 'saved';
 }
 
+interface ShareNavigator {
+  canShare?: (data: { files?: File[] }) => boolean;
+  share?: (data: { files?: File[]; title?: string }) => Promise<void>;
+  maxTouchPoints?: number;
+}
+
+/**
+ * Is the OS share sheet the right save path on this device? (E4)
+ *
+ * On a phone or tablet an <a download> is the worst case in this whole file:
+ * iOS gives no completion signal, no dialog and no obvious destination, so the
+ * app can never honestly say a backup happened. `navigator.share({files})`
+ * does give a signal — the user chooses "Save to Files"/iCloud Drive and a
+ * cancel REJECTS with AbortError.
+ *
+ * Desktops are deliberately excluded (`maxTouchPoints === 0`): Chromium
+ * desktop already has the strictly better showSaveFilePicker path, and on
+ * macOS Safari a share sheet in place of the familiar download would be a
+ * surprise, not an improvement.
+ */
+export function shareSheetAvailable(): boolean {
+  if (typeof navigator === 'undefined' || typeof File === 'undefined') return false;
+  const nav = navigator as unknown as ShareNavigator;
+  if (typeof nav.share !== 'function' || typeof nav.canShare !== 'function') return false;
+  return (nav.maxTouchPoints ?? 0) > 0;
+}
+
+/**
+ * Web Share path (iOS/Android): hand the JSON over as a real File so the share
+ * sheet offers "Save to Files"/Drive. Resolving means the sheet completed;
+ * AbortError means the user backed out and nothing was written — a genuine
+ * signal either way, which is more than the anchor can ever give. Any other
+ * error (NotAllowedError from a lost user gesture, an unshareable type) falls
+ * back to the anchor rather than failing the export.
+ */
+async function saveViaShareSheet(
+  json: string,
+  fileName: string,
+): Promise<BackupSaveResult | 'unsupported'> {
+  if (!shareSheetAvailable()) return 'unsupported';
+  const nav = navigator as unknown as ShareNavigator;
+  const file = new File([json], fileName, { type: 'application/json' });
+  if (!nav.canShare!({ files: [file] })) return 'unsupported';
+  try {
+    await nav.share!({ files: [file], title: fileName });
+  } catch (e) {
+    if (isAbort(e)) return 'cancelled';
+    return 'unsupported';
+  }
+  return 'shared';
+}
+
 /**
  * Browser-only: build the snapshot and hand it to the user. Deliberately does
- * NOT touch settings.lastBackupAt — a browser cannot tell us that an
- * <a download> reached the disk, and telling someone they have a backup they
- * do not have is the worst failure this app can have (SPEC §9). Callers stamp
- * via markBackupSaved() on 'saved', or after the user confirms a 'delivered'
- * file arrived.
+ * NOT touch settings.lastBackupAt — neither an <a download> nor a share sheet
+ * can tell us the file reached storage, and telling someone they have a backup
+ * they do not have is the worst failure this app can have (SPEC §9). Callers
+ * stamp via markBackupSaved() on 'saved', or after the user confirms a
+ * 'shared'/'delivered' file really landed.
  */
 export async function downloadBackup(): Promise<BackupSaveResult> {
   if (typeof document === 'undefined' || typeof Blob === 'undefined') {
@@ -219,8 +306,14 @@ export async function downloadBackup(): Promise<BackupSaveResult> {
   const json = serializeBackup(await exportBackup());
   const fileName = `mymoney-backup-${todayISO()}.json`;
 
+  // Best available signal first: an observed write (Chromium desktop), then the
+  // share sheet (phones/tablets — a real completion/cancel signal), then the
+  // anchor, which tells us nothing and must be confirmed by the user.
   const picked = await saveViaFilePicker(json, fileName);
   if (picked !== 'unsupported') return picked;
+
+  const shared = await saveViaShareSheet(json, fileName);
+  if (shared !== 'unsupported') return shared;
 
   const blob = new Blob([json], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
@@ -251,22 +344,55 @@ export async function markBackupSaved(when: string = nowISO()): Promise<void> {
 export interface BackupNudge {
   due: boolean;
   lastBackupAt: string | null;
+  /** Every transaction in the database, sample rows included. */
   txCount: number;
+  /** Transactions a backup would actually be protecting — sample rows excluded. */
+  realTxCount: number;
 }
 
 const NUDGE_AFTER_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
-/** Due when transactions exist AND (never backed up OR last backup >7 days old). */
+/**
+ * Transactions belonging to a 'sample' import batch (D19). Counted through the
+ * importBatchId index, so the common case (no sample data) costs one tiny
+ * importBatches scan and the loaded case never walks the transactions table.
+ */
+async function sampleTransactionCount(): Promise<number> {
+  const sampleBatchIds = await db.importBatches
+    .filter((b) => b.source === 'sample')
+    .primaryKeys();
+  if (sampleBatchIds.length === 0) return 0;
+  return db.transactions.where('importBatchId').anyOf(sampleBatchIds as string[]).count();
+}
+
+/**
+ * Due when there is real data to lose AND no backup in 7+ days (SPEC §8.1.9).
+ *
+ * Two things this deliberately does NOT do:
+ *  * nag on day one. "No backup yet" is not the same as "no backup in 7 days":
+ *    with lastBackupAt still null the clock runs from settings.createdAt, so a
+ *    fresh install gets the same week of grace the spec gives everyone else.
+ *    (Settings → Backup still says "Never backed up." the whole time — the
+ *    state is visible, it is just not shouted from every screen.)
+ *  * nag about demo money. If every transaction present belongs to the sample
+ *    batch there is nothing of the user's to lose, and one tap deletes the lot.
+ * Unparseable timestamps always count as stale: never claim a backup we cannot
+ * prove.
+ */
 export async function backupNudgeState(): Promise<BackupNudge> {
   const txCount = await db.transactions.count();
-  const { lastBackupAt } = await getSettings();
-  let stale = true;
-  if (lastBackupAt !== null) {
+  const realTxCount = txCount === 0 ? 0 : txCount - (await sampleTransactionCount());
+  const { lastBackupAt, createdAt } = await getSettings();
+
+  let stale: boolean;
+  if (lastBackupAt === null) {
+    const created = Date.parse(createdAt);
+    stale = Number.isNaN(created) || Date.now() - created > NUDGE_AFTER_MS;
+  } else {
     const t = Date.parse(lastBackupAt);
-    // An unparseable timestamp counts as stale — never claim a recent backup we can't prove.
     stale = Number.isNaN(t) || Date.now() - t > NUDGE_AFTER_MS;
   }
-  return { due: txCount > 0 && stale, lastBackupAt, txCount };
+  return { due: realTxCount > 0 && stale, lastBackupAt, txCount, realTxCount };
 }
 
 export const CURRENT_SCHEMA_VERSION = SCHEMA_VERSION;

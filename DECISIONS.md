@@ -11,7 +11,17 @@ Every non-obvious choice made while building, per Working Agreement §2. Newest 
 - **D2. Styling: Tailwind CSS v4** (via `@tailwindcss/vite`). Chosen over CSS modules: faster to keep two themes + responsive layouts consistent, compiles to a single static stylesheet, zero runtime cost. Theme colours are CSS variables so dark/light is one attribute flip.
 - **D3. No router library.** A ~40-line hash router (`#/transactions` etc.). Hash routing is what makes the app work on GitHub Pages subpaths **and** opened as plain `file://` static files (spec §13) with zero server config.
 - **D4. No state-management library.** Dexie is the single source of truth; UI subscribes via Dexie's built-in `liveQuery` wrapped in a small `useLive` hook (written in-repo, ~20 lines, `useSyncExternalStore`-style). Avoids adding `dexie-react-hooks` or Redux/Zustand.
-- **D5. IDs are `crypto.randomUUID()`** strings. No id-generation dependency.
+- **D5. IDs are v4 UUID strings**, generated in-repo with no dependency.
+  **Amended (2026-08-26):** `crypto.randomUUID()` alone was a latent blocker —
+  it is specified as *secure-context only*, so it exists on https and
+  `localhost` but is simply absent over a LAN address like
+  `http://192.168.1.20:5173`, which is exactly how SPEC §11.6 says the phone
+  gets the app. Every id flows through `uid()`, including the startup category
+  seed, so onboarding died before rendering. It is now a ladder: `randomUUID`
+  when present, else `crypto.getRandomValues` (not secure-context gated) with
+  the RFC 4122 version/variant bits stamped, else `Math.random` as a last
+  resort. These are local record ids, never tokens or keys — Phase 2 encryption
+  must use WebCrypto directly and must never call `uid()`.
 - **D6. Dates stored as `'YYYY-MM-DD'` strings** (transaction `date`), plus ISO timestamps for `createdAt`/`updatedAt`. Sortable, indexable, timezone-proof (a purchase on the 3rd stays on the 3rd regardless of DST/travel). dayjs used for period math; display format is `DD/MM/YYYY` (en-GB).
 - **D7. Vite `base: './'`** (relative). One setting makes the same build work at
   `localhost`, any static host, and any GitHub Pages subpath.
@@ -119,6 +129,17 @@ Every non-obvious choice made while building, per Working Agreement §2. Newest 
   older build gains newly added fields with their defaults instead of
   `undefined`. Adding a setting therefore needs no schema migration, and older
   backups keep restoring cleanly (SPEC §9).
+- **D37. The LAN-http route runs the app but is not the PWA.** `vite` now binds
+  to every interface (`server.host`), so the iPhone can reach the dev server on
+  the same wifi as SPEC §11.6 promises. But a LAN address is `http://`, which is
+  not a secure context: **service workers do not register and
+  `navigator.storage.persist()` is unavailable there**. So that route is for
+  *trying* the app — it is not offline-capable, not truly installable, and iOS
+  may evict its data without the persistence request. SPEC §12's "install it on
+  an iPhone home screen and use it in airplane mode" therefore needs an https
+  origin (GitHub Pages, which is one command away when Girish asks). Recording
+  this because it is a deployment fact, not a bug, and it decides where his real
+  history should live.
 
 ## UX
 

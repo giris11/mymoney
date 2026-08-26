@@ -22,6 +22,23 @@ import {
 } from './wizardLogic';
 
 const NEAR_DUP_DISPLAY_CAP = 50;
+/** A file that failed wholesale (one misread date column) has an error per row.
+ *  Rendering 30,000 list items locks the tab at the exact moment the errors
+ *  need reading, so the list is capped like every other section here. */
+const ERROR_DISPLAY_CAP = 50;
+const ROW_DISPLAY_CAP = 200;
+
+/** What one plan.unpairedTransferCount means, in the user's terms. */
+export function unpairedTransferNote(count: number): string | null {
+  if (count <= 0) return null;
+  return count === 1
+    ? '1 transfer leg has no matching opposite row in this file, so it imports as an ' +
+        'ordinary uncategorised transaction — it will show up in your income and spending ' +
+        'reports until you pair it up or categorise it.'
+    : `${count} transfer legs have no matching opposite row in this file, so they import as ` +
+        'ordinary uncategorised transactions — they will show up in your income and spending ' +
+        'reports until you pair them up or categorise them.';
+}
 
 export function PreviewStep({
   plan,
@@ -106,6 +123,7 @@ export function PreviewStep({
   // an ambiguous export (03/04 is either) can be checked at a glance.
   const dateExample = dateFormat ? exampleDateUnder(sampleDate ?? null, dateFormat) : null;
   const currencyNote = currencyMismatchNote(plan.currencyMismatchCount);
+  const unpairedNote = unpairedTransferNote(plan.unpairedTransferCount);
 
   const nearRows = plan.rows.filter((pr) => pr.action === 'needs_decision');
   const errorRows = plan.rows.filter((pr) => pr.action === 'error');
@@ -126,6 +144,16 @@ export function PreviewStep({
       );
     }
     if (!willImport(pr)) return <StatChip>account not created</StatChip>;
+    // Mirrors the engine's unpairedTransferCount rule, so the summary chip's
+    // number can be traced to the actual rows — and they are exactly the rows
+    // where setting a category in this table is the fix.
+    if (pr.row.transferAccountName) {
+      const partner =
+        pr.transferPairIndex !== undefined ? plan.rows[pr.transferPairIndex] : undefined;
+      if (partner === undefined || !willImport(partner)) {
+        return <StatChip tone="warn">unpaired transfer</StatChip>;
+      }
+    }
     return null;
   };
 
@@ -249,10 +277,16 @@ export function PreviewStep({
               {plural(plan.nearDuplicateCount, 'near-duplicate')} need your decision
             </StatChip>
           )}
+          {plan.unpairedTransferCount > 0 && (
+            <StatChip tone="warn">
+              {plural(plan.unpairedTransferCount, 'unpaired transfer leg')}
+            </StatChip>
+          )}
           {plan.errorCount > 0 && (
             <StatChip tone="danger">{plural(plan.errorCount, 'error')}</StatChip>
           )}
         </div>
+        {unpairedNote && <p className="mt-1.5 text-sm text-warn">{unpairedNote}</p>}
         {currencyNote && <p className="mt-1.5 text-sm text-warn">{currencyNote}</p>}
       </div>
 
@@ -396,13 +430,19 @@ export function PreviewStep({
       {errorRows.length > 0 && (
         <Disclosure title="Rows with errors (not imported)" count={errorRows.length}>
           <ul className="flex max-h-48 flex-col gap-0.5 overflow-y-auto text-sm">
-            {errorRows.map((pr) => (
+            {errorRows.slice(0, ERROR_DISPLAY_CAP).map((pr) => (
               <li key={pr.row.index}>
                 <span className="text-muted">Row {pr.row.index}:</span>{' '}
                 <span className="text-danger">{pr.row.error ?? 'Unparseable row'}</span>
               </li>
             ))}
           </ul>
+          {errorRows.length > ERROR_DISPLAY_CAP && (
+            <p className="mt-1.5 text-xs text-muted">
+              …and {errorRows.length - ERROR_DISPLAY_CAP} more — they all failed the same way if
+              the file's date or amount column was read wrongly.
+            </p>
+          )}
         </Disclosure>
       )}
 
@@ -423,7 +463,7 @@ export function PreviewStep({
               </tr>
             </thead>
             <tbody>
-              {plan.rows.slice(0, 200).map((pr) => (
+              {plan.rows.slice(0, ROW_DISPLAY_CAP).map((pr) => (
                 <tr
                   key={pr.row.index}
                   className={`border-b border-border last:border-b-0 ${willImport(pr) ? '' : 'opacity-60'}`}
@@ -460,8 +500,10 @@ export function PreviewStep({
             </tbody>
           </table>
         </div>
-        {plan.rows.length > 200 && (
-          <p className="mt-1.5 text-xs text-muted">…and {plan.rows.length - 200} more rows</p>
+        {plan.rows.length > ROW_DISPLAY_CAP && (
+          <p className="mt-1.5 text-xs text-muted">
+            …and {plan.rows.length - ROW_DISPLAY_CAP} more rows
+          </p>
         )}
       </section>
 

@@ -44,6 +44,17 @@ function mulberry32(seed: number): () => number {
 
 const D = 'YYYY-MM-DD';
 
+/**
+ * Every sample row a user meets by NAME carries this prefix (SPEC §4: sample
+ * data must be clearly labelled). Groups alone were not enough: the onboarding
+ * starter templates offer "Current Account", "Savings" and "Cash", so
+ * un-prefixed demo accounts appeared as a second set of accounts with those
+ * exact names, and their ~£12k of demo money vanished into one undifferentiated
+ * net-worth figure. Prefixed names make every sample row self-identifying
+ * wherever it shows up — sidebar, register, budgets, reports, exports.
+ */
+export const SAMPLE_PREFIX = 'Sample · ';
+
 export async function loadSampleData(): Promise<void> {
   if ((await sampleDataBatchId()) !== null) return; // already loaded — one set only
   const rand = mulberry32(20260101);
@@ -74,8 +85,8 @@ export async function loadSampleData(): Promise<void> {
     // ---- groups + accounts ------------------------------------------------
     // Group names carry the "Sample" label (SPEC §4: clearly labelled) so the
     // demo accounts can't be confused with accounts the user created.
-    const everyday: AccountGroup = { id: uid(), name: 'Sample · Everyday', sortOrder: 90 };
-    const savingCredit: AccountGroup = { id: uid(), name: 'Sample · Saving & Credit', sortOrder: 91 };
+    const everyday: AccountGroup = { id: uid(), name: `${SAMPLE_PREFIX}Everyday`, sortOrder: 90 };
+    const savingCredit: AccountGroup = { id: uid(), name: `${SAMPLE_PREFIX}Saving & Credit`, sortOrder: 91 };
     await db.accountGroups.bulkAdd([everyday, savingCredit]);
     batch.createdGroupIds.push(everyday.id, savingCredit.id);
 
@@ -89,8 +100,10 @@ export async function loadSampleData(): Promise<void> {
       sortOrder: number,
     ): Promise<Account> => {
       const account: Account = {
-        id: uid(), name, type, currency, openingBalanceMinor, colour, groupId, sortOrder,
-        archived: false,
+        // Prefixed here, once, so no sample account can ever be mistaken for
+        // one of the user's own (SPEC §4).
+        id: uid(), name: `${SAMPLE_PREFIX}${name}`, type, currency, openingBalanceMinor, colour,
+        groupId, sortOrder, archived: false,
       };
       await db.accounts.add(account);
       batch.createdAccountIds.push(account.id);
@@ -225,11 +238,11 @@ export async function loadSampleData(): Promise<void> {
       const groupId = uid();
       await addTx({
         account: current, date: d, amountMinor: -30000, transferGroupId: groupId,
-        notes: 'Transfer to Savings',
+        notes: `Transfer to ${savings.name}`,
       });
       await addTx({
         account: savings, date: d, amountMinor: 30000, transferGroupId: groupId,
-        notes: 'Transfer from Current Account',
+        notes: `Transfer from ${current.name}`,
       });
     }
     // Weekly groceries: £42–£80, alternating Tesco / Sainsbury's
@@ -339,12 +352,12 @@ export async function loadSampleData(): Promise<void> {
     // ---- budgets (amounts in base currency GBP, D22) ----------------------
     const budgets: Budget[] = [
       {
-        id: uid(), name: 'Groceries', categoryIds: [groceriesCat], amountMinor: 40000,
+        id: uid(), name: `${SAMPLE_PREFIX}Groceries`, categoryIds: [groceriesCat], amountMinor: 40000,
         period: 'monthly', startDate: today.startOf('month').format(D),
         rollover: false, archived: false,
       },
       {
-        id: uid(), name: 'Eating out', categoryIds: [restaurantsCat, coffeeCat],
+        id: uid(), name: `${SAMPLE_PREFIX}Eating out`, categoryIds: [restaurantsCat, coffeeCat],
         amountMinor: 20000, period: 'monthly', startDate: today.startOf('month').format(D),
         rollover: false, archived: false,
       },

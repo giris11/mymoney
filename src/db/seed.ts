@@ -66,10 +66,23 @@ export function defaultCategories(): Category[] {
   return [...buildCategories(EXPENSE_TREE, 'expense'), ...buildCategories(INCOME_TREE, 'income')];
 }
 
-/** Idempotent: only seeds when the table is empty. */
+/**
+ * Idempotent: only seeds when the table is empty.
+ *
+ * The check and the write are ONE `rw` transaction on purpose. This runs at
+ * every app start (src/main.tsx), so two contexts can easily race — two tabs,
+ * or a tab plus a restored iOS session. As a read-then-write both would see an
+ * empty table and both would seed, leaving 122 categories instead of 61 and no
+ * way to tell the copies apart. IndexedDB serialises readwrite transactions
+ * that share an object store *across connections*, so wrapping it makes the
+ * loser of the race see the winner's 61 rows and do nothing.
+ */
 export async function seedCategoriesIfEmpty(): Promise<void> {
-  const count = await db.categories.count();
-  if (count === 0) await db.categories.bulkAdd(defaultCategories());
+  await db.transaction('rw', db.categories, async () => {
+    if ((await db.categories.count()) === 0) {
+      await db.categories.bulkAdd(defaultCategories());
+    }
+  });
 }
 
 export interface AccountTemplate {

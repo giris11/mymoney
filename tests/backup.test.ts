@@ -8,6 +8,7 @@ import {
   downloadBackup,
   exportBackup,
   markBackupSaved,
+  PRETTY_PRINT_ROW_LIMIT,
   restoreBackup,
   serializeBackup,
   validateBackup,
@@ -235,7 +236,10 @@ const seedSettings: Settings = {
       headerRow: true,
     },
   },
-  createdAt: T0,
+  // Deliberately ancient: the 7-day nudge now measures from createdAt while
+  // lastBackupAt is null (E2), so a fixture install date must never drift into
+  // the grace period as the calendar moves.
+  createdAt: '2020-01-01T00:00:00.000Z',
 };
 
 async function seedAll(): Promise<void> {
@@ -318,6 +322,45 @@ describe('backup round trip', () => {
     const json = serializeBackup(await exportBackup());
     expect(json.startsWith('{\n  "app": "MyMoney",\n  "schemaVersion"')).toBe(true);
     expect(json).toContain('\n    "accounts": [');
+  });
+
+  // E3: pretty-printing costs ~45% of the file size, which matters when the
+  // backup has to travel off a phone. Small files stay readable; big ones go
+  // compact — and restore must accept either.
+  it('a backup past the row threshold is compact and still round-trips', async () => {
+    await seedAll();
+    const bulk: Transaction[] = [];
+    const extra = PRETTY_PRINT_ROW_LIMIT + 100 - seedTransactions.length;
+    for (let i = 0; i < extra; i++) {
+      bulk.push(
+        tx({
+          id: `bulk-${i}`,
+          accountId: 'acc-gbp',
+          date: '2026-06-01',
+          amountMinor: -100 - i,
+          dedupeHash: makeDedupeHash('acc-gbp', '2026-06-01', -100 - i, `bulk ${i}`),
+          notes: `bulk ${i}`,
+        }),
+      );
+    }
+    await db.transactions.bulkAdd(bulk);
+    const total = await db.transactions.count();
+    expect(total).toBeGreaterThan(PRETTY_PRINT_ROW_LIMIT);
+
+    const file = await exportBackup();
+    const json = serializeBackup(file);
+    expect(json.includes('\n')).toBe(false); // compact: not one line break
+    expect(json.startsWith('{"app":"MyMoney"')).toBe(true);
+    // Smaller than the pretty form by a wide margin (measured ~45% on real data).
+    expect(json.length).toBeLessThan(JSON.stringify(file, null, 2).length * 0.8);
+
+    // …and it is still a real backup: parse → validate → restore → identical.
+    const validated = expectOk(validateBackup(JSON.parse(json)));
+    await clearAll();
+    await restoreBackup(validated);
+    expect(await db.transactions.count()).toBe(total);
+    expect(sortById(await db.accounts.toArray())).toEqual(sortById(seedAccounts));
+    expect((await db.transactions.get('bulk-0'))!.amountMinor).toBe(-100);
   });
 
   it('exports empty arrays for empty tables and restores over existing data', async () => {
@@ -459,11 +502,21 @@ describe('restoreBackup atomicity', () => {
  * surface it touches on globalThis and always remove it again (the Node-guard
  * test below depends on `document` being absent).
  */
-async function withBrowser<T>(
-  opts: { picker?: 'saved' | 'cancelled' | 'blocked' | 'write-fails' },
-  fn: (seen: { clicks: number; written: string[] }) => Promise<T>,
-): Promise<T> {
-  const seen = { clicks: 0, written: [] as string[] };
+interface BrowserOpts {
+  picker?: 'saved' | 'cancelled' | 'blocked' | 'write-fails';
+  /** navigator.share behaviour; absent ⇒ no Web Share support at all. */
+  share?: 'ok' | 'cancelled' | 'fails' | 'refuses';
+  /** Touch device (phone/tablet)? Only there is the share sheet offered. */
+  touch?: boolean;
+}
+interface Seen {
+  clicks: number;
+  written: string[];
+  shared: { name: string; type: string; text: string }[];
+}
+
+async function withBrowser<T>(opts: BrowserOpts, fn: (seen: Seen) => Promise<T>): Promise<T> {
+  const seen: Seen = { clicks: 0, written: [], shared: [] };
   const anchor = {
     href: '',
     download: '',
@@ -496,11 +549,41 @@ async function withBrowser<T>(
   const g = globalThis as unknown as Record<string, unknown>;
   g.window = win;
   g.document = { createElement: () => anchor, body: { appendChild: () => {} } };
+
+  // navigator is a real global in Node, so save and restore the descriptor.
+  const originalNav = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  if (opts.share || opts.touch !== undefined) {
+    const nav: Record<string, unknown> = { maxTouchPoints: opts.touch === false ? 0 : 5 };
+    if (opts.share) {
+      nav.canShare = (data: { files?: unknown[] }) =>
+        opts.share !== 'refuses' && Array.isArray(data.files) && data.files.length > 0;
+      nav.share = async (data: { files?: File[] }) => {
+        if (opts.share === 'cancelled') {
+          const err = new Error('Share canceled');
+          err.name = 'AbortError';
+          throw err;
+        }
+        if (opts.share === 'fails') throw new Error('NotAllowedError: no user gesture');
+        for (const f of data.files ?? []) {
+          seen.shared.push({ name: f.name, type: f.type, text: await f.text() });
+        }
+      };
+    }
+    Object.defineProperty(globalThis, 'navigator', {
+      value: nav,
+      configurable: true,
+      writable: true,
+    });
+  }
   try {
     return await fn(seen);
   } finally {
     delete g.window;
     delete g.document;
+    if (opts.share || opts.touch !== undefined) {
+      if (originalNav) Object.defineProperty(globalThis, 'navigator', originalNav);
+      else delete g.navigator;
+    }
   }
 }
 
@@ -571,6 +654,76 @@ describe('downloadBackup', () => {
     });
     expect((await getSettings()).lastBackupAt).toBe(null);
   });
+
+  // E4: on a phone the <a download> is a dead end — no dialog, no destination,
+  // no signal. The share sheet is the only path that reports anything real.
+  it('on a touch device the backup goes to the share sheet, not a blind download', async () => {
+    await seedAll();
+    const { result, shared, clicks } = await withBrowser(
+      { share: 'ok', touch: true },
+      async (seen) => ({ result: await downloadBackup(), shared: seen.shared, clicks: seen.clicks }),
+    );
+    expect(result).toBe('shared');
+    expect(clicks).toBe(0); // no invisible download behind the share sheet
+    expect(shared).toHaveLength(1);
+    expect(shared[0].name).toMatch(/^mymoney-backup-\d{4}-\d{2}-\d{2}\.json$/);
+    expect(shared[0].type).toBe('application/json');
+    // The shared bytes are a complete, restorable backup — not a stub.
+    const parsed: unknown = JSON.parse(shared[0].text);
+    expect(validateBackup(parsed).ok).toBe(true);
+    expect((parsed as BackupFile).tables.transactions).toHaveLength(seedTransactions.length);
+    // Sharing is still not proof the file was KEPT: the caller must confirm.
+    expect((await getSettings()).lastBackupAt).toBe(null);
+    expect((await backupNudgeState()).due).toBe(true);
+  });
+
+  it('a cancelled share is "cancelled" — a real signal, and nothing is recorded', async () => {
+    await seedAll();
+    const { result, clicks } = await withBrowser({ share: 'cancelled', touch: true }, async (seen) => ({
+      result: await downloadBackup(),
+      clicks: seen.clicks,
+    }));
+    expect(result).toBe('cancelled');
+    expect(clicks).toBe(0); // a cancel must not turn into a silent download
+    expect((await getSettings()).lastBackupAt).toBe(null);
+  });
+
+  it('a share that errors falls back to the anchor rather than failing the export', async () => {
+    await seedAll();
+    const { result, clicks } = await withBrowser({ share: 'fails', touch: true }, async (seen) => ({
+      result: await downloadBackup(),
+      clicks: seen.clicks,
+    }));
+    expect(result).toBe('delivered');
+    expect(clicks).toBe(1);
+  });
+
+  it('a browser that refuses to share files falls back to the anchor', async () => {
+    await seedAll();
+    const result = await withBrowser({ share: 'refuses', touch: true }, () => downloadBackup());
+    expect(result).toBe('delivered');
+  });
+
+  it('desktop keeps the familiar download: no share sheet without touch', async () => {
+    await seedAll();
+    const { result, shared, clicks } = await withBrowser(
+      { share: 'ok', touch: false },
+      async (seen) => ({ result: await downloadBackup(), shared: seen.shared, clicks: seen.clicks }),
+    );
+    expect(result).toBe('delivered');
+    expect(shared).toHaveLength(0);
+    expect(clicks).toBe(1);
+  });
+
+  it('an observed file-picker save still wins over the share sheet', async () => {
+    await seedAll();
+    const { result, shared } = await withBrowser(
+      { picker: 'saved', share: 'ok', touch: true },
+      async (seen) => ({ result: await downloadBackup(), shared: seen.shared }),
+    );
+    expect(result).toBe('saved');
+    expect(shared).toHaveLength(0);
+  });
 });
 
 describe('markBackupSaved', () => {
@@ -594,17 +747,75 @@ describe('markBackupSaved', () => {
 // ---------------------------------------------------------------- nudge
 
 describe('backupNudgeState', () => {
+  const daysAgo = (n: number): string => new Date(Date.now() - n * DAY_MS).toISOString();
+
   it('not due with zero transactions, even with no backup ever', async () => {
     const s = await backupNudgeState();
-    expect(s).toEqual({ due: false, lastBackupAt: null, txCount: 0 });
+    expect(s).toEqual({ due: false, lastBackupAt: null, txCount: 0, realTxCount: 0 });
   });
 
-  it('due when transactions exist and lastBackupAt is null', async () => {
+  it('due when transactions exist on an install older than 7 days and no backup', async () => {
     await seedAll(); // seedSettings.lastBackupAt is null
+    await updateSettings({ createdAt: daysAgo(30) });
     const s = await backupNudgeState();
     expect(s.due).toBe(true);
     expect(s.txCount).toBe(seedTransactions.length);
+    expect(s.realTxCount).toBe(seedTransactions.length);
     expect(s.lastBackupAt).toBe(null);
+  });
+
+  // E2: "no backup in 7+ days" (SPEC §8.1.9) is not "no backup yet". Day one
+  // must not nag — the install date is the clock while lastBackupAt is null.
+  it('NOT due on a fresh install that already has transactions', async () => {
+    await seedAll();
+    await updateSettings({ createdAt: new Date().toISOString() });
+    const s = await backupNudgeState();
+    expect(s.lastBackupAt).toBe(null);
+    expect(s.txCount).toBeGreaterThan(0);
+    expect(s.due).toBe(false);
+  });
+
+  it('not due at 6 days old, due at 8 days old, with no backup ever', async () => {
+    await seedAll();
+    await updateSettings({ createdAt: daysAgo(6) });
+    expect((await backupNudgeState()).due).toBe(false);
+    await updateSettings({ createdAt: daysAgo(8) });
+    expect((await backupNudgeState()).due).toBe(true);
+  });
+
+  it('an unparseable createdAt counts as stale — never assume a grace period', async () => {
+    await seedAll();
+    await updateSettings({ createdAt: 'not a date' });
+    expect((await backupNudgeState()).due).toBe(true);
+  });
+
+  // E2: demo money is not worth backing up, and one tap deletes it anyway.
+  it('never due when every transaction belongs to the sample batch', async () => {
+    await db.settings.add({ ...seedSettings, createdAt: daysAgo(90) });
+    await db.importBatches.add({ ...seedBatches[0], id: 'batch-sample', source: 'sample' });
+    await db.accounts.bulkAdd(seedAccounts);
+    await db.transactions.bulkAdd(
+      seedTransactions.map((t) => ({ ...t, id: `s-${t.id}`, importBatchId: 'batch-sample' })),
+    );
+    const s = await backupNudgeState();
+    expect(s.txCount).toBe(seedTransactions.length);
+    expect(s.realTxCount).toBe(0);
+    expect(s.due).toBe(false);
+  });
+
+  it('is due again as soon as ONE real transaction sits alongside the sample', async () => {
+    await db.settings.add({ ...seedSettings, createdAt: daysAgo(90) });
+    await db.importBatches.add({ ...seedBatches[0], id: 'batch-sample', source: 'sample' });
+    await db.accounts.bulkAdd(seedAccounts);
+    await db.transactions.bulkAdd(
+      seedTransactions.map((t) => ({ ...t, id: `s-${t.id}`, importBatchId: 'batch-sample' })),
+    );
+    await db.transactions.add(
+      tx({ id: 'mine', accountId: 'acc-gbp', date: '2026-08-20', amountMinor: -350 }),
+    );
+    const s = await backupNudgeState();
+    expect(s.realTxCount).toBe(1);
+    expect(s.due).toBe(true);
   });
 
   it('due when the last backup is 8 days old', async () => {
