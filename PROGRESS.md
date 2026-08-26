@@ -34,7 +34,7 @@ Status of every Phase 1 spec feature. Updated as work lands. (Phase 2/3 items ar
 | 9 | Backup export / restore / 7-day nudge | ✅ | all-or-nothing restore with typed confirmation; round-trip tested |
 | 10 | PWA: installable, offline, icons, subpath-safe | 🟡 | SW + manifest + icons verified on production build; iOS per-device splash images deferred (D26) — icons/standalone/offline all in place |
 | 11 | Dark/light mode, responsive, onboarding, sample data | ✅ | sample data is one undoable batch, groups labelled "Sample ·" |
-| — | Test suite (spec §10) | ✅ | 387 tests: money maths, balances, import parsing incl. edge cases, dedupe + near-dups, budget periods, backup round-trip, golden hand-calculated month, plus 93 regression tests from the review pass |
+| — | Test suite (spec §10) | ✅ | 744 tests: money maths, balances, import parsing incl. edge cases, dedupe + near-dups, budget periods, backup round-trip, golden hand-calculated month, plus 93 regression tests from the review pass |
 
 ## Definition of done (spec §12) — status
 
@@ -103,6 +103,31 @@ logged as D34 rather than editing your spec. What that means in practice:
 Verified in the browser against the live API: ₹130,000.00 → £998.81 and
 LKR 500,000.00 → £1,116.27, with net worth matching a hand calculation to the
 penny, and a deliberately sabotaged fetch leaving every figure untouched.
+
+## Live deployment and post-handover features (2026-08-26)
+
+**The app is live at https://giris11.github.io/mymoney/** (public repo
+`giris11/mymoney`, deployed by GitHub Actions which runs the full suite before
+publishing). HTTPS means the service worker registers, so it is a genuinely
+installable, offline-capable PWA — the LAN-http route never could be.
+
+**Girish's real MoneyWiz history is imported and verified**: 58 accounts,
+5,127 transactions, net worth £429,327.86. Every account balance was checked
+against the export — 58/58 exact — and re-checked after grouping: still 58/58.
+
+Added on request after he started using it:
+| Feature | Notes |
+|---|---|
+| MoneyWiz **Report** export format | His real export uses a different layout to the flat one originally built (per-account header rows, `sep=` preamble, `Account` column meaning currency on header rows). Opening balances derived so every closing balance matches (D30–D31 apply; format work in `moneywizReport.ts`) |
+| Live exchange rates | Free, no-key sources; LKR + INR + TRY (D34) |
+| Account grouping | Ten MoneyWiz-style groups, inferred from names with confidence flags (D38) |
+| Exclude from net worth | Per account or whole group (D39) |
+| Duplicate transaction | From row or editor, dated today with an original-date escape (D40) |
+| Working Back/Forward | Register filters and report drill-down live in the URL (D41) |
+
+**Browser-verified on the live site**: grouping applied without moving any
+balance; Back returns from a filtered view (8 rows → 321); duplicate opens a
+prefilled copy with the date-difference note; CI green on every deploy.
 
 ## Open items for Girish
 
