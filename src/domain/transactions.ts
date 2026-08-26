@@ -16,7 +16,7 @@ import { db, updateSettings } from '../db/db';
 import type { Split, Transaction, TxStatus } from '../db/types';
 import { makeDedupeHash } from '../import/dedupe';
 import { nowISO, uid } from '../lib/util';
-import { sumSplits } from '../money/money';
+import { formatMinor, sumSplits } from '../money/money';
 import { descendantIds } from './categories';
 import { getOrCreatePayee, learnPayeeCategory } from './payees';
 import { getOrCreateTags } from './tags';
@@ -53,17 +53,28 @@ export function isValidDateString(date: string): boolean {
   return new Date(parsed).toISOString().slice(0, 10) === date;
 }
 
-/** Returns an error message, or null when valid. */
-export function validateSplits(amountMinor: number, splits: Split[]): string | null {
+/**
+ * Returns an error message, or null when valid. `currency` is optional only so
+ * existing callers keep working — pass it wherever the message reaches a user,
+ * so the numbers read as money ("£60.00") rather than raw minor units.
+ */
+export function validateSplits(
+  amountMinor: number,
+  splits: Split[],
+  currency?: string,
+): string | null {
   if (splits.length === 0) return null;
   for (const s of splits) {
     if (!Number.isSafeInteger(s.amountMinor)) {
-      return 'Each split amount must be a whole number of minor units';
+      return 'Each split amount must be a whole number';
     }
   }
   const total = sumSplits(splits);
   if (total !== amountMinor) {
-    return `Splits must add up to the transaction amount exactly (splits total ${total}, transaction ${amountMinor})`;
+    const show = (v: number) => (currency ? formatMinor(v, currency) : String(v));
+    return `Splits must add up to the transaction amount exactly — they come to ${show(
+      total,
+    )}, but the transaction is ${show(amountMinor)}`;
   }
   return null;
 }

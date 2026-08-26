@@ -229,8 +229,9 @@ export default function TxEditor({
     return validateSplits(
       sign * Math.abs(amount),
       splits.map((s) => ({ categoryId: s.categoryId, amountMinor: sign * Math.abs(s.amountMinor!) })),
+      currency,
     );
-  }, [mode, splits, amount, sign]);
+  }, [mode, splits, amount, sign, currency]);
 
   const fromAcc = accounts.find((a) => a.id === transfer.fromAccountId);
   const toAcc = accounts.find((a) => a.id === transfer.toAccountId);

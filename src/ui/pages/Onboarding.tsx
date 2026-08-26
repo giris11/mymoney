@@ -13,6 +13,7 @@ import { loadSampleData } from '../../domain/sample';
 import { requestPersistence } from '../../lib/storage';
 import { cn } from '../../lib/util';
 import ImportWizard from '../import/ImportWizard';
+import { RestoreFromBackup } from '../settings/RestoreFromBackup';
 import { navigate } from '../router';
 import { Button, Field, Select } from '../kit/kit';
 import { IconChevronLeft, IconCoins } from '../kit/icons';
@@ -78,6 +79,7 @@ export default function Onboarding() {
   const [baseCurrency, setBaseCurrency] = useState('GBP');
   const [rows, setRows] = useState<AccountRowState[]>(defaultAccountRows);
   const [importing, setImporting] = useState(false);
+  const [restoring, setRestoring] = useState(false);
   const [busyChoice, setBusyChoice] = useState<DataChoice | null>(null);
 
   // Guards: never create the accounts twice, never run finish twice.
@@ -137,10 +139,34 @@ export default function Onboarding() {
       } finally {
         setBusyChoice(null);
       }
+    } else if (choice === 'restore') {
+      // Deliberately writes NOTHING first: a restore replaces every table, so
+      // creating the wizard's starter accounts here would only make rows the
+      // restore is about to delete. Settings (incl. onboarded) come from the
+      // backup itself.
+      setRestoring(true);
+      setBusyChoice(null);
     } else {
       await finish(choice === 'sample');
     }
   };
+
+  if (restoring) {
+    return (
+      <div className="flex min-h-dvh items-center justify-center bg-bg p-4 py-8">
+        <div className="w-full max-w-lg rounded-2xl border border-border bg-surface p-6 shadow-sm sm:p-8">
+          <RestoreFromBackup
+            onDone={() => {
+              // The backup carries its own settings row, so the app leaves
+              // onboarding on its own once the data lands.
+              navigate('/dashboard');
+            }}
+            onCancel={() => setRestoring(false)}
+          />
+        </div>
+      </div>
+    );
+  }
 
   if (importing) {
     return (

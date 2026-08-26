@@ -1,9 +1,15 @@
-// Onboarding step: get your data in (SPEC §4, D24) — three ways to begin.
+// Onboarding step: get your data in (SPEC §4, D24) — four ways to begin.
+//
+// 'restore' matters more than it looks: backups are how data moves between
+// devices until Phase 3's optional Drive sync (SPEC §13), and after an
+// "Erase all data" the app returns HERE. Without this option a fresh install —
+// a new iPhone, or a restored laptop — would have to invent accounts it is
+// about to throw away just to reach Settings → Backup.
 import type { ReactNode } from 'react';
 import { cn } from '../../lib/util';
-import { IconCoins, IconPencil, IconUpload } from '../kit/icons';
+import { IconCoins, IconDownload, IconPencil, IconUpload } from '../kit/icons';
 
-export type DataChoice = 'import' | 'sample' | 'fresh';
+export type DataChoice = 'import' | 'restore' | 'sample' | 'fresh';
 
 function OptionCard({
   icon,
@@ -73,6 +79,13 @@ export function DataStep({
         recommended
         disabled={busy}
         onClick={() => onChoose('import')}
+      />
+      <OptionCard
+        icon={<IconDownload size={20} />}
+        title={busyChoice === 'restore' ? 'Opening restore…' : 'Restore from a backup'}
+        description="Already using MyMoney on another device, or starting over? Restore a backup file to bring everything back exactly as it was."
+        disabled={busy}
+        onClick={() => onChoose('restore')}
       />
       <OptionCard
         icon={<IconCoins size={20} />}
