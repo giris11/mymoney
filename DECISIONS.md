@@ -44,6 +44,34 @@ Every non-obvious choice made while building, per Working Agreement §2. Newest 
   transactions whose currency has no rate (uniformly across the five flow
   reports); net worth reports the affected currencies by name.
 
+- **D29. Theme display hint in localStorage.** IndexedDB is async, so the
+  correct palette cannot be known before first paint — dark-theme users saw a
+  white flash on every cold start. `localStorage['mymoney.theme']` holds one
+  string (`system|light|dark`) read by a tiny inline script in `index.html`.
+  It is a **display hint, never a record** (SPEC §3 stands: all records live in
+  IndexedDB, which remains the source of truth and corrects the attribute after
+  mount). A missing or stale hint costs exactly one corrected frame.
+- **D30. Imported transactions are always stored in their account's currency.**
+  A CSV row's `Currency` column describes the purchase, not the ledger
+  denomination (MoneyWiz exports the account-currency amount). Storing anything
+  else broke the app-wide invariant that `balance = opening + Σ amounts` — the
+  balance, net worth and net-worth-over-time code all sum per account. Rows
+  whose declared currency differs are counted, noted on the transaction, and
+  disclosed in the import preview. No conversion is ever guessed (SPEC §6).
+- **D31. Import amount scale follows the resolved account currency.** Parsers
+  must choose a currency before the row's account is known, so `ParsedRow`
+  carries the raw amount cell and the plan re-derives the amount once the
+  account is resolved. Without this a ¥500 row became ¥50,000 and a valid
+  3-decimal amount was rejected outright.
+- **D32. Duplicate detection consumes its match.** Each existing transaction can
+  absorb at most one incoming row, so two legitimately identical rows in one
+  file no longer collapse onto a single existing record (that silently dropped
+  real spending). Re-importing the same file still skips every row.
+- **D33. Backups never claim more than the browser reports.** A `<a download>`
+  click gives no completion signal, so `lastBackupAt` is no longer stamped on
+  the strength of the click alone — the app does not reset the 7-day nudge for
+  a save it could not observe.
+
 ## UX
 
 - **D23. Quick-add** is a bottom sheet (mobile) / modal (desktop) with amount-first keypad flow, category grid (recent first), payee autocomplete that learns, account defaulting to last used, date defaulting to today. Expense is the default sign; income/refund/transfer are one tap away.

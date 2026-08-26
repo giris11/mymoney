@@ -13,7 +13,7 @@ Status of every Phase 1 spec feature. Updated as work lands. (Phase 2/3 items ar
 5. ✅ App shell: layout (sidebar / bottom tabs), hash router, theme, UI kit + shared pickers
 6. ✅ Pages (parallel): Transactions register + editor + quick add, Dashboard, Budgets, Reports, Settings, Import wizard, Onboarding + sample data
 7. ✅ Integration: wiring, typecheck, full test suite (258), hand-calculated golden tests
-8. ✅ Adversarial review pass (7 lenses, every finding independently verified) + fixes
+8. ✅ Adversarial review pass (7 lenses, 29 findings) + fixes — see "Review findings fixed" below
 9. ✅ Browser verification: onboarding → sample data → quick add → budgets/periods → all reports+drill-down → MoneyWiz import → re-import dedupe (27/27 caught) → backup export → dark/light → mobile → production build with active service worker
 10. ✅ Handover: dev server running, docs updated
 
@@ -34,11 +34,48 @@ Status of every Phase 1 spec feature. Updated as work lands. (Phase 2/3 items ar
 | 9 | Backup export / restore / 7-day nudge | ✅ | all-or-nothing restore with typed confirmation; round-trip tested |
 | 10 | PWA: installable, offline, icons, subpath-safe | 🟡 | SW + manifest + icons verified on production build; iOS per-device splash images deferred (D26) — icons/standalone/offline all in place |
 | 11 | Dark/light mode, responsive, onboarding, sample data | ✅ | sample data is one undoable batch, groups labelled "Sample ·" |
-| — | Test suite (spec §10) | ✅ | 258 tests: money maths, balances, import parsing incl. edge cases, dedupe + near-dups, budget periods, backup round-trip, golden hand-calculated month |
+| — | Test suite (spec §10) | ✅ | 351 tests: money maths, balances, import parsing incl. edge cases, dedupe + near-dups, budget periods, backup round-trip, golden hand-calculated month, plus 93 regression tests from the review pass |
 
 ## Definition of done (spec §12) — status
 
 Everything except the physical-iPhone steps has been machine-verified (onboarding, add/edit/delete incl. split + transfer, MoneyWiz import + duplicate detection on second import, dashboard + six reports + budgets with hand-calculated numbers, backup export→wipe→restore equality in tests, dark/light, `npm test` clean). **Left for Girish:** install on the iPhone home screen, airplane-mode check, and a real MoneyWiz export file (see below).
+
+## Review findings fixed (post-build hardening)
+
+A seven-lens adversarial review found 29 issues; the ones that proved real are
+fixed, each with a regression test that fails without the fix.
+
+**Money correctness — these were the serious ones:**
+- Imported transactions kept the *file's* currency while balances and net worth
+  sum per account assuming the *account's* currency — a EUR row in a GBP account
+  silently corrupted the balance, net worth and the net-worth chart. Now always
+  stored in the account's currency, with the difference disclosed (D30).
+- Amount scale was chosen before the account was known, so a ¥500 row imported
+  as ¥50,000 (100x) and valid 3-decimal amounts were rejected outright (D31).
+- Duplicate detection let one existing transaction absorb any number of matching
+  rows, so two legitimate identical purchases in one file both vanished (D32).
+
+**Data safety:** undo now un-teaches the payee categories the import taught;
+removing sample data no longer deletes an FX rate you have since edited into
+your own; backups no longer record a save the browser never confirmed (D33).
+
+**Interaction:** a stray Escape used to close *every* open dialog — backing out
+of a delete confirmation discarded the edits underneath, and closing a dropdown
+inside Quick Add threw away the draft. Dialogs now stack properly, trap focus,
+and return focus to whatever opened them. A misplaced click no longer discards
+an in-progress import.
+
+**Accessibility:** faint text now clears WCAG AA on every surface in both themes
+(it was 3.10:1); segmented controls and colour swatches follow the ARIA radio
+pattern; the pickers announce their highlighted option.
+
+**Also added:** a date-format override for MoneyWiz imports (D20 promised it),
+saved column mappings that work for headerless CSVs, and a pre-paint theme stamp
+so dark mode no longer flashes white on launch (D29).
+
+Two findings were investigated and judged **not** real: a proposed transfer-pairing
+rewrite (proved equivalent to the existing code over 774 permutations) and a
+QuickAdd first-open path that was already correct.
 
 ## Open items for Girish
 
