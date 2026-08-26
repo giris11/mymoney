@@ -1,0 +1,51 @@
+# Publishes MyMoney to GitHub Pages on every push to main.
+#
+# Why Pages: it is free forever (SPEC §2 zero cost), and it serves over HTTPS —
+# which a LAN address cannot. HTTPS is what makes the service worker register,
+# so this is the only route to the installable, offline PWA that SPEC §8.1.10
+# and §12 require. `base: './'` in vite.config.ts keeps the build working under
+# the /<repo>/ subpath Pages serves from.
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never run two deploys at once; let a newer push supersede an in-flight one.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      # The suite is the gate: a red build must never reach the phone this
+      # app is meant to be trusted on.
+      - run: npm test
+      - run: npm run build
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
