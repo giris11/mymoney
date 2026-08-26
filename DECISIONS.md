@@ -13,7 +13,20 @@ Every non-obvious choice made while building, per Working Agreement §2. Newest 
 - **D4. No state-management library.** Dexie is the single source of truth; UI subscribes via Dexie's built-in `liveQuery` wrapped in a small `useLive` hook (written in-repo, ~20 lines, `useSyncExternalStore`-style). Avoids adding `dexie-react-hooks` or Redux/Zustand.
 - **D5. IDs are `crypto.randomUUID()`** strings. No id-generation dependency.
 - **D6. Dates stored as `'YYYY-MM-DD'` strings** (transaction `date`), plus ISO timestamps for `createdAt`/`updatedAt`. Sortable, indexable, timezone-proof (a purchase on the 3rd stays on the 3rd regardless of DST/travel). dayjs used for period math; display format is `DD/MM/YYYY` (en-GB).
-- **D7. Vite `base: './'`** (relative). One setting makes the same build work at `localhost`, any GitHub Pages subpath, and `file://`.
+- **D7. Vite `base: './'`** (relative). One setting makes the same build work at
+  `localhost`, any static host, and any GitHub Pages subpath.
+  **Correction (2026-08-26):** the original wording also claimed `file://`, and
+  that is not achievable — verified against the built output. Vite emits
+  `<script type="module" crossorigin>` and code-splits with dynamic `import()`;
+  browsers load ES modules with CORS semantics and treat a `file://` document as
+  a null origin, so the page would render an empty `#root`. Service workers
+  cannot register on `file://` either, so the offline PWA that SPEC §8.1.10
+  requires was never reachable by that route regardless of bundling. Making the
+  build a single non-module IIFE would trade away code-splitting and still not
+  restore offline support. **SPEC §13's "must also work opened as plain static
+  files" therefore cannot be met as written** — flagged for Girish rather than
+  silently ignored. Everything else in §13 (localhost now, GitHub Pages when he
+  says deploy) works today.
 - **D8. One extra devDependency: `fake-indexeddb`.** Spec §10 mandates a backup export→restore round-trip test and balance tests against the real Dexie schema; that needs IndexedDB in Node. `fake-indexeddb` is the standard, MIT-licensed, dev-only shim — it ships nothing to the built app. **Flagging per §11.7 since I couldn't ask first** — say the word and I'll remove it and keep only pure-function tests.
 
 ## Money & data semantics
