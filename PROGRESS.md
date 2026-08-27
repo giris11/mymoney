@@ -166,16 +166,59 @@ a transaction, so a concurrent write could be silently lost — in the sync path
 that could mark a device clean while it still held unsynced changes, and the
 next pull would overwrite them. Now atomic, with a test that fails without it.
 
-**Status:** shipped, deployed, CI green. Awaiting your one-time approval in
+### It was reviewed before you trusted it, and it failed
+
+Sync is the first feature in this app that can destroy data, so it was put
+through an adversarial review — six independent lenses, every finding then given
+to two skeptics whose job was to refute it. Eighteen defects were raised;
+**seventeen were confirmed**, several reproduced against the real engine. Sync
+as first shipped could have lost your transactions. Nothing was lost, because it
+never ran.
+
+The fatal one: the code compared Drive's *revision number* to decide whether the
+remote was the one it descended from. Two devices could both write "revision 2"
+holding different books, and the loser would read the numbers as equal, report
+**"up to date"**, and let the next sync quietly pull its own rows away — no
+conflict dialog, no safety file. Also confirmed: a transaction typed while a
+sync was downloading got applied over and the evidence erased; the "we save the
+losing copy first" promise went through a browser download whose success cannot
+be observed (on iOS Safari, routinely nothing saved) before destroying the book;
+changing your base currency never synced and got silently reverted; and
+restoring a conflict backup handed the browser the *other* device's identity.
+
+**All seventeen are fixed** (D43). Snapshots now carry real causal ancestry — an
+id and its parent — so the question is "is this the remote I descend from?"
+rather than "is this number the number I remember". A clean device that diverged
+now raises a conflict instead of a silent pull, because it may be holding the
+only copy. The safety backup goes somewhere its success can actually be
+confirmed. Each fix was falsified by mutation: switching a guard off reproduces
+exactly its own defect and nothing else. **852 → 972 tests**, tsc and build
+clean.
+
+**Status:** fixed, deployed, CI green. Still awaiting your one-time approval in
 Google's own consent window (that click is yours, not mine), then a first
 "Sync now" and a two-browser check.
 
+**Two things to know before the first sync:**
+- **"Sync automatically" is deliberately off and now says so.** It was a dead
+  switch — nothing ever called sync on its own. Turning on unattended syncing is
+  your call, not one to make for you, so it tells the truth and waits.
+- **Don't delete `mymoney-sync.json` from Drive.** The app now correctly refuses
+  to silently re-seed a missing file (that used to start a second file at
+  revision 1), but the button to deliberately re-seed isn't wired up yet.
+
 ## Open items for Girish
 
-- **Drive sync is built but not yet connected.** Press Connect on
+- **Drive sync is reviewed, fixed and not yet connected.** Press Connect on
   Settings → Sync, approve in Google's window (it will warn the app is
   "unverified" — it is yours, and the warning is what Google shows for any app
   it has not reviewed), then Sync now.
+- **A re-seed button is still needed.** If the Drive file is ever deleted or
+  binned, the app now refuses rather than silently starting a new lineage — but
+  there is no in-app way yet to say "yes, start again from this device".
+- **No test drives the engine and the real transport together.** Engine tests
+  fake the transport; transport tests fake `fetch`. The seam between them is the
+  one place a defect could still hide.
 - **Net-worth exclusion is built but nothing is excluded yet.** 68 Saint's Mary
   Drive (£90,000), the gift cards and Money Lent & Owed are all still counted
   inside the £429,327.86. Tell me which should come out and I'll apply it —

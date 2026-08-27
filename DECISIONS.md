@@ -216,12 +216,18 @@ Every non-obvious choice made while building, per Working Agreement §2. Newest 
     would be erased by the reset, the device would then look clean while
     differing from the remote, and the next pull would overwrite it with nobody
     asked. Comparing against a captured value makes that window a redundant
-    push instead of a silent loss.
+    push instead of a silent loss. **(Audited later: the comparison was sound,
+    but the value was captured before two network round trips during which the
+    app stayed interactive, so a write landing mid-sync was destroyed anyway,
+    and the pending-change marker was cleared unconditionally afterwards. See
+    D43.)**
   - **Both sides moved ⇒ ask, and write nothing.** No last-write-wins, no
     timestamp tie-break. The dialog names each side with its device, its time and
     its row counts, and the losing copy is written to a restorable backup file
     *first* — if that write fails, the resolution is abandoned rather than
-    proceeding.
+    proceeding. **(Audited later: that write went through a browser download
+    whose success cannot be observed, so "if that write fails" never fired. See
+    D43.)**
   - **Settings named `sync*` never travel.** A pulled snapshot carries the other
     device's settings row; letting it land whole would hand this browser the
     other one's device id, client id and sync bookkeeping, and the two would
@@ -236,6 +242,71 @@ Every non-obvious choice made while building, per Working Agreement §2. Newest 
   read-modify-wrote outside a transaction, so a concurrent write could be lost,
   which in the sync path could mark a device clean while it still held unsynced
   changes. Now atomic, with a test that fails without the fix.
+
+- **D43. Sync ancestry is CAUSAL, not numeric — and D42's safety claims were
+  audited before anyone trusted them with real money.** D42 shipped with 2,400
+  lines of new code, 2,091 lines of tests, and eight stated invariants. An
+  adversarial review (six lenses, every finding put to two independent skeptics
+  told to default to "refuted") raised eighteen defects and confirmed
+  **seventeen**, several reproduced against the real engine. Sync was capable of
+  destroying data. The lesson worth keeping is not any single bug — it is that a
+  green suite and a carefully argued design document proved almost nothing here,
+  because every test and every invariant was written by the same author, in the
+  same frame of mind, as the code.
+  - **A revision NUMBER is not an identity, and equality is not common
+    ancestry.** This was the fatal one. Uploads were unconditional PATCHes, so
+    two devices could each write revision N holding different books; the loser
+    then compared 2 to 2, reported "up to date", and the next sync silently
+    pulled its own rows out of existence — no conflict dialog, no safety file.
+    A file re-created in Drive restarts at 1 and reached the same lie by a
+    second route. Snapshots now carry an immutable `snapshotId` and the
+    `parentSnapshotId` they descend from, so the question is "is this the remote
+    I descend from?" rather than "is this number the number I remember".
+    Revision survives only for display and ordering.
+  - **A clean device can still be the one holding the only copy.** The old table
+    read "not dirty ⇒ safe to pull". But a device whose last push is no longer
+    the remote's ancestor holds rows that exist nowhere else, and pulling
+    destroys them. Divergence is now a conflict *even when this device is
+    clean* — the case the original design had no vocabulary for.
+  - **Detection beats prevention when the store offers no CAS.** Drive has no
+    compare-and-swap. So `writeRemote` re-reads the head immediately before
+    uploading and refuses if it moved, then reads back afterwards and refuses to
+    report success unless our own snapshot is what landed. A clobber cannot be
+    prevented; it can be made impossible to mistake for agreement, which is what
+    actually matters — the victim must never record false agreement.
+  - **"The app isn't blocked during a sync" was the unexamined assumption.**
+    Dirtiness was computed, then two network round trips ran while the owner
+    could still type. A transaction entered during the download was applied over,
+    and `clearPendingLocalChange()` then erased the evidence. The apply now
+    re-checks inside the same transaction that nothing landed since the decision,
+    and clearing a pending marker REQUIRES passing the mark being cleared —
+    "clear whatever is pending" is no longer expressible, because that phrasing
+    was the bug.
+  - **A save you cannot observe is not a save.** D42 promised the losing copy was
+    written to a restorable file *first*. It went out through an anchor download,
+    which resolves whether or not a byte reaches disk — on iOS Safari, routinely
+    nothing. The book was then destroyed. The safety copy now goes to a local
+    recovery store whose write can be confirmed and proved by a test; the file
+    download is offered alongside, never relied upon. Any promise of the form
+    "we saved it first" must name a medium whose success is checkable.
+  - **Every setting is now explicitly device-local or book-level**, with a test
+    that fails if a new field joins neither. Book-level settings previously
+    travelled in snapshots without bumping the revision, so changing base
+    currency left the device "clean", never pushed, and got silently reverted.
+    Relatedly, `restoreBackup` wrote a foreign settings row verbatim — and that
+    is the exact path a conflict backup returns through, so recovering from a
+    conflict handed this browser the other device's identity.
+  - **Auto-sync stays OFF and now says so.** The switch existed and did nothing;
+    no code path ever called `syncNow` on its own. Wiring it up unattended, in a
+    feature that had just failed a review this badly, was not a call to make on
+    the owner's behalf — a control that lies about protecting you is worse than
+    no control, so it tells the truth and waits for him.
+
+  Each fix was falsified by mutation: disabling a guard reproduces exactly its
+  own defect and nothing else. 852 → 972 tests. What this decision really
+  records is that a data-destroying feature should not be trusted on the
+  strength of its own author's tests, and that the review has to come before the
+  first real sync, not after the first real loss.
 
 ## UX
 
