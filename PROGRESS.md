@@ -203,9 +203,12 @@ Google's own consent window (that click is yours, not mine), then a first
 - **"Sync automatically" is deliberately off and now says so.** It was a dead
   switch — nothing ever called sync on its own. Turning on unattended syncing is
   your call, not one to make for you, so it tells the truth and waits.
-- **Don't delete `mymoney-sync.json` from Drive.** The app now correctly refuses
-  to silently re-seed a missing file (that used to start a second file at
-  revision 1), but the button to deliberately re-seed isn't wired up yet.
+- **If `mymoney-sync.json` is ever deleted from Drive, the app will not quietly
+  start over.** It used to re-seed a second file at revision 1, leaving devices
+  comparing two unrelated histories as though they were one. Now it stops and
+  says the file is gone, and offers a **"Start a new sync file from this
+  device"** button behind a confirmation — the choice is yours to make
+  explicitly, never one the app makes for you.
 
 ## Open items for Girish
 
@@ -213,9 +216,6 @@ Google's own consent window (that click is yours, not mine), then a first
   Settings → Sync, approve in Google's window (it will warn the app is
   "unverified" — it is yours, and the warning is what Google shows for any app
   it has not reviewed), then Sync now.
-- **A re-seed button is still needed.** If the Drive file is ever deleted or
-  binned, the app now refuses rather than silently starting a new lineage — but
-  there is no in-app way yet to say "yes, start again from this device".
 - **No test drives the engine and the real transport together.** Engine tests
   fake the transport; transport tests fake `fetch`. The seam between them is the
   one place a defect could still hide.
