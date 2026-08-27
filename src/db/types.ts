@@ -277,6 +277,54 @@ export interface Settings {
    */
   syncAncestry: string[];
   /**
+   * THE REST OF THE STAMP the remote head carried when this device last agreed
+   * with it: WHEN that snapshot was written, and by WHICH device.
+   *
+   * Together with syncLastPulledSnapshotId and syncLastPulledRevision these
+   * make one STAMP, and the WHOLE stamp — never the id on its own — is what
+   * the engine compares the head against (C18).
+   *
+   * WHY THE ID ALONE IS NOT ENOUGH, since it reads as though it should be.
+   * Google Drive MERGES appProperties on files.update: a key the writer omits
+   * KEEPS ITS PREVIOUS VALUE. A device still running a build from before
+   * ancestry existed writes no snapshotId at all, so after its upload the file
+   * holds THAT DEVICE'S BOOK while OUR snapshotId is still sitting on it,
+   * merged through from our own earlier write. An identity check then reads
+   * "still mine" over a stranger's book, reports up-to-date, and lets the next
+   * push destroy the other device's rows with no conflict and no safety file.
+   * `savedAt` and `deviceId` are fields every writer — legacy ones included —
+   * ACTIVELY WRITES, so a disagreement in either is proof that somebody else
+   * wrote the file. That is the whole point: only a field a foreign writer
+   * writes can testify that it wrote.
+   *
+   * `deviceId` and NOT `deviceName`, which was the obvious choice and is
+   * wrong: a name is passed through the transport's fitProperty() to fit
+   * Drive's 124-byte appProperties budget, so a long one is stored TRIMMED and
+   * would never compare equal to the name recorded here — a permanent,
+   * unfixable false conflict for anyone who names their laptop generously. A
+   * deviceId is a 36-character uid: never trimmed, and, unlike a name, it
+   * cannot be shared by two devices the user called "Mac".
+   *
+   * Device-local, not indexed, supplied by defaultSettings() — so no Dexie
+   * version block and no SCHEMA_VERSION bump, exactly like the two fields
+   * above.
+   *
+   * `null` IS THE MIGRATION STATE. It means "recorded by a build that did not
+   * know about this field", never "the head had no savedAt" — every head has
+   * one. A device that has already synced under the old code arrives here, and
+   * the engine treats such a stamp as UNPROVEN: before it writes anything it
+   * confirms the head against the file's BODY, which no appProperties merge
+   * can forge, exactly once — then records the full stamp and never pays for
+   * it again. Unproven is never treated as agreement, and never as a reason to
+   * re-seed or to lock the device out.
+   */
+  syncLastPulledSavedAt: string | null;
+  /**
+   * `deviceId` of the writer of syncLastPulledSnapshotId, from the same head
+   * read. Same reasoning, same migration state, as syncLastPulledSavedAt.
+   */
+  syncLastPulledDeviceId: string | null;
+  /**
    * Monotonic counter of local CHANGE BATCHES. Bumped once per write
    * operation on a data table by the tracker in db.ts (coalesced — a
    * 5,127-row import bumps it once, not 5,127 times).

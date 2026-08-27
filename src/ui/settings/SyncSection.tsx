@@ -33,6 +33,7 @@ import {
   DRIVE_SCOPE,
   isReconnectNeeded,
 } from './syncAccess';
+import { SYNC_HELD, SYNC_HELD_REASON } from '../../sync/held';
 import DriveSetupSteps from './DriveSetupSteps';
 import SyncConflictDialog, { type ConflictChoice } from './SyncConflictDialog';
 import {
@@ -279,6 +280,15 @@ export default function SyncSection() {
     localAncestry: settings?.syncAncestry,
     remoteSnapshotId: probe?.snapshotId ?? null,
     remoteParentSnapshotId: probe?.parentSnapshotId ?? null,
+    // The rest of the head's stamp, and the stamp this device recorded for the
+    // snapshot it descends from. Without these the card can only compare ids,
+    // and an id can be a leftover of our own write that Drive merged back on
+    // top of somebody else's book — the state the engine calls a conflict
+    // while the card said "the same copy" (C18/C20).
+    remoteSavedAt: probe?.savedAt ?? null,
+    remoteDeviceId: probe?.deviceId ?? null,
+    lastPulledSavedAt: settings?.syncLastPulledSavedAt,
+    lastPulledDeviceId: settings?.syncLastPulledDeviceId,
     remoteTrashed: probe?.trashed === true,
     everSynced,
   };
@@ -314,6 +324,31 @@ export default function SyncSection() {
       )}
     </Field>
   );
+
+  // Sync is held (src/sync/held.ts). Show why, and offer nothing that could
+  // reach Drive. Rendered ABOVE every other card and returning early, rather
+  // than disabling individual buttons, because a disabled button still invites
+  // the question "what if I press it" — and because one forgotten control on a
+  // screen like this is a lost transaction.
+  if (SYNC_HELD) {
+    return (
+      <SettingsPage
+        title="Sync"
+        description="Syncing between your devices through a file in your own Google Drive. Currently switched off."
+      >
+        <Card>
+          <h2 className="text-sm font-semibold text-text">Sync is switched off in this build</h2>
+          <p className="mt-2 text-sm text-muted">{SYNC_HELD_REASON}</p>
+          <p className="mt-2 text-sm text-muted">
+            To move data between devices meanwhile, use{' '}
+            <strong className="text-text">Settings → Backup</strong>: export a backup file on one
+            device and restore it on the other. That path is well tested and does not touch the
+            network.
+          </p>
+        </Card>
+      </SettingsPage>
+    );
+  }
 
   return (
     <SettingsPage

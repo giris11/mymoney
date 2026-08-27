@@ -128,6 +128,8 @@ export const DEVICE_LOCAL_SETTING_KEYS = [
   'syncLastPulledRevision',
   'syncLastPulledSnapshotId',
   'syncAncestry',
+  'syncLastPulledSavedAt',
+  'syncLastPulledDeviceId',
   'syncLocalRevision',
   'syncSyncedLocalRevision',
 ] as const satisfies readonly (keyof Settings)[];
@@ -199,6 +201,11 @@ export function defaultSettings(): Settings {
     // another empty string, which would read as two devices agreeing.
     syncLastPulledSnapshotId: null,
     syncAncestry: [],
+    // The rest of the stamp of that snapshot. `null` here is the MIGRATION
+    // state — "no build has recorded this yet" — and the engine reads it as
+    // "unproven", never as agreement. See Settings.syncLastPulledSavedAt.
+    syncLastPulledSavedAt: null,
+    syncLastPulledDeviceId: null,
     syncLocalRevision: 0,
     syncSyncedLocalRevision: 0,
   };

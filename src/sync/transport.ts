@@ -31,6 +31,19 @@
 //     closed is long: a 3 MB export plus a 3 MB upload on a phone connection,
 //     and in the conflict path a save dialog that can sit open for minutes.
 //     A refused write costs one redundant sync; an unrefused one costs a book.
+//  1b. …AND THE PARENT'S ID IS NOT ENOUGH ON ITS OWN (C18). files.update
+//     MERGES appProperties: a key the writer omits KEEPS ITS OLD VALUE. A
+//     device on a build from before ancestry existed sends no snapshotId, so
+//     its upload leaves the PREVIOUS writer's id sitting on a file whose
+//     contents it has just replaced — and 1a's check, reading only that id,
+//     says "still the parent I was built on". Neither does the revision it
+//     also writes save us: the engine asks for head + 1, so our write is
+//     always strictly above, and that guard can only fire on a legacy writer
+//     that is AHEAD of us. So writeRemote also takes `expectHead` — the whole
+//     stamp the caller read (revision, savedAt, deviceId beside the id) — and
+//     refuses unless the head still matches all of it. Those are exactly the
+//     fields such a writer DOES write, which is the only reason they can
+//     testify that it wrote.
 //  2. A FILE THAT EXISTS IS NEVER REPORTED AS ABSENT. readRemoteMeta() returns
 //     null ONLY when there is genuinely no sync file. If a file exists but its
 //     appProperties are missing or unusable, it falls back to reading the file
@@ -58,7 +71,7 @@
 // ~3 MB, so readRemoteMeta() reads the file's appProperties — a few hundred
 // bytes — and never the file body. Locked by test.
 
-import type { SyncRemoteMeta, SyncSnapshot, SyncTransport } from './types';
+import type { SyncRemoteMeta, SyncSnapshot, SyncStamp, SyncTransport } from './types';
 import {
   createGoogleTokenProvider,
   isOffline,
@@ -552,6 +565,38 @@ export function createDriveTransport(opts: DriveTransportOptions = {}): SyncTran
   }
 
   /**
+   * Which field of the stamp the head no longer agrees with, or null when it
+   * still matches in every respect. The NAME is returned rather than a
+   * boolean so the refusal can tell the owner what actually changed.
+   *
+   * A field the head does not report ABSTAINS instead of failing: damaged or
+   * hand-edited appProperties must not turn every push into a refusal, and a
+   * head missing these keys is one readRemoteMeta() would have read from the
+   * file body anyway. Abstention is safe here because it is never the only
+   * check — identity is compared exactly, above and here, and the fields that
+   * matter for C18 (revision, savedAt, deviceId) are precisely the ones a
+   * legacy writer DOES write. It is "no evidence", not "evidence of no".
+   */
+  function headStampMismatch(
+    props: Record<string, string> | undefined,
+    expected: SyncStamp,
+  ): string | null {
+    if (idProperty(props?.snapshotId) !== expected.snapshotId) return 'identity';
+    const revision = revisionOf(props);
+    if (revision >= 0 && revision !== expected.revision) return 'version number';
+    const savedAt = props?.savedAt;
+    if (typeof savedAt === 'string' && savedAt !== '' && savedAt !== expected.savedAt) {
+      return 'save time';
+    }
+    const deviceId = idProperty(props?.deviceId);
+    const expectedDeviceId = expected.deviceId ?? null;
+    if (deviceId !== null && expectedDeviceId !== null && deviceId !== expectedDeviceId) {
+      return 'writing device';
+    }
+    return null;
+  }
+
+  /**
    * The current sync file, or null when there genuinely is not one.
    *
    * The trashed case is the interesting one. `files.list` cannot see a file in
@@ -678,6 +723,12 @@ export function createDriveTransport(opts: DriveTransportOptions = {}): SyncTran
           revision,
           savedAt,
           deviceName,
+          // Carried because the engine compares the WHOLE stamp, not just the
+          // identity: `snapshotId` survives a writer that omits it (Drive
+          // merges appProperties), while `deviceId` is written by every
+          // writer, including a build from before ancestry existed. See
+          // SyncStamp and Settings.syncLastPulledSavedAt.
+          deviceId: idProperty(props?.deviceId),
           snapshotId: idProperty(props?.snapshotId),
           parentSnapshotId: idProperty(props?.parentSnapshotId),
           ...trashed,
@@ -694,13 +745,14 @@ export function createDriveTransport(opts: DriveTransportOptions = {}): SyncTran
         revision: snap.revision,
         savedAt: snap.savedAt,
         deviceName: snap.deviceName,
+        deviceId: idProperty(snap.deviceId),
         snapshotId: idProperty(snap.snapshotId),
         parentSnapshotId: idProperty(snap.parentSnapshotId),
         ...trashed,
       };
     },
 
-    async writeRemote(snap) {
+    async writeRemote(snap, expectHead) {
       // Vet our own payload before it leaves: a snapshot we would refuse to
       // read back is a snapshot we must not write. Stricter than the read
       // side — this one must carry an identity (see vetSnapshot).
@@ -770,15 +822,31 @@ export function createDriveTransport(opts: DriveTransportOptions = {}): SyncTran
         );
       }
 
+      // The caller asserted there is NO file — the only state in which a
+      // create is safe. One appeared between its head read and this one, so
+      // whatever is in it was written by somebody whose work a create would
+      // sit beside (two files called mymoney-sync.json) or, worse, whose head
+      // this upload would replace unseen.
+      if (expectHead === null && head) {
+        throw new SyncTransportError(
+          'remote',
+          'A sync file appeared in Google Drive while this one was preparing its upload, so ' +
+            'nothing was uploaded and nothing on this device was changed. Sync again to see ' +
+            'what is in it.',
+        );
+      }
+
       if (head) {
         // SECOND, INDEPENDENT GUARD: never write at or below the head's own
         // revision. Every legitimate write of ours is strictly above both
-        // sides, so this cannot refuse a sound push — but it catches the one
-        // case the identity check cannot. A device still running a build from
+        // sides, so this cannot refuse a sound push — but it catches one case
+        // the identity check cannot. A device still running a build from
         // before ancestry writes appProperties WITHOUT a snapshotId, and
         // files.update merges, so the previous snapshotId survives on a file
         // whose contents have changed underneath it. Identity alone would then
-        // read as "still mine". The revision it also writes gives it away.
+        // read as "still mine". The revision it also writes gives it away —
+        // but ONLY when that revision is at or above ours, which is why it is
+        // not sufficient on its own either (see the stamp check below).
         const headRevision = revisionOf(head.appProperties);
         if (headRevision >= 0 && headRevision >= snap.revision) {
           throw new SyncTransportError(
@@ -796,6 +864,35 @@ export function createDriveTransport(opts: DriveTransportOptions = {}): SyncTran
               'so nothing was uploaded — this snapshot was built on an older version of the ' +
               'file. Nothing on this device was changed. Sync again to see what changed.',
           );
+        }
+        // THIRD GUARD, AND THE ONLY ONE THAT SEES A LEGACY WRITE THAT IS
+        // BEHIND US (C18). The two checks above are both blind to it: the
+        // revision guard only fires at or above our own number, and the
+        // identity check compares a field the legacy writer never sent, which
+        // Drive therefore MERGED FROM OUR OWN PREVIOUS WRITE. So a device on
+        // an old build can replace the file's contents in the window between
+        // the caller's head read and this one, and the head will still swear
+        // it is ours. The stamp the caller actually read is the only thing
+        // left to compare against, and every field in it — revision, savedAt,
+        // deviceId — is a field that writer DID write.
+        //
+        // Rejected: making this the ONLY check and dropping the identity one
+        // above. It cannot be, because `expectHead` is optional (a caller
+        // written against the older shape passes nothing) and because the
+        // identity check is the one that names the right cause when a modern
+        // device wins the race.
+        if (expectHead) {
+          const mismatch = headStampMismatch(head.appProperties, expectHead);
+          if (mismatch) {
+            throw new SyncTransportError(
+              'remote',
+              'The sync file in Google Drive is no longer the one this upload was built on ' +
+                `(its ${mismatch} has changed), so nothing was uploaded — another device wrote ` +
+                "to it, and it kept this file's old identity because Drive merges file " +
+                'properties. Nothing on this device was changed. Sync again to see what ' +
+                'that device wrote.',
+            );
+          }
         }
         const res = await send(
           `${DRIVE_UPLOAD_API}/files/${encodeURIComponent(head.id)}?uploadType=multipart&fields=id`,

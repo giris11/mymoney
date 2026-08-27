@@ -498,6 +498,11 @@ describe('readRemoteMeta', () => {
       revision: 12,
       savedAt: '2026-08-27T09:15:00.000Z',
       deviceName: 'Laptop',
+      // The WRITER's id, beside the snapshot's. It is here because identity
+      // alone cannot be trusted on a file Drive merges appProperties into: a
+      // writer that omits snapshotId leaves the previous one in place, and
+      // deviceId is one of the fields such a writer does fill in (C18).
+      deviceId: 'device-imac',
       snapshotId: expect.stringMatching(/^snap-\d+$/) as unknown as string,
       parentSnapshotId: null,
     });

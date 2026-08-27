@@ -1,0 +1,40 @@
+// Drive sync is HELD — deliberately refused, in code, until it is sound.
+//
+// Why this file exists rather than a revert: the sync subsystem has had three
+// rounds of review. The first confirmed 17 defects; fixing those exposed C18
+// (Drive MERGES appProperties, so a device on an older build leaves OUR
+// snapshotId on a file whose contents are now its own book); fixing C18
+// exposed C19 (parentSnapshotId merges identically, and the fast-forward
+// branch trusted it alone); and fixing C19 introduced D1 — a conflict whose
+// RESOLUTION silently destroys a third device's rows — while leaving C18
+// reachable through a second door (D2). Every round has been well tested and
+// every round has been wrong in a way its own tests could not see.
+//
+// The pattern, not any single defect, is the reason for this hold. Two fields
+// are each doing two incompatible jobs (parentSnapshotId is both the
+// transport's compare-and-swap token and a causal-descent claim other devices
+// trust; a recorded stamp is both "what I last saw" and "what I have proved"),
+// and a design that overloads its safety primitives will keep producing this.
+// That is a design decision for the owner of this app to weigh, not something
+// to patch again at four in the morning while he is asleep.
+//
+// What is NOT the reason: nothing here is at risk today. No device has ever
+// connected, so no sync has ever run and no data has ever been at stake. This
+// hold exists so that stays true by construction rather than by his reading a
+// message in a terminal before he presses a button.
+//
+// The gate is deliberately in TWO places — the screen never offers the
+// controls, and syncNow() refuses even if something calls it directly — so a
+// stray code path cannot reach Drive because one of them was forgotten.
+//
+// TO LIFT: delete this file's export and its two call sites. Do that only when
+// D1-D4 are closed and a review pass comes back empty, not merely when the
+// suite is green; a green suite is what every previous round already had.
+
+export const SYNC_HELD = true;
+
+export const SYNC_HELD_REASON =
+  'Drive sync is switched off in this build. A review found faults that could ' +
+  'lose transactions when two devices sync, and the fix for them is not ' +
+  'finished. Nothing on this device is affected, and no data has ever been ' +
+  'sent to Drive. Your backups in Settings → Backup still work as normal.';

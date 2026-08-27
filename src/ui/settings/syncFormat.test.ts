@@ -223,9 +223,15 @@ describe('revisionWords', () => {
     expect(revisionWords(facts({ hasLocalChanges: true }))).toBe(
       'This device has changes that have not been sent to Drive yet.',
     );
-    expect(revisionWords(facts({ remoteRevision: 11 }))).toBe(
-      'Drive has newer changes that this device has not taken yet.',
-    );
+    // "Drive is ahead" by revision number and nothing else: no identity on
+    // either side, so whose book it is has not been established. It says what
+    // the next sync will DO — read the file's own contents and stop if they do
+    // not belong to this book — and stops short of calling them "newer
+    // changes", which is the file's claim about itself, not a fact (C19/C20).
+    const ahead = revisionWords(facts({ remoteRevision: 11 }));
+    expect(ahead).toContain('Drive has changes this device has not taken yet');
+    expect(ahead).toContain('reads the file itself');
+    expect(ahead).toContain('stops and asks');
   });
 
   it('warns before the sync does when both sides moved', () => {
@@ -328,6 +334,16 @@ describe('revisionWords: identity, not revision numbers', () => {
     localAncestry: ['snap-6', 'snap-5'],
     remoteSnapshotId: 'snap-7',
     remoteParentSnapshotId: 'snap-6',
+    // THE REST OF THE STAMP. Matching ids stopped being enough when C18 showed
+    // that Drive merges appProperties: our id survives another device's write,
+    // so "the same copy" now needs the fields that writer would have had to
+    // overwrite — the head's savedAt and deviceId, against the ones this
+    // device recorded. A fixture without them is the 'unproven' state, which
+    // is a real state and gets its own tests below.
+    remoteSavedAt: '2026-08-27T09:00:00.000Z',
+    remoteDeviceId: 'device-laptop',
+    lastPulledSavedAt: '2026-08-27T09:00:00.000Z',
+    lastPulledDeviceId: 'device-laptop',
     ...over,
   });
 
@@ -364,10 +380,18 @@ describe('revisionWords: identity, not revision numbers', () => {
     );
   });
 
-  it('reads a child of our snapshot as a fast-forward, and a dirty one as a question', () => {
+  it('reads a CLAIMED child of our snapshot as unconfirmed, and a dirty one as a question', () => {
+    // `parentSnapshotId` merges through Drive exactly as `snapshotId` does, so
+    // a head can go on naming our snapshot as its parent over contents that
+    // descend from nothing (C19). Nothing in the head can tell the two apart —
+    // the engine settles it by reading the body — so the card describes the
+    // check instead of pre-announcing its result.
     const child = at({ remoteRevision: 8, remoteSnapshotId: 'snap-8', remoteParentSnapshotId: 'snap-7' });
-    expect(remoteRelation(child)).toBe('remote-descends');
-    expect(revisionWords(child)).toBe('Drive has newer changes that this device has not taken yet.');
+    expect(remoteRelation(child)).toBe('remote-claims-descent');
+    const words = revisionWords(child);
+    expect(words).toContain('Drive has changes this device has not taken yet');
+    expect(words).toContain('reads the file itself');
+    expect(words).not.toContain('the same copy');
     expect(revisionWords({ ...child, hasLocalChanges: true })).toContain('ask you which to keep');
   });
 
@@ -425,26 +449,45 @@ describe('revisionWords: identity, not revision numbers', () => {
     const claimsSameness = (w: string) =>
       w.includes('the same copy —') || /and the copy in Drive match\./.test(w);
     const ids: (string | null | undefined)[] = [undefined, null, 'snap-7', 'snap-9'];
+    // The stamp beside the id, because the id alone stopped being enough:
+    // Drive merges appProperties, so ours can be sitting on a file another
+    // device wrote (C18). Every combination of "recorded / not recorded /
+    // disagrees" is swept, on both halves.
+    const stamps: (string | null | undefined)[] = [undefined, null, 'T-ours', 'T-theirs'];
+    let sameCases = 0;
     for (const mine of ids) {
       for (const theirs of [null, 'snap-7', 'snap-9']) {
         for (const parent of [null, 'snap-6', 'snap-7']) {
           for (const rev of [1, 7, 9]) {
             for (const pulled of [0, 7]) {
               for (const dirty of [false, true]) {
-                const f: SyncFacts = {
-                  connected: true,
-                  hasLocalChanges: dirty,
-                  lastPulledRevision: pulled,
-                  remoteRevision: rev,
-                  lastPulledSnapshotId: mine,
-                  localAncestry: ['snap-6'],
-                  remoteSnapshotId: theirs,
-                  remoteParentSnapshotId: parent,
-                };
-                if (claimsSameness(revisionWords(f))) {
-                  expect(theirs).not.toBeNull();
-                  expect(theirs).toBe(mine);
-                  expect(dirty).toBe(false);
+                for (const mySavedAt of stamps) {
+                  for (const theirSavedAt of stamps) {
+                    const f: SyncFacts = {
+                      connected: true,
+                      hasLocalChanges: dirty,
+                      lastPulledRevision: pulled,
+                      remoteRevision: rev,
+                      lastPulledSnapshotId: mine,
+                      localAncestry: ['snap-6'],
+                      remoteSnapshotId: theirs,
+                      remoteParentSnapshotId: parent,
+                      lastPulledSavedAt: mySavedAt,
+                      remoteSavedAt: theirSavedAt,
+                    };
+                    if (claimsSameness(revisionWords(f))) {
+                      sameCases += 1;
+                      expect(theirs).not.toBeNull();
+                      expect(theirs).toBe(mine);
+                      expect(dirty).toBe(false);
+                      // …and now the stamp as well: a recorded save time, the
+                      // head reporting the SAME one, at the same revision.
+                      expect(mySavedAt).toBe(theirSavedAt);
+                      expect(mySavedAt).not.toBeNull();
+                      expect(mySavedAt).not.toBeUndefined();
+                      expect(rev).toBe(pulled);
+                    }
+                  }
                 }
               }
             }
@@ -452,6 +495,9 @@ describe('revisionWords: identity, not revision numbers', () => {
         }
       }
     }
+    // The rule above must not be satisfied by claiming sameness NOWHERE — that
+    // would pass this test while making the card useless.
+    expect(sameCases).toBeGreaterThan(0);
   });
 
   it('tells a deleted sync file from a first sync, and a binned one from both', () => {
@@ -790,5 +836,141 @@ describe('the sync UI never renders raw markup', () => {
     // checking nothing at all.
     expect(checked).toContain('SyncSection.tsx');
     expect(checked).toContain('SyncConflictDialog.tsx');
+  });
+});
+
+// ===========================================================================
+// C20 — the id on the file can be a LEFTOVER, so no sentence may rest on it
+// ===========================================================================
+//
+// Google Drive merges appProperties on files.update, so a device running a
+// build from before ancestry existed leaves OUR snapshotId — and OUR
+// parentSnapshotId — on a file whose contents are now its book. The engine
+// calls both of those states a conflict (C18/C19). This card is fed by the
+// same readRemoteMeta(), and until now it read the same file as "the same
+// copy" and as "Drive has newer changes": the screen reassuring the owner in
+// precisely the state that needs him. The module's own rule is that the screen
+// and the engine must never be able to disagree about what is about to happen
+// to the data.
+
+describe('the card cannot claim more than the head can prove', () => {
+  /** In step with Drive, stamp and all: the one shape that may reassure. */
+  const inStep = (over: Partial<SyncFacts> = {}): SyncFacts => ({
+    connected: true,
+    hasLocalChanges: false,
+    lastPulledRevision: 4,
+    remoteRevision: 4,
+    lastPulledSnapshotId: 'snap-4',
+    localAncestry: ['snap-3'],
+    remoteSnapshotId: 'snap-4',
+    remoteParentSnapshotId: 'snap-3',
+    lastPulledSavedAt: '2026-08-27T09:00:00.000Z',
+    lastPulledDeviceId: 'device-laptop',
+    remoteSavedAt: '2026-08-27T09:00:00.000Z',
+    remoteDeviceId: 'device-laptop',
+    ...over,
+  });
+
+  it('still says "the same copy" when the whole stamp agrees', () => {
+    expect(remoteRelation(inStep())).toBe('same-snapshot');
+    expect(revisionWords(inStep())).toContain('the same copy');
+  });
+
+  it('THE C18 STATE: our id over another device’s write is divergence, not sameness', () => {
+    // The legacy iPhone replaced the contents at the same revision number. It
+    // wrote its own savedAt and its own deviceId — the two fields it cannot
+    // avoid writing — while our snapshotId merged through untouched.
+    const merged = inStep({
+      remoteSavedAt: '2026-08-27T11:30:00.000Z',
+      remoteDeviceId: 'device-iphone',
+    });
+    expect(remoteRelation(merged)).toBe('diverged');
+    const words = revisionWords(merged);
+    expect(words).not.toContain('the same copy');
+    expect(words).toContain('not the one this device last matched');
+  });
+
+  it('a revision that has moved under an unchanged id is divergence too', () => {
+    const moved = inStep({ remoteRevision: 5 });
+    expect(remoteRelation(moved)).toBe('diverged');
+    expect(revisionWords(moved)).not.toContain('the same copy');
+  });
+
+  it('THE C19 STATE: a head naming our snapshot as its PARENT promises nothing', () => {
+    const claimed = inStep({
+      remoteRevision: 5,
+      remoteSnapshotId: 'snap-5',
+      remoteParentSnapshotId: 'snap-4',
+    });
+    expect(remoteRelation(claimed)).toBe('remote-claims-descent');
+    const words = revisionWords(claimed);
+    expect(words).not.toContain('the same copy');
+    expect(words).not.toContain('newer changes');
+    expect(words).toContain('reads the file itself');
+    expect(words).toContain('stops and asks');
+  });
+
+  it('a device upgraded mid-lineage is told the name is unproven, not that it is wrong', () => {
+    // It holds an id and no stamp — the state every already-synced device is
+    // in until its first sync on this build. The engine settles it by reading
+    // the file body; this card reads no rows, so it says so and no more. A
+    // conflict sentence here would be a false alarm on every such device.
+    const unproven = inStep({ lastPulledSavedAt: null, lastPulledDeviceId: null });
+    expect(remoteRelation(unproven)).toBe('same-snapshot-unproven');
+    const words = revisionWords(unproven);
+    expect(words).not.toContain('the same copy');
+    expect(words).toContain('still names the snapshot this book came from');
+    expect(words).toContain('is not proof');
+    expect(words).not.toContain('parted');
+    // With something unsent, the fact that matters is still the unsent change.
+    expect(revisionWords({ ...unproven, hasLocalChanges: true })).toBe(
+      'This device has changes that have not been sent to Drive yet.',
+    );
+  });
+
+  it('a stamp the screen has not read yet is unproven, never divergence', () => {
+    // The card renders before the probe answers. An alarming sentence that
+    // un-alarms itself a second later is its own kind of lie.
+    expect(remoteRelation(inStep({ remoteSavedAt: undefined }))).toBe('same-snapshot-unproven');
+    expect(remoteRelation(inStep({ lastPulledSavedAt: undefined }))).toBe('same-snapshot-unproven');
+  });
+
+  it('deviceId abstains rather than accuses when either side is silent', () => {
+    // A transport that does not report one, or a device that recorded none:
+    // "no evidence" is not "evidence of no", and nothing rests on it alone.
+    expect(remoteRelation(inStep({ remoteDeviceId: null }))).toBe('same-snapshot');
+    expect(remoteRelation(inStep({ remoteDeviceId: undefined }))).toBe('same-snapshot');
+    expect(remoteRelation(inStep({ lastPulledDeviceId: null }))).toBe('same-snapshot');
+    // …but a head that names a DIFFERENT writer is divergence on its own,
+    // even where every other field was left untouched by the merge.
+    expect(remoteRelation(inStep({ remoteDeviceId: 'device-iphone' }))).toBe('diverged');
+  });
+});
+
+describe('the screen hands the card every fact the card can use', () => {
+  it('SyncSection passes every field of SyncFacts', () => {
+    // ROT-PROOFING, and it is the half C18/C20 actually got wrong: the card's
+    // logic was fine, and the screen simply never handed it `savedAt` or
+    // `deviceId`, so it could not tell a merged id from a real one however
+    // carefully it reasoned. A field added to SyncFacts and not passed here
+    // fails silently and safely — it reads as "no evidence" — which is exactly
+    // the kind of quiet degradation that survives a review.
+    const dir = fileURLToPath(new URL('.', import.meta.url));
+    const facts = readFileSync(`${dir}syncFormat.ts`, 'utf8');
+    const body = /export interface SyncFacts \{([\s\S]*?)\n\}/.exec(facts)?.[1];
+    if (!body) throw new Error('SyncFacts interface not found — this test is checking nothing');
+    const fields = [...body.matchAll(/^ {2}(\w+)\??:/gm)].map((m) => m[1]);
+    expect(fields).toContain('remoteSavedAt');
+    expect(fields).toContain('lastPulledDeviceId');
+    expect(fields.length).toBeGreaterThan(8);
+
+    const screen = readFileSync(`${dir}SyncSection.tsx`, 'utf8');
+    const literal = /const facts: SyncFacts = \{([\s\S]*?)\n {2}\};/.exec(screen)?.[1];
+    if (!literal) throw new Error('SyncSection no longer builds a SyncFacts literal');
+    for (const field of fields) {
+      // `x: probe?.x ?? null` or the shorthand `x,` — both count as passed.
+      const passed = new RegExp(`(^|[\\s{,])${field}\\s*[,:]`, 'm').test(literal);
+      expect(`${field}: ${passed}`).toBe(`${field}: true`);
+    }
   });
 });

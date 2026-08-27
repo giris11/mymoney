@@ -14,6 +14,7 @@ import { getSettings } from '../../db/db';
 import { createDriveTransport } from '../../sync/transport';
 import { DRIVE_SCOPE, isOfflineError, isReconnectNeeded, SyncTransportError } from '../../sync/googleAuth';
 import type { SyncTransport } from '../../sync/types';
+import { SYNC_HELD, SYNC_HELD_REASON } from '../../sync/held';
 
 export { DRIVE_SCOPE };
 
@@ -34,6 +35,18 @@ export { isReconnectNeeded };
 let instance: SyncTransport | null = null;
 
 export function driveTransport(): SyncTransport {
+  // The second half of the sync hold (src/sync/held.ts). The Sync screen
+  // returns early and never offers a control that reaches Drive; this is the
+  // backstop for any OTHER caller, now or later, that has not been taught
+  // about the hold.
+  //
+  // Gated HERE rather than inside syncNow() on purpose. syncNow is the thing
+  // under test — 1,014 tests drive it, and a hold baked into it would either
+  // gut that coverage or need a test-only escape hatch, which is one more
+  // thing to get wrong. This module is the single import edge between the UI
+  // and the sync engine (see the note at the top of this file), so holding it
+  // here stops the app without touching what the tests exercise.
+  if (SYNC_HELD) throw new Error(SYNC_HELD_REASON);
   instance ??= createDriveTransport({
     clientId: async () => (await getSettings()).syncClientId ?? '',
   });

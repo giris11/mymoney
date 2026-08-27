@@ -90,6 +90,22 @@ export interface SyncRemoteMeta {
   revision: number;
   savedAt: string;
   deviceName: string;
+  /**
+   * `deviceId` of whoever wrote the head — read from the same cheap head, and
+   * the one field there that a LEGACY writer still fills in truthfully.
+   *
+   * It matters because Drive MERGES appProperties: a writer that omits
+   * `snapshotId` leaves the previous one in place, so identity can describe a
+   * file whose contents somebody else replaced. `deviceId` cannot lie that
+   * way — a writer either writes its own or writes none. Compared as part of
+   * the stamp in syncEngine (C18).
+   *
+   * OPTIONAL, so that a transport (or a test fake) written before this field
+   * existed still satisfies the interface. `undefined` means "not reported"
+   * and makes the field ABSTAIN from the comparison; it never counts as
+   * agreement on its own.
+   */
+  deviceId?: string | null;
   /** Identity of the snapshot in Drive; null when the file predates ancestry. */
   snapshotId: string | null;
   /** What that snapshot descends from; null for a first write or a legacy file. */
@@ -101,6 +117,28 @@ export interface SyncRemoteMeta {
    * revision 1 (C13). Absent/false means a normal, live file.
    */
   trashed?: boolean;
+}
+
+/**
+ * THE WHOLE STAMP a writer leaves on the remote head — identity AND the fields
+ * that prove who left it there.
+ *
+ * `snapshotId` alone cannot answer "is the file in Drive still the snapshot I
+ * left?", because Google Drive MERGES appProperties on files.update: a key the
+ * writer omits keeps its previous value. A device running a build from before
+ * ancestry existed writes no snapshotId, so its upload leaves OUR id sitting
+ * on a file whose contents are now ITS book. The fields beside the id are the
+ * ones such a writer ACTIVELY WRITES — `revision`, `savedAt`, its own
+ * `deviceId` — and only an actively-written field can testify that somebody
+ * wrote. Any disagreement across the stamp is DIVERGENCE (C18).
+ */
+export interface SyncStamp {
+  /** null only for a file written before ancestry existed. */
+  snapshotId: string | null;
+  revision: number;
+  savedAt: string;
+  /** null/undefined ⇒ the head did not report one; that field abstains. */
+  deviceId?: string | null;
 }
 
 /** Everything the UI needs to describe where this device stands. */
@@ -174,8 +212,16 @@ export interface SyncTransport {
    * `snap.snapshotId`. Returning normally is a promise that this exact
    * snapshot is the file in Drive; anything less and the caller records an
    * agreement that does not exist.
+   *
+   * `expectHead` is the SECOND half of that precondition and the reason a
+   * merged appProperties key cannot slip a stranger's book past it: the whole
+   * stamp the caller read, which the head must still match field for field.
+   * `null` asserts there is no file at all. `undefined` means the caller
+   * states no expectation, and the transport falls back to the identity check
+   * alone — the behaviour before C18, kept so that a transport or a caller
+   * written against the older shape still works.
    */
-  writeRemote(snap: SyncSnapshot): Promise<void>;
+  writeRemote(snap: SyncSnapshot, expectHead?: SyncStamp | null): Promise<void>;
   /** Cheap head: identity/ancestry/revision without downloading the rows. */
   readRemoteMeta(): Promise<SyncRemoteMeta | null>;
 }

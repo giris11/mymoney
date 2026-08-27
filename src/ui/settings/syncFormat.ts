@@ -473,6 +473,28 @@ export interface SyncFacts {
   remoteSnapshotId?: string | null;
   /** What the head descends from, from readRemoteMeta. */
   remoteParentSnapshotId?: string | null;
+  /**
+   * THE REST OF THE HEAD'S STAMP — and the reason the two ids above are not
+   * enough to claim anything (C18/C19).
+   *
+   * Google Drive MERGES appProperties on files.update: a key the writer omits
+   * keeps its previous value. A device on a build from before ancestry existed
+   * writes neither `snapshotId` nor `parentSnapshotId`, so BOTH of ours can
+   * still be sitting on a file whose contents somebody else replaced. The
+   * fields such a writer does write — `savedAt`, its own `deviceId`, the
+   * revision — are the only ones that can testify that it wrote at all, which
+   * is why the engine compares the whole stamp (syncEngine's `headStillOurs`)
+   * and why this screen has to compare the same one. `undefined` means "not
+   * read", which is treated as no evidence, never as agreement.
+   */
+  remoteSavedAt?: string | null;
+  remoteDeviceId?: string | null;
+  /** `settings.syncLastPulledSavedAt` / `…DeviceId`: the stamp we recorded for
+   *  `lastPulledSnapshotId`. `null` on a device that last synced under a build
+   *  that did not record one — it has an id and no proof, exactly the state
+   *  the engine calls 'unproven'. */
+  lastPulledSavedAt?: string | null;
+  lastPulledDeviceId?: string | null;
   /** The file exists but is in Drive's bin — never the same as "no file". */
   remoteTrashed?: boolean;
   /**
@@ -498,9 +520,23 @@ export type RemoteRelation =
   | 'no-file'
   /** The file exists, in the bin. */
   | 'trashed'
-  /** The head IS the snapshot this book grew out of. */
+  /** The head IS the snapshot this book grew out of, stamp and all. */
   | 'same-snapshot'
-  /** The head is a child of ours — or we descend from nothing and it is all new here. */
+  /**
+   * The head still NAMES that snapshot, but this device holds no stamp to
+   * check the name against, so from here it is a claim and not a fact. The
+   * engine settles it by reading the file's body; this screen cannot, and must
+   * not borrow the answer it has not got.
+   */
+  | 'same-snapshot-unproven'
+  /**
+   * The head CLAIMS to be a child of ours. `parentSnapshotId` merges through
+   * Drive exactly as `snapshotId` does, and no field of the head can tell a
+   * real child from a leftover, so this is where the screen stops claiming and
+   * says what the next sync will do about it (C19).
+   */
+  | 'remote-claims-descent'
+  /** We descend from nothing, so the file is simply all new here. */
   | 'remote-descends'
   /** The head is one of OUR ancestors: Drive has been rolled back. */
   | 'remote-rolled-back'
@@ -525,6 +561,43 @@ function pulledSnapshotId(f: SyncFacts): string | null | undefined {
   return f.lastPulledRevision === 0 ? null : undefined;
 }
 
+/**
+ * Is the head still the snapshot this device left there — or is our id merely
+ * sitting on it, merged through somebody else's write?
+ *
+ * The same three answers as syncEngine's `headStillOurs`, computed from the
+ * same four fields, deliberately: the screen and the engine must never be able
+ * to disagree about what is about to happen to the data, and the only way to
+ * guarantee that is to ask the identical question of the identical facts.
+ *
+ * Two differences from the engine, both in the cautious direction. A field
+ * this screen has not READ (`undefined`) is 'unproven', never a mismatch — the
+ * card renders before the probe answers, and an alarming sentence that
+ * un-alarms itself a moment later is its own kind of lie. And where the engine
+ * settles 'unproven' by downloading the file body, this screen cannot: it
+ * reads no rows, by design (the owner's snapshot is ~3 MB), so it says the
+ * name is unproven and leaves the proving to the sync.
+ */
+function headStamp(f: SyncFacts): 'agrees' | 'diverged' | 'unproven' {
+  const recordedSavedAt = f.lastPulledSavedAt;
+  if (recordedSavedAt === undefined || recordedSavedAt === null) return 'unproven';
+  if (f.remoteSavedAt === undefined || f.remoteSavedAt === null) return 'unproven';
+  if (f.remoteRevision !== f.lastPulledRevision) return 'diverged';
+  if (f.remoteSavedAt !== recordedSavedAt) return 'diverged';
+  // deviceId ABSTAINS when either side is silent — "no evidence" must not be
+  // read as "evidence of no", and nothing rests on it alone.
+  const recordedDeviceId = f.lastPulledDeviceId;
+  if (
+    recordedDeviceId !== undefined &&
+    recordedDeviceId !== null &&
+    typeof f.remoteDeviceId === 'string' &&
+    f.remoteDeviceId !== recordedDeviceId
+  ) {
+    return 'diverged';
+  }
+  return 'agrees';
+}
+
 export function remoteRelation(f: SyncFacts): RemoteRelation {
   if (!f.connected) return 'not-connected';
   if (f.remoteRevision === undefined) return 'unchecked';
@@ -536,15 +609,38 @@ export function remoteRelation(f: SyncFacts): RemoteRelation {
   const mine = pulledSnapshotId(f);
   const theirs = f.remoteSnapshotId ?? null;
   if (mine !== undefined && theirs !== null) {
-    if (theirs === mine) return 'same-snapshot';
-    if ((f.remoteParentSnapshotId ?? null) === mine) return 'remote-descends';
+    // THE SAME QUESTION THE ENGINE ASKS, AND FOR THE SAME REASON. `theirs ===
+    // mine` used to end it here. It cannot: Drive merges appProperties, so our
+    // own id can be sitting on a file another device replaced, and the engine
+    // now calls precisely that state a conflict. Claiming "the same copy" over
+    // it would put the reassuring sentence on the one screen state that most
+    // needs the owner's attention (C18/C20).
+    if (theirs === mine) {
+      switch (headStamp(f)) {
+        case 'agrees':
+          return 'same-snapshot';
+        case 'diverged':
+          // Somebody else wrote this file while our id merged through. The
+          // engine raises a conflict; 'diverged' is the sentence that says so.
+          return 'diverged';
+        case 'unproven':
+          return 'same-snapshot-unproven';
+      }
+    }
+    if ((f.remoteParentSnapshotId ?? null) === mine) return 'remote-claims-descent';
     // A device that has never agreed with anything descends from nothing, so
     // there is no ancestry for the remote to violate: the file is simply new
-    // here, and a clean device takes it.
+    // here, and a clean device takes it — with no proof asked for and none
+    // possible, because nothing it holds can be lost.
     if (mine === null) return 'remote-descends';
     // The head is something this device has already moved PAST — the file in
     // Drive was restored to an older version, or replaced. Visible only
     // because this device keeps its own chain.
+    //
+    // `theirs` could itself be a leftover here, so the REASON given may be the
+    // wrong one; the ACTION promised is not, and that is what this sentence is
+    // judged on. The engine sends every shape that reaches this line to the
+    // same place — stop and ask — so the screen cannot contradict it.
     if ((f.localAncestry ?? []).includes(theirs)) return 'remote-rolled-back';
     // Everything else: this may still turn out to be a fast-forward (the head
     // names only its parent, so a device two pushes behind lands here too),
@@ -568,7 +664,19 @@ export function remoteRelation(f: SyncFacts): RemoteRelation {
 const UNSENT = 'This device has changes that have not been sent to Drive yet.';
 const BOTH_MOVED =
   'Both this device and the copy in Drive have changed since they last matched. The next sync will stop and ask you which to keep.';
+/** Used only where the engine takes the file with no proof asked for, because
+ *  this device holds nothing that taking it could lose. */
 const REMOTE_AHEAD = 'Drive has newer changes that this device has not taken yet.';
+/**
+ * …and everywhere else, where "newer changes" is what the file SAYS about
+ * itself. A head can claim to be the child of this book's snapshot while its
+ * contents descend from nothing at all: Drive merges file properties, so the
+ * claim can be a leftover of our own earlier write (C19). The next sync reads
+ * the contents before it takes them, and this sentence promises exactly that
+ * and nothing more.
+ */
+const REMOTE_AHEAD_UNCONFIRMED =
+  'Drive has changes this device has not taken yet. The next sync reads the file itself to check they really grew out of this book before taking them — if they did not, it stops and asks; nothing here is replaced without that.';
 
 /**
  * The local/remote relationship in plain words. Revision numbers are shown
@@ -607,6 +715,14 @@ export function revisionWords(f: SyncFacts): string {
         ? UNSENT
         : 'This device and the copy in Drive are the same copy — the file in Drive is the exact snapshot this book came from, and nothing has changed here since.';
 
+    case 'same-snapshot-unproven':
+      return f.hasLocalChanges
+        ? UNSENT
+        : 'The file in Drive still names the snapshot this book came from — but a name in a file’s properties is not proof it was left by this device, because another device’s write can leave it behind. The next sync reads the file itself before it agrees; nothing here is replaced without that.';
+
+    case 'remote-claims-descent':
+      return f.hasLocalChanges ? BOTH_MOVED : REMOTE_AHEAD_UNCONFIRMED;
+
     case 'remote-descends':
       return f.hasLocalChanges ? BOTH_MOVED : REMOTE_AHEAD;
 
@@ -622,7 +738,12 @@ export function revisionWords(f: SyncFacts): string {
         : 'This device has sent everything it holds, and Drive is at the same version number — which is not proof it is the same copy. The next sync checks.';
 
     case 'revision-ahead':
-      return f.hasLocalChanges ? BOTH_MOVED : REMOTE_AHEAD;
+      // The numbers say Drive is ahead and nothing here says whose book it is
+      // — the same unconfirmed claim as above, from the weaker side. The
+      // engine's fallback pull now checks the file's contents against what its
+      // properties advertise before applying it, so this promise is the
+      // engine's own.
+      return f.hasLocalChanges ? BOTH_MOVED : REMOTE_AHEAD_UNCONFIRMED;
 
     case 'revision-behind':
       return `The copy in Drive has gone backwards: it is at version ${formatCount(f.remoteRevision as number)}, below the version ${formatCount(f.lastPulledRevision)} this device last took, so it is not the same copy. It has been replaced, or restored from an older one. The next sync will stop and ask; nothing is replaced without you choosing.`;
