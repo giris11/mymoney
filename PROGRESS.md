@@ -138,12 +138,20 @@ Safari each hold their own database — but "restore from a backup file every ti
 I switch browser" is not a workable answer, so sync was pulled forward from
 Phase 3 (SPEC §8.3), logged as D42.
 
+> **SUPERSEDED BY D44/D45.** Sync now runs on Dropbox, not Google Drive, and
+> `docs/DRIVE-SETUP.md` has become `docs/DROPBOX-SETUP.md`. The two paragraphs
+> below describe the Drive design as it stood, and are left as the record of
+> it; what is true today is that MyMoney ships its own public Dropbox app key,
+> nothing is pasted in to set a device up, and the app is registered for App
+> folder access so it can see only the folder Dropbox creates for it. Sync is
+> HELD (`src/sync/held.ts`) either way.
+
 **It runs on your own Google credentials.** No account, no server, no shipped
 secret: the app talks to Google as you, using a client id from your own Google
 Cloud project, and stores one file in your own Drive. Setup on this Mac is
 already done — project `mymoney-506723`, Drive API on, consent screen complete,
 app **published** so the grant never expires. The client id lives in
-Settings → Sync; `docs/DRIVE-SETUP.md` covers repeating it if ever needed.
+Settings → Sync; `docs/DROPBOX-SETUP.md` is the current equivalent.
 
 **Permission is `drive.file`** — an app can only see files it created itself. It
 cannot list, open or touch anything else in your Drive, and because that scope is

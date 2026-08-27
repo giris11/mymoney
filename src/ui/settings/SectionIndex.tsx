@@ -73,7 +73,7 @@ const SECTIONS: Section[] = [
   { path: 'rates', title: 'Currency rates', description: 'Manual exchange rates for totals and reports', icon: IconCoins },
   { path: 'imports', title: 'Imports', description: 'Import CSV files, undo imports, sample data', icon: IconUpload },
   { path: 'backup', title: 'Backup & storage', description: 'Export, restore, storage protection, erase', icon: IconShield },
-  { path: 'sync', title: 'Sync', description: 'Share this data with your other devices via your own Google Drive', icon: IconCloud },
+  { path: 'sync', title: 'Sync', description: 'Share this data with your other devices via your own Dropbox', icon: IconCloud },
 ];
 
 export default function SectionIndex() {

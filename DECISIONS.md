@@ -182,7 +182,10 @@ Every non-obvious choice made while building, per Working Agreement §2. Newest 
   `history.length`, which counts entries from before the app was opened.
 
 - **D42. Drive sync runs on the user's OWN Google credentials, and syncs a whole
-  snapshot rather than a stream of edits.** SPEC §8.3 lists "optional Google
+  snapshot rather than a stream of edits.** *(Superseded by D44/D45: sync moved
+  to Dropbox, which ships a public app key, so nothing is pasted in any more.
+  The record below stands as the decision that was taken; `docs/DRIVE-SETUP.md`
+  is now `docs/DROPBOX-SETUP.md`.)* SPEC §8.3 lists "optional Google
   Drive backup sync" as Phase 3; pulled forward because opening the live site in
   a second browser showed onboarding again — correct behaviour for per-origin,
   per-browser IndexedDB, but indistinguishable from data loss to the person
@@ -191,7 +194,8 @@ Every non-obvious choice made while building, per Working Agreement §2. Newest 
   - **No credential of ours ships.** A browser app cannot keep a client secret,
     and a shared client id would make me the quota holder and the party Google
     contacts. The user pastes in a client id from their own Google Cloud project
-    (docs/DRIVE-SETUP.md), so the app talks to Google *as them*, and revoking it
+    (docs/DROPBOX-SETUP.md is the current file), so the app talked to Google *as
+    them*, and revoking it
     is theirs to do at myaccount.google.com/permissions.
   - **Scope is `drive.file`, and a test fails if it is ever widened.** That scope
     grants access only to files this app itself created — it cannot list, read

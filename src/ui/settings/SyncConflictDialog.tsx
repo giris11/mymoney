@@ -1,6 +1,6 @@
 // The conflict screen (D42). The single most consequential dialog in the app.
 //
-// It appears when both this device and the copy in Drive changed since they
+// It appears when both this device and the copy in Dropbox changed since they
 // last matched. NOTHING has been written at this point and nothing will be
 // until the user picks — twice.
 //
@@ -77,7 +77,7 @@ export default function SyncConflictDialog({
   open: boolean;
   /** This device's copy. */
   local: SyncSummary;
-  /** The copy currently in Drive. */
+  /** The copy currently in Dropbox. */
   remote: SyncSummary;
   busy?: boolean;
   onResolve: (choice: ConflictChoice) => void;
@@ -92,13 +92,13 @@ export default function SyncConflictDialog({
   const nowMs = Date.now();
   const rows = countRows(local.counts, remote.counts);
   const thisName = localHeading(local);
-  // The other device's name comes out of the file in Drive: typed on another
-  // device, possibly by an older build, and editable by hand in Drive. It
+  // The other device's name comes out of the file in Dropbox: typed on another
+  // device, possibly by an older build, and editable by hand there. It
   // appears in this dialog eleven times, inside sentences that tell the owner
   // which copy of his finances is about to be destroyed — so it is bounded and
   // stripped of anything that could forge a line break or reverse the text
   // around it. (React escapes the value; this is about the app's own voice.)
-  const otherName = safeDeviceName(remote.deviceName, 'the copy in Drive');
+  const otherName = safeDeviceName(remote.deviceName, 'the copy in Dropbox');
 
   return (
     <>
@@ -147,7 +147,7 @@ export default function SyncConflictDialog({
           <div className="overflow-x-auto">
             <table className="w-full min-w-[26rem] border-collapse text-sm">
               <caption className="sr-only">
-                Row counts on this device compared with the copy in Drive
+                Row counts on this device compared with the copy in Dropbox
               </caption>
               <thead>
                 <tr className="border-b border-border text-left text-xs text-muted">
@@ -219,8 +219,8 @@ export default function SyncConflictDialog({
             <div className="flex flex-col rounded-lg border border-border p-3">
               <h3 className="text-sm font-semibold text-text">Keep this device’s copy</h3>
               <p className="mt-1 flex-1 text-xs text-muted">
-                Uploads this device’s copy and replaces the one in Drive. Nothing on this device
-                changes. {otherName} keeps its own data until it next syncs, and will then take
+                Uploads this device’s copy and replaces the one in Dropbox. Nothing on this
+                device changes. {otherName} keeps its own data until it next syncs, and will then take
                 this copy.
               </p>
               <Button
@@ -235,7 +235,7 @@ export default function SyncConflictDialog({
             <div className="flex flex-col rounded-lg border border-border p-3">
               <h3 className="text-sm font-semibold text-text">Keep {otherName}’s copy</h3>
               <p className="mt-1 flex-1 text-xs text-muted">
-                Replaces everything on this device with the copy from Drive. Anything entered here
+                Replaces everything on this device with the copy from Dropbox. Anything entered here
                 since it last matched — including the differences listed above — will no longer be
                 in the app.
               </p>
@@ -254,17 +254,17 @@ export default function SyncConflictDialog({
       <ConfirmDialog
         open={pending === 'keep-local'}
         danger
-        title="Replace the copy in Drive"
-        confirmLabel="Replace the copy in Drive"
+        title="Replace the copy in Dropbox"
+        confirmLabel="Replace the copy in Dropbox"
         message={
           <>
             <p>
-              The copy in Drive — saved by <strong>{otherName}</strong>{' '}
+              The copy in Dropbox — saved by <strong>{otherName}</strong>{' '}
               {whenPhrase(remote.savedAt, nowMs)}, {summariseCounts(remote.counts, 2)} — is
               replaced by this device’s copy.
             </p>
             <p className="mt-2">
-              Nothing on this device changes. A copy of the Drive version is saved on this
+              Nothing on this device changes. A copy of the Dropbox version is saved on this
               device first — as a file, and inside the app — and if that cannot be done, nothing
               is replaced.
             </p>
@@ -289,7 +289,7 @@ export default function SyncConflictDialog({
           <>
             <p>
               Everything on this device — {summariseCounts(local.counts, 3)} — is replaced by the
-              copy from Drive, saved by <strong>{otherName}</strong>{' '}
+              copy from Dropbox, saved by <strong>{otherName}</strong>{' '}
               {whenPhrase(remote.savedAt, nowMs)}.
             </p>
             <p className="mt-2">

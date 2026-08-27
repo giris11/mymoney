@@ -1,7 +1,7 @@
 // The restore flow, shared by Settings → Backup and by Onboarding.
 //
 // It lives on its own because restore has to be reachable from BOTH places:
-// backups are how data moves between devices until Phase 3's optional Drive
+// backups are how data moves between devices until Phase 3's optional Dropbox
 // sync (SPEC §13), and "Erase all data" drops the app back into onboarding —
 // so a fresh install with a backup file in hand must not be forced to invent
 // accounts just to reach Settings.

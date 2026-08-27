@@ -1,4 +1,29 @@
-// Drive sync is HELD — deliberately refused, in code, until it is sound.
+// Sync is HELD — deliberately refused, in code, until it is sound.
+//
+// WHERE THIS STANDS TODAY, since the history below is now the history of a
+// service this build cannot reach. The hold was written against Google Drive.
+// Sync has since been rebuilt on Dropbox (D44/D45), which is the structural
+// answer to the pattern this file was written about: the compare-and-swap
+// token (Dropbox's `rev`, held only by the transport) and the causal-descent
+// claim (`snapshotId`/`parentSnapshotId`/`ancestry`, carried inside the file
+// body, which every write replaces whole) are now two separate things that
+// cannot be mistaken for each other. C18 and C19 are not fixed so much as made
+// unrepresentable, and the engine's stamp apparatus was deleted rather than
+// guarded.
+//
+// THE HOLD STAYS ANYWAY, and for the same reason it was raised: every previous
+// round was well tested and every previous round was wrong in a way its own
+// tests could not see. A rebuild is exactly the moment that is most likely to
+// be true again. It lifts when a review pass over the new design comes back
+// empty — not when the suite is green, which it already is.
+//
+// Nothing has ever been sent to Dropbox. No build of this app has written
+// there, and this gate is why that stays true by construction rather than by
+// the owner reading a message in a terminal before he presses a button.
+//
+// ---------------------------------------------------------------------------
+// The original entry, kept because the reasoning is what justifies the hold:
+// ---------------------------------------------------------------------------
 //
 // Why this file exists rather than a revert: the sync subsystem has had three
 // rounds of review. The first confirmed 17 defects; fixing those exposed C18
@@ -24,8 +49,9 @@
 // message in a terminal before he presses a button.
 //
 // The gate is deliberately in TWO places — the screen never offers the
-// controls, and syncNow() refuses even if something calls it directly — so a
-// stray code path cannot reach Drive because one of them was forgotten.
+// controls, and the transport refuses to be constructed even if something
+// calls for it directly — so a stray code path cannot reach the cloud because
+// one of them was forgotten.
 //
 // TO LIFT: delete this file's export and its two call sites. Do that only when
 // D1-D4 are closed and a review pass comes back empty, not merely when the
@@ -34,7 +60,9 @@
 export const SYNC_HELD = true;
 
 export const SYNC_HELD_REASON =
-  'Drive sync is switched off in this build. A review found faults that could ' +
-  'lose transactions when two devices sync, and the fix for them is not ' +
-  'finished. Nothing on this device is affected, and no data has ever been ' +
-  'sent to Drive. Your backups in Settings → Backup still work as normal.';
+  'Syncing is switched off in this build. A review found faults that could ' +
+  'lose transactions when two devices sync; syncing has since been rebuilt ' +
+  'on Dropbox to remove the cause of them, and it stays switched off until ' +
+  'that rebuild has been reviewed in its turn. Nothing on this device is ' +
+  'affected, and nothing has ever been sent to Dropbox. Your backups in ' +
+  'Settings → Backup still work as normal.';

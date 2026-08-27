@@ -33,6 +33,7 @@ import {
   BOOK_LEVEL_SETTING_KEYS,
   DATA_TABLES,
   DEVICE_LOCAL_SETTING_KEYS,
+  RETIRED_SETTING_KEYS,
   clearPendingLocalChange,
   withoutLocalChangeTracking,
   db,
@@ -206,17 +207,35 @@ function chainOver(head: SyncSnapshot | null): string[] {
 
 // ------------------------------------------------------------ fake transport
 //
-// In-memory stand-in for Google Drive. No network is ever touched by these
-// tests; `fetch` is never called, stubbed or otherwise.
+// In-memory stand-in for the Dropbox app folder. No network is ever touched by
+// these tests; `fetch` is never called, stubbed or otherwise.
+//
+// IT MODELS THE REAL TRANSPORT'S REFUSALS, not just its storage. In particular
+// it refuses a body with no snapshotId in both directions, exactly as
+// src/sync/transport.ts's vetSnapshot() does — a fake that accepted one would
+// let a test "prove" a branch the real transport can never reach.
 
 /** A transport failure shaped like the real one (duck-typed on name + kind). */
 function transportError(message: string): Error & { kind: string } {
   return Object.assign(new Error(message), { name: 'SyncTransportError', kind: 'remote' });
 }
 
-class FakeDrive implements SyncTransport {
+/**
+ * The real transport refuses an identity-less body at the door, in BOTH
+ * directions (src/sync/transport.ts). No build of this app has ever written to
+ * Dropbox and the pre-ancestry build cannot reach it, so such a file can only
+ * come from a hand edit or a foreign tool — and tolerating one would let a
+ * device fall past every ancestry branch onto a comparison of two absences.
+ */
+function requireIdentity(snap: SyncSnapshot, subject: string): void {
+  if (typeof snap.snapshotId !== 'string' || snap.snapshotId === '') {
+    throw transportError(`${subject} carries no snapshot identity.`);
+  }
+}
+
+class FakeCloud implements SyncTransport {
   file: SyncSnapshot | null = null;
-  /** The file is in Drive's bin: it exists, and must not be written over. */
+  /** Deleted in Dropbox: it exists, is restorable, and must not be written over. */
   trashed = false;
   connected = true;
   reads = 0;
@@ -253,6 +272,7 @@ class FakeDrive implements SyncTransport {
     const hook = this.duringNextRead;
     this.duringNextRead = null;
     if (hook) await hook();
+    if (this.file) requireIdentity(this.file, 'The sync file in Dropbox');
     return this.file ? clone(this.file) : null;
   }
   /**
@@ -265,11 +285,12 @@ class FakeDrive implements SyncTransport {
   async writeRemote(snap: SyncSnapshot): Promise<void> {
     this.writes++;
     if (this.failWriteWith) throw this.failWriteWith;
-    if (this.trashed) throw transportError("The sync file is in Google Drive's bin.");
+    requireIdentity(snap, 'This snapshot');
+    if (this.trashed) throw transportError('The sync file has been deleted from Dropbox.');
     const headId = this.file?.snapshotId ?? null;
     const parent = snap.parentSnapshotId ?? null;
     if (headId !== parent) {
-      throw transportError('Another device saved to Google Drive while this one was uploading.');
+      throw transportError('Another device saved to Dropbox while this one was uploading.');
     }
     this.file = clone(snap);
     const hook = this.duringNextWrite;
@@ -300,16 +321,30 @@ class FakeDrive implements SyncTransport {
 }
 
 /**
+ * A remote with NO COMPARE-AND-SWAP — Google Drive, in one class. It accepts
+ * any write at all, so what a snapshot claims about its own ancestry rests on
+ * the engine and nothing else. Used to check that a safety property is the
+ * engine's own rather than a side effect of Dropbox refusing the write.
+ */
+class NoPreconditionCloud extends FakeCloud {
+  async writeRemote(snap: SyncSnapshot): Promise<void> {
+    this.writes++;
+    requireIdentity(snap, 'This snapshot');
+    this.file = clone(snap);
+  }
+}
+
+/**
  * A well-behaved second device: it always syncs cleanly (pull, edit, push), so
  * anything it puts in the remote descends from the current remote file.
  */
-function deviceBPushes(drive: FakeDrive, edit: (tables: Record<string, unknown[]>) => void): void {
-  const tables = drive.file ? clone(drive.file.tables) : emptyTables();
+function deviceBPushes(cloud: FakeCloud, edit: (tables: Record<string, unknown[]>) => void): void {
+  const tables = cloud.file ? clone(cloud.file.tables) : emptyTables();
   edit(tables);
-  drive.file = makeSnapshot((drive.file?.revision ?? 0) + 1, tables, {
-    savedAt: new Date(Date.parse(T0) + drive.writes * 60_000).toISOString(),
-    parentSnapshotId: drive.file?.snapshotId ?? null,
-    ancestry: chainOver(drive.file),
+  cloud.file = makeSnapshot((cloud.file?.revision ?? 0) + 1, tables, {
+    savedAt: new Date(Date.parse(T0) + cloud.writes * 60_000).toISOString(),
+    parentSnapshotId: cloud.file?.snapshotId ?? null,
+    ancestry: chainOver(cloud.file),
   });
 }
 
@@ -320,7 +355,7 @@ function deviceBPushes(drive: FakeDrive, edit: (tables: Record<string, unknown[]
  * It bypasses writeRemote deliberately: the real transport now refuses this,
  * so the only way it can happen in the wild is a writer that does not honour
  * the precondition (a build from before this fix, a hand-edited file, another
- * tool). The engine must still notice that what is in Drive is not what it
+ * tool). The engine must still notice that what is in the remote is not what it
  * descends from — never report "up to date", never pull over local changes.
  *
  * `stale` is the snapshot it thinks it is replacing; the new book keeps every
@@ -328,16 +363,16 @@ function deviceBPushes(drive: FakeDrive, edit: (tables: Record<string, unknown[]
  * itself, and only the ANCESTRY is broken.
  */
 function staleWriterPushes(
-  drive: FakeDrive,
+  cloud: FakeCloud,
   stale: SyncSnapshot,
   edit: (tables: Record<string, unknown[]>) => void,
 ): void {
-  const tables = clone(drive.file ? drive.file.tables : stale.tables);
+  const tables = clone(cloud.file ? cloud.file.tables : stale.tables);
   edit(tables);
-  drive.file = makeSnapshot((drive.file?.revision ?? 0) + 1, tables, {
+  cloud.file = makeSnapshot((cloud.file?.revision ?? 0) + 1, tables, {
     deviceId: 'device-c',
     deviceName: 'Old iPad',
-    savedAt: new Date(Date.parse(T0) + (drive.writes + 1) * 60_000).toISOString(),
+    savedAt: new Date(Date.parse(T0) + (cloud.writes + 1) * 60_000).toISOString(),
     // Its chain is the STALE one it was working from — honestly written, and
     // therefore naming nothing that came after the head it never saw.
     parentSnapshotId: stale.snapshotId ?? null,
@@ -547,16 +582,39 @@ describe('local change tracking', () => {
     const keys = Object.keys(defaultSettings()).sort();
     const device = new Set<string>(DEVICE_LOCAL_SETTING_KEYS);
     const book = new Set<string>(BOOK_LEVEL_SETTING_KEYS);
+    const retired = new Set<string>(RETIRED_SETTING_KEYS);
 
     for (const key of keys) {
       const inDevice = device.has(key);
       const inBook = book.has(key);
       expect(inDevice || inBook, `Settings.${key} is in neither list`).toBe(true);
       expect(inDevice && inBook, `Settings.${key} is in both lists`).toBe(false);
+      expect(retired.has(key), `Settings.${key} is retired but still defaulted`).toBe(false);
     }
-    // …and neither list names a field that no longer exists.
-    expect([...device, ...book].filter((k) => !keys.includes(k))).toEqual([]);
-    expect(device.size + book.size).toBe(keys.length);
+    // …and neither list names a field that no longer exists — except the
+    // retired ones, which are named on purpose so that a snapshot's settings
+    // row cannot smuggle a value into a key nothing validates any more.
+    const live = [...device, ...book].filter((k) => !retired.has(k));
+    expect(live.filter((k) => !keys.includes(k))).toEqual([]);
+    expect(live.length).toBe(keys.length);
+  });
+
+  it('a retired settings key holds nothing, travels nowhere, and is not defaulted', async () => {
+    // RETIRED_SETTING_KEYS is the third list, and the one that could quietly
+    // become a place to park an unclassified field. Two properties keep it
+    // honest, and the compile-time half (only a `?: undefined` field may be
+    // listed) is checked by tsc, not here.
+    expect(RETIRED_SETTING_KEYS.length).toBeGreaterThan(0);
+    for (const key of RETIRED_SETTING_KEYS) {
+      // Nothing supplies a default, so a fresh row simply lacks the key…
+      expect(key in defaultSettings()).toBe(false);
+      // …and it is pinned device-local, so a pulled snapshot's settings row
+      // cannot introduce one either (C3/C7, on a dead field).
+      expect(DEVICE_LOCAL_SETTING_KEYS as readonly string[]).toContain(key);
+    }
+    await seedBook();
+    const stored = await getSettings();
+    for (const key of RETIRED_SETTING_KEYS) expect(key in stored).toBe(false);
   });
 
   it('updates and deletes count as changes too', async () => {
@@ -688,42 +746,42 @@ describe('local change tracking', () => {
 // ===========================================================================
 describe('syncNow decision table', () => {
   it('not connected ⇒ not-connected, and nothing is read or written', async () => {
-    const drive = new FakeDrive();
-    drive.connected = false;
+    const cloud = new FakeCloud();
+    cloud.connected = false;
     await seedBook();
-    expect(await syncNow(drive)).toEqual({ kind: 'not-connected' });
-    expect(drive.metaReads + drive.reads + drive.writes).toBe(0);
+    expect(await syncNow(cloud)).toEqual({ kind: 'not-connected' });
+    expect(cloud.metaReads + cloud.reads + cloud.writes).toBe(0);
   });
 
   it('offline ⇒ offline, and nothing changes on either side', async () => {
     vi.stubGlobal('navigator', { onLine: false });
-    const drive = new FakeDrive();
+    const cloud = new FakeCloud();
     await seedBook();
     const before = await localDataTables();
     const settingsBefore = await getSettings();
 
-    expect(await syncNow(drive)).toEqual({ kind: 'offline' });
+    expect(await syncNow(cloud)).toEqual({ kind: 'offline' });
 
-    expect(drive.metaReads + drive.reads + drive.writes).toBe(0);
-    expect(drive.file).toBeNull();
+    expect(cloud.metaReads + cloud.reads + cloud.writes).toBe(0);
+    expect(cloud.file).toBeNull();
     expect(await localDataTables()).toEqual(before);
     expect(await getSettings()).toEqual(settingsBefore);
   });
 
   it('no remote file ⇒ pushes the local book as revision 1', async () => {
-    const drive = new FakeDrive();
+    const cloud = new FakeCloud();
     await seedBook(4);
 
-    const outcome = await syncNow(drive);
+    const outcome = await syncNow(cloud);
 
     // The outcome names the snapshot this device now descends from, which is
     // what a caller persists as syncLastPulledSnapshotId.
-    expect(outcome).toEqual({ kind: 'pushed', revision: 1, snapshotId: drive.file?.snapshotId });
-    expect(drive.file?.revision).toBe(1);
-    expect(drive.file?.parentSnapshotId).toBeNull(); // the first of a lineage
-    expect(drive.file?.deviceName).toBe('Laptop');
-    expect(drive.file?.app).toBe('MyMoney');
-    expect(snapshotDataTables(drive.file)).toEqual(await localDataTables());
+    expect(outcome).toEqual({ kind: 'pushed', revision: 1, snapshotId: cloud.file?.snapshotId });
+    expect(cloud.file?.revision).toBe(1);
+    expect(cloud.file?.parentSnapshotId).toBeNull(); // the first of a lineage
+    expect(cloud.file?.deviceName).toBe('Laptop');
+    expect(cloud.file?.app).toBe('MyMoney');
+    expect(snapshotDataTables(cloud.file)).toEqual(await localDataTables());
     const s = await getSettings();
     expect(s.syncLastPulledRevision).toBe(1);
     expect(s.syncLastSyncedAt).not.toBeNull();
@@ -731,64 +789,64 @@ describe('syncNow decision table', () => {
   });
 
   it('nothing moved on either side ⇒ up-to-date, no upload', async () => {
-    const drive = new FakeDrive();
+    const cloud = new FakeCloud();
     await seedBook();
-    await syncNow(drive); // seeds revision 1
-    const writesAfterFirst = drive.writes;
+    await syncNow(cloud); // seeds revision 1
+    const writesAfterFirst = cloud.writes;
 
-    expect(await syncNow(drive)).toEqual({
+    expect(await syncNow(cloud)).toEqual({
       kind: 'up-to-date',
-      snapshotId: drive.file?.snapshotId,
+      snapshotId: cloud.file?.snapshotId,
     });
-    expect(drive.writes).toBe(writesAfterFirst);
-    expect(drive.reads).toBe(0); // never downloads the body when it need not
+    expect(cloud.writes).toBe(writesAfterFirst);
+    expect(cloud.reads).toBe(0); // never downloads the body when it need not
   });
 
   it('local changed, remote unchanged ⇒ pushes at remote + 1', async () => {
-    const drive = new FakeDrive();
+    const cloud = new FakeCloud();
     await seedBook();
-    await syncNow(drive);
+    await syncNow(cloud);
 
     await db.transactions.add(txRow('tx-new', -999));
     await flushLocalRevision();
 
-    const outcome = await syncNow(drive);
-    expect(outcome).toEqual({ kind: 'pushed', revision: 2, snapshotId: drive.file?.snapshotId });
-    expect(drive.file?.revision).toBe(2);
-    expect(snapshotDataTables(drive.file)).toEqual(await localDataTables());
+    const outcome = await syncNow(cloud);
+    expect(outcome).toEqual({ kind: 'pushed', revision: 2, snapshotId: cloud.file?.snapshotId });
+    expect(cloud.file?.revision).toBe(2);
+    expect(snapshotDataTables(cloud.file)).toEqual(await localDataTables());
     expect(await hasLocalChanges()).toBe(false);
   });
 
   it('remote moved on, local unchanged ⇒ pulls and applies', async () => {
-    const drive = new FakeDrive();
+    const cloud = new FakeCloud();
     await seedBook();
-    await syncNow(drive); // revision 1, both sides agree
+    await syncNow(cloud); // revision 1, both sides agree
 
-    deviceBPushes(drive, (t) => {
+    deviceBPushes(cloud, (t) => {
       (t.transactions as unknown[]).push(txRow('tx-from-imac', -4200));
     });
 
-    const outcome = await syncNow(drive);
+    const outcome = await syncNow(cloud);
     expect(outcome.kind).toBe('pulled');
     if (outcome.kind !== 'pulled') throw new Error('unreachable');
     expect(outcome.revision).toBe(2);
     expect(outcome.counts.transactions).toBe(4);
 
     expect(await db.transactions.get('tx-from-imac')).toBeTruthy();
-    expect(snapshotDataTables(drive.file)).toEqual(await localDataTables());
+    expect(snapshotDataTables(cloud.file)).toEqual(await localDataTables());
     const s = await getSettings();
     expect(s.syncLastPulledRevision).toBe(2);
     expect(await hasLocalChanges()).toBe(false); // applying is not a local edit
   });
 
   it('a pulled snapshot never steals this device\'s identity or bookkeeping', async () => {
-    const drive = new FakeDrive();
+    const cloud = new FakeCloud();
     await seedBook();
     await updateSettings({ theme: 'dark', syncClientId: 'my-own-client-id', syncEnabled: true });
-    await syncNow(drive);
+    await syncNow(cloud);
 
     // Device B's settings row: different device, different preferences.
-    deviceBPushes(drive, (t) => {
+    deviceBPushes(cloud, (t) => {
       t.settings = [
         {
           ...defaultSettings(),
@@ -805,7 +863,7 @@ describe('syncNow decision table', () => {
       ];
     });
 
-    expect((await syncNow(drive)).kind).toBe('pulled');
+    expect((await syncNow(cloud)).kind).toBe('pulled');
 
     const s = await getSettings();
     expect(s.baseCurrency).toBe('EUR'); // book-level preference travels
@@ -819,9 +877,9 @@ describe('syncNow decision table', () => {
   });
 
   it('a fresh browser with only seeded categories pulls the real book cleanly', async () => {
-    const drive = new FakeDrive();
+    const cloud = new FakeCloud();
     // The remote holds the owner's real book.
-    drive.file = makeSnapshot(7, {
+    cloud.file = makeSnapshot(7, {
       accounts: [clone(account)],
       categories: [clone(category)],
       transactions: [txRow('real-1'), txRow('real-2')],
@@ -830,7 +888,7 @@ describe('syncNow decision table', () => {
     await db.categories.bulkAdd([{ ...clone(category), id: 'seeded-cat' }]);
     await flushLocalRevision();
 
-    const outcome = await syncNow(drive);
+    const outcome = await syncNow(cloud);
 
     expect(outcome.kind).toBe('pulled');
     expect(await db.transactions.count()).toBe(2);
@@ -846,9 +904,9 @@ describe('syncNow decision table', () => {
    * user had explicitly changed away from.
    */
   it('a book-level setting is unsynced work: it pushes, and it is never silently reverted', async () => {
-    const drive = new FakeDrive();
+    const cloud = new FakeCloud();
     await seedBook(2);
-    await syncNow(drive); // revision 1, both sides agree
+    await syncNow(cloud); // revision 1, both sides agree
     expect(await hasLocalChanges()).toBe(false);
 
     // Exactly what AppearanceSection and RatesSection write.
@@ -857,32 +915,32 @@ describe('syncNow decision table', () => {
     await flushLocalRevision();
     expect(await hasLocalChanges()).toBe(true);
 
-    const pushed = await syncNow(drive);
+    const pushed = await syncNow(cloud);
     expect(pushed).toMatchObject({ kind: 'pushed', revision: 2 });
-    const remoteSettings = drive.file!.tables.settings[0] as Settings;
+    const remoteSettings = cloud.file!.tables.settings[0] as Settings;
     expect(remoteSettings.baseCurrency).toBe('EUR'); // it actually left the device
     expect(remoteSettings.autoFxEnabled).toBe(false);
 
     // The other half: with a change of this kind outstanding and the remote
     // moved on, the user is ASKED rather than quietly overruled.
-    deviceBPushes(drive, (t) => {
+    deviceBPushes(cloud, (t) => {
       t.settings = [{ ...defaultSettings(), baseCurrency: 'GBP' }];
     });
     await updateSettings({ baseCurrency: 'CHF' });
     await flushLocalRevision();
 
-    const outcome = await syncNow(drive);
+    const outcome = await syncNow(cloud);
     expect(outcome.kind).toBe('conflict');
     expect((await getSettings()).baseCurrency).toBe('CHF'); // still theirs to keep
     expect(savedBackups).toHaveLength(0);
   });
 
   it('a device holding data it has never pushed is dirty ⇒ conflict, not overwrite', async () => {
-    const drive = new FakeDrive();
+    const cloud = new FakeCloud();
     await seedBook(2); // real data, never synced (lastPulledRevision stays 0)
-    drive.file = makeSnapshot(1, { transactions: [txRow('remote-1')] });
+    cloud.file = makeSnapshot(1, { transactions: [txRow('remote-1')] });
 
-    const outcome = await syncNow(drive);
+    const outcome = await syncNow(cloud);
 
     expect(outcome.kind).toBe('conflict');
     expect(await db.transactions.count()).toBe(2); // untouched
@@ -894,7 +952,7 @@ describe('syncNow decision table', () => {
 //
 // Every test here fails against the previous engine, which decided by
 // comparing revision NUMBERS. The numbers are still there, and are still
-// printed; they are simply no longer trusted to answer "is the file in Drive
+// printed; they are simply no longer trusted to answer "is the remote file
 // the one my book grew out of?".
 // ===========================================================================
 
@@ -910,27 +968,27 @@ describe('a write that lost the race is refused, not recorded', () => {
    * the pull after that deleted the rows for good.
    */
   it("a push built on a head that has since moved is refused, and the other device's rows survive", async () => {
-    const drive = new FakeDrive();
+    const cloud = new FakeCloud();
     await seedBook(2);
-    await syncNow(drive); // revision 1 — the common ancestor
-    const ancestor = clone(drive.file)!;
+    await syncNow(cloud); // revision 1 — the common ancestor
+    const ancestor = clone(cloud.file)!;
 
     // This device edits...
     await db.transactions.add(txRow('a-new', -111));
     await flushLocalRevision();
     // ...and the other device lands its own revision 2 inside our window.
-    drive.afterNextMetaRead = () => {
-      deviceBPushes(drive, (t) => (t.transactions as unknown[]).push(txRow('b-new', -222)));
+    cloud.afterNextMetaRead = () => {
+      deviceBPushes(cloud, (t) => (t.transactions as unknown[]).push(txRow('b-new', -222)));
     };
 
-    const outcome = await syncNow(drive);
+    const outcome = await syncNow(cloud);
 
     expect(outcome.kind).toBe('error');
     // The remote still holds the OTHER device's push, untouched.
-    const remoteIds = (drive.file!.tables.transactions as { id: string }[]).map((t) => t.id);
+    const remoteIds = (cloud.file!.tables.transactions as { id: string }[]).map((t) => t.id);
     expect(remoteIds).toContain('b-new');
     expect(remoteIds).not.toContain('a-new');
-    expect(drive.file!.parentSnapshotId).toBe(ancestor.snapshotId);
+    expect(cloud.file!.parentSnapshotId).toBe(ancestor.snapshotId);
     // And this device did NOT record agreement with a file it did not write.
     const s = await getSettings();
     expect(s.syncLastPulledRevision).toBe(1);
@@ -940,19 +998,19 @@ describe('a write that lost the race is refused, not recorded', () => {
   });
 
   it('the refused push then surfaces as a conflict, with both sides described', async () => {
-    const drive = new FakeDrive();
+    const cloud = new FakeCloud();
     await seedBook(2);
-    await syncNow(drive);
+    await syncNow(cloud);
     await db.transactions.add(txRow('a-new', -111));
     await flushLocalRevision();
-    drive.afterNextMetaRead = () => {
-      deviceBPushes(drive, (t) => (t.transactions as unknown[]).push(txRow('b-new', -222)));
+    cloud.afterNextMetaRead = () => {
+      deviceBPushes(cloud, (t) => (t.transactions as unknown[]).push(txRow('b-new', -222)));
     };
-    expect((await syncNow(drive)).kind).toBe('error');
+    expect((await syncNow(cloud)).kind).toBe('error');
 
     // Second attempt: the head has moved and we are dirty ⇒ a real conflict,
     // described honestly, with nothing written on either side.
-    const outcome = await syncNow(drive);
+    const outcome = await syncNow(cloud);
     expect(outcome.kind).toBe('conflict');
     if (outcome.kind !== 'conflict') throw new Error('unreachable');
     expect(outcome.remote.deviceName).toBe('iMac');
@@ -961,27 +1019,27 @@ describe('a write that lost the race is refused, not recorded', () => {
   });
 
   /**
-   * The other half of rule 1a: Drive accepted our bytes, and something landed
+   * The other half of rule 1a: the remote accepted our bytes, and something landed
    * on top before we could confirm. The upload "succeeded" — recording that
    * would be the same lie, one step later.
    */
   it('a clobber that lands after the upload is caught by the read-back', async () => {
-    const drive = new FakeDrive();
+    const cloud = new FakeCloud();
     await seedBook(2);
-    await syncNow(drive); // revision 1
-    const ancestor = clone(drive.file)!;
+    await syncNow(cloud); // revision 1
+    const ancestor = clone(cloud.file)!;
     await db.transactions.add(txRow('a-new', -111));
     await flushLocalRevision();
 
     // Our write lands, and is immediately overwritten by a device that was
     // working from the same ancestor.
-    drive.duringNextWrite = () => {
-      staleWriterPushes(drive, ancestor, (t) =>
+    cloud.duringNextWrite = () => {
+      staleWriterPushes(cloud, ancestor, (t) =>
         (t.transactions as unknown[]).push(txRow('c-new', -333)),
       );
     };
 
-    const outcome = await syncNow(drive);
+    const outcome = await syncNow(cloud);
 
     expect(outcome.kind).toBe('error');
     if (outcome.kind !== 'error') throw new Error('unreachable');
@@ -992,13 +1050,13 @@ describe('a write that lost the race is refused, not recorded', () => {
   });
 
   it('a well-behaved sequence still pushes: the precondition is not a blanket refusal', async () => {
-    const drive = new FakeDrive();
+    const cloud = new FakeCloud();
     await seedBook(2);
-    expect((await syncNow(drive)).kind).toBe('pushed');
+    expect((await syncNow(cloud)).kind).toBe('pushed');
     await db.transactions.add(txRow('a-1'));
     await flushLocalRevision();
-    expect(await syncNow(drive)).toMatchObject({ kind: 'pushed', revision: 2 });
-    expect(drive.file?.parentSnapshotId).not.toBeNull();
+    expect(await syncNow(cloud)).toMatchObject({ kind: 'pushed', revision: 2 });
+    expect(cloud.file?.parentSnapshotId).not.toBeNull();
   });
 });
 
@@ -1006,11 +1064,11 @@ describe('deciding by ancestry rather than by revision number', () => {
   /** Sync, threading the snapshot id the way a device with the persisted
    *  field will. Returns the id to carry into the next call. */
   async function syncTracking(
-    drive: FakeDrive,
+    cloud: FakeCloud,
     lastPulledSnapshotId: string | null,
     opts: { resolve?: 'keep-local' | 'keep-remote' | 'reseed-remote' } = {},
   ): Promise<{ outcome: SyncOutcome; snapshotId: string | null }> {
-    const outcome = await syncNow(drive, { ...opts, lastPulledSnapshotId });
+    const outcome = await syncNow(cloud, { ...opts, lastPulledSnapshotId });
     const carried =
       outcome.kind === 'pushed' || outcome.kind === 'pulled' || outcome.kind === 'up-to-date'
         ? (outcome.snapshotId ?? null)
@@ -1019,49 +1077,49 @@ describe('deciding by ancestry rather than by revision number', () => {
   }
 
   it('the remote IS what we descend from: clean ⇒ up-to-date, dirty ⇒ push', async () => {
-    const drive = new FakeDrive();
+    const cloud = new FakeCloud();
     await seedBook(2);
-    const seeded = await syncTracking(drive, null);
+    const seeded = await syncTracking(cloud, null);
     expect(seeded.outcome.kind).toBe('pushed');
-    expect(seeded.snapshotId).toBe(drive.file?.snapshotId);
+    expect(seeded.snapshotId).toBe(cloud.file?.snapshotId);
 
-    const clean = await syncTracking(drive, seeded.snapshotId);
+    const clean = await syncTracking(cloud, seeded.snapshotId);
     expect(clean.outcome.kind).toBe('up-to-date');
     expect(clean.snapshotId).toBe(seeded.snapshotId);
 
     await db.transactions.add(txRow('a-1'));
     await flushLocalRevision();
-    const pushed = await syncTracking(drive, clean.snapshotId);
+    const pushed = await syncTracking(cloud, clean.snapshotId);
     expect(pushed.outcome).toMatchObject({ kind: 'pushed', revision: 2 });
     // The new head names the snapshot it grew out of.
-    expect(drive.file?.parentSnapshotId).toBe(seeded.snapshotId);
-    expect(pushed.snapshotId).toBe(drive.file?.snapshotId);
+    expect(cloud.file?.parentSnapshotId).toBe(seeded.snapshotId);
+    expect(pushed.snapshotId).toBe(cloud.file?.snapshotId);
   });
 
   it('the remote is a CHILD of what we descend from: clean ⇒ fast-forward pull', async () => {
-    const drive = new FakeDrive();
+    const cloud = new FakeCloud();
     await seedBook(2);
-    const seeded = await syncTracking(drive, null);
-    deviceBPushes(drive, (t) => (t.transactions as unknown[]).push(txRow('b-1')));
+    const seeded = await syncTracking(cloud, null);
+    deviceBPushes(cloud, (t) => (t.transactions as unknown[]).push(txRow('b-1')));
 
-    const pulled = await syncTracking(drive, seeded.snapshotId);
+    const pulled = await syncTracking(cloud, seeded.snapshotId);
     expect(pulled.outcome.kind).toBe('pulled');
     expect(await db.transactions.get('b-1')).toBeTruthy();
-    expect(pulled.snapshotId).toBe(drive.file?.snapshotId);
+    expect(pulled.snapshotId).toBe(cloud.file?.snapshotId);
   });
 
   it('the remote is a CHILD but we have moved too ⇒ conflict, nothing written', async () => {
-    const drive = new FakeDrive();
+    const cloud = new FakeCloud();
     await seedBook(2);
-    const seeded = await syncTracking(drive, null);
-    deviceBPushes(drive, (t) => (t.transactions as unknown[]).push(txRow('b-1')));
+    const seeded = await syncTracking(cloud, null);
+    deviceBPushes(cloud, (t) => (t.transactions as unknown[]).push(txRow('b-1')));
     await db.transactions.add(txRow('a-1'));
     await flushLocalRevision();
-    const remoteBefore = clone(drive.file);
+    const remoteBefore = clone(cloud.file);
 
-    const { outcome } = await syncTracking(drive, seeded.snapshotId);
+    const { outcome } = await syncTracking(cloud, seeded.snapshotId);
     expect(outcome.kind).toBe('conflict');
-    expect(drive.file).toEqual(remoteBefore);
+    expect(cloud.file).toEqual(remoteBefore);
     expect(await db.transactions.get('a-1')).toBeTruthy();
   });
 
@@ -1074,21 +1132,21 @@ describe('deciding by ancestry rather than by revision number', () => {
    * no safety file. Clean is not the same as safe.
    */
   it('a remote that does NOT descend from ours is a conflict even when this device is clean', async () => {
-    const drive = new FakeDrive();
+    const cloud = new FakeCloud();
     await seedBook(2);
-    const seeded = await syncTracking(drive, null); // our snapshot, revision 1
+    const seeded = await syncTracking(cloud, null); // our snapshot, revision 1
     await db.transactions.add(txRow('a-only', -4242));
     await flushLocalRevision();
-    const pushed = await syncTracking(drive, seeded.snapshotId); // revision 2, clean
+    const pushed = await syncTracking(cloud, seeded.snapshotId); // revision 2, clean
     expect(pushed.outcome.kind).toBe('pushed');
     expect(await hasLocalChanges()).toBe(false);
 
     // A writer that never saw revision 2 replaces the file at revision 3.
-    staleWriterPushes(drive, drive.file!, (t) => (t.transactions as unknown[]).push(txRow('c-1')));
-    drive.file = makeSnapshot(3, drive.file!.tables, { parentSnapshotId: 'some-other-lineage' });
+    staleWriterPushes(cloud, cloud.file!, (t) => (t.transactions as unknown[]).push(txRow('c-1')));
+    cloud.file = makeSnapshot(3, cloud.file!.tables, { parentSnapshotId: 'some-other-lineage' });
 
     const localBefore = await localDataTables();
-    const { outcome } = await syncTracking(drive, pushed.snapshotId);
+    const { outcome } = await syncTracking(cloud, pushed.snapshotId);
 
     expect(outcome.kind).toBe('conflict');
     // Nothing was applied: the rows only this device has are still here.
@@ -1104,16 +1162,16 @@ describe('deciding by ancestry rather than by revision number', () => {
    * device had been dirty it would have flattened the new file instead.
    */
   it('a re-created file that happens to share our revision number is a conflict, not "up to date"', async () => {
-    const drive = new FakeDrive();
+    const cloud = new FakeCloud();
     await seedBook(2);
-    const seeded = await syncTracking(drive, null); // revision 1
+    const seeded = await syncTracking(cloud, null); // revision 1
     expect(await hasLocalChanges()).toBe(false);
 
     // Someone deleted mymoney-sync.json and another device seeded a new one:
     // same name, same number, unrelated history.
-    drive.file = makeSnapshot(1, { transactions: [txRow('imac-month-1'), txRow('imac-month-2')] });
+    cloud.file = makeSnapshot(1, { transactions: [txRow('imac-month-1'), txRow('imac-month-2')] });
 
-    const { outcome } = await syncTracking(drive, seeded.snapshotId);
+    const { outcome } = await syncTracking(cloud, seeded.snapshotId);
     expect(outcome.kind).toBe('conflict');
     if (outcome.kind !== 'conflict') throw new Error('unreachable');
     expect(outcome.remote.counts.transactions).toBe(2);
@@ -1126,46 +1184,46 @@ describe('deciding by ancestry rather than by revision number', () => {
   // rule, and a rule-by-rule reading would hand it a conflict on its very
   // first sync. What keeps it safe is dirtiness, not ancestry.
   it('a brand-new device pulls an established lineage cleanly', async () => {
-    const drive = new FakeDrive();
+    const cloud = new FakeCloud();
     // A remote several pushes into its life — its head names a parent that
     // this device has never heard of.
     const older = makeSnapshot(3, { transactions: [txRow('real-1')] });
-    drive.file = makeSnapshot(4, { transactions: [txRow('real-1'), txRow('real-2')] }, {
+    cloud.file = makeSnapshot(4, { transactions: [txRow('real-1'), txRow('real-2')] }, {
       parentSnapshotId: older.snapshotId,
     });
 
-    const { outcome, snapshotId } = await syncTracking(drive, null);
+    const { outcome, snapshotId } = await syncTracking(cloud, null);
     expect(outcome.kind).toBe('pulled');
     expect(await db.transactions.count()).toBe(2);
-    expect(snapshotId).toBe(drive.file?.snapshotId);
+    expect(snapshotId).toBe(cloud.file?.snapshotId);
   });
 
   it('…but a brand-new device holding real data of its own is still asked first', async () => {
-    const drive = new FakeDrive();
+    const cloud = new FakeCloud();
     await seedBook(2); // never synced, real rows ⇒ dirty
     const older = makeSnapshot(3, { transactions: [txRow('real-1')] });
-    drive.file = makeSnapshot(4, { transactions: [txRow('real-1')] }, {
+    cloud.file = makeSnapshot(4, { transactions: [txRow('real-1')] }, {
       parentSnapshotId: older.snapshotId,
     });
 
-    const { outcome } = await syncTracking(drive, null);
+    const { outcome } = await syncTracking(cloud, null);
     expect(outcome.kind).toBe('conflict');
     expect(await db.transactions.get('tx-0')).toBeTruthy();
   });
 
   it('carries the id forward on every outcome that changes what we descend from', async () => {
-    const drive = new FakeDrive();
+    const cloud = new FakeCloud();
     await seedBook(1);
-    const pushed = await syncNow(drive, { lastPulledSnapshotId: null });
-    expect(pushed).toMatchObject({ kind: 'pushed', snapshotId: drive.file?.snapshotId });
+    const pushed = await syncNow(cloud, { lastPulledSnapshotId: null });
+    expect(pushed).toMatchObject({ kind: 'pushed', snapshotId: cloud.file?.snapshotId });
 
-    const seededId = drive.file?.snapshotId ?? null;
-    const uptodate = await syncNow(drive, { lastPulledSnapshotId: seededId });
+    const seededId = cloud.file?.snapshotId ?? null;
+    const uptodate = await syncNow(cloud, { lastPulledSnapshotId: seededId });
     expect(uptodate).toEqual({ kind: 'up-to-date', snapshotId: seededId });
 
-    deviceBPushes(drive, (t) => (t.transactions as unknown[]).push(txRow('b-1')));
-    const pulled = await syncNow(drive, { lastPulledSnapshotId: seededId });
-    expect(pulled).toMatchObject({ kind: 'pulled', snapshotId: drive.file?.snapshotId });
+    deviceBPushes(cloud, (t) => (t.transactions as unknown[]).push(txRow('b-1')));
+    const pulled = await syncNow(cloud, { lastPulledSnapshotId: seededId });
+    expect(pulled).toMatchObject({ kind: 'pulled', snapshotId: cloud.file?.snapshotId });
   });
 });
 
@@ -1174,29 +1232,29 @@ describe('the snapshot this device descends from is persisted', () => {
   const heldId = async () => (await getSettings()).syncLastPulledSnapshotId;
 
   it('is recorded by every push and pull, and never taken from a snapshot', async () => {
-    const drive = new FakeDrive();
+    const cloud = new FakeCloud();
     await seedBook(2);
 
-    await syncNow(drive); // push
-    expect(await heldId()).toBe(drive.file?.snapshotId);
+    await syncNow(cloud); // push
+    expect(await heldId()).toBe(cloud.file?.snapshotId);
 
-    await syncNow(drive); // up-to-date changes nothing
-    expect(await heldId()).toBe(drive.file?.snapshotId);
+    await syncNow(cloud); // up-to-date changes nothing
+    expect(await heldId()).toBe(cloud.file?.snapshotId);
 
-    deviceBPushes(drive, (t) => (t.transactions as unknown[]).push(txRow('b-1')));
-    expect((await syncNow(drive)).kind).toBe('pulled');
-    expect(await heldId()).toBe(drive.file?.snapshotId);
+    deviceBPushes(cloud, (t) => (t.transactions as unknown[]).push(txRow('b-1')));
+    expect((await syncNow(cloud)).kind).toBe('pulled');
+    expect(await heldId()).toBe(cloud.file?.snapshotId);
 
     // A snapshot carries the WRITING device's settings row, including the id
     // IT descends from. Taking that would leave this device comparing its book
     // against a file it has never seen and calling it agreement.
-    deviceBPushes(drive, (t) => {
+    deviceBPushes(cloud, (t) => {
       t.settings = [
         { ...defaultSettings(), syncDeviceId: 'device-b', syncLastPulledSnapshotId: 'their-id' },
       ];
     });
-    expect((await syncNow(drive)).kind).toBe('pulled');
-    expect(await heldId()).toBe(drive.file?.snapshotId);
+    expect((await syncNow(cloud)).kind).toBe('pulled');
+    expect(await heldId()).toBe(cloud.file?.snapshotId);
     expect(await heldId()).not.toBe('their-id');
   });
 
@@ -1209,45 +1267,45 @@ describe('the snapshot this device descends from is persisted', () => {
    * be handed a conflict, every time, on a book that is perfectly in step.
    */
   it('a clean device several pushes behind fast-forwards instead of being asked', async () => {
-    const drive = new FakeDrive();
+    const cloud = new FakeCloud();
     await seedBook(2);
-    await syncNow(drive); // revision 1 — the ancestor we hold
+    await syncNow(cloud); // revision 1 — the ancestor we hold
 
     for (const id of ['b-1', 'b-2', 'b-3', 'b-4']) {
-      deviceBPushes(drive, (t) => (t.transactions as unknown[]).push(txRow(id)));
+      deviceBPushes(cloud, (t) => (t.transactions as unknown[]).push(txRow(id)));
     }
     expect(await hasLocalChanges()).toBe(false);
 
-    const outcome = await syncNow(drive);
+    const outcome = await syncNow(cloud);
 
     expect(outcome.kind).toBe('pulled');
     if (outcome.kind !== 'pulled') throw new Error('unreachable');
     expect(outcome.revision).toBe(5);
     expect(await db.transactions.count()).toBe(6);
     expect(savedBackups).toHaveLength(0); // nothing lost a fight
-    expect(drive.reads).toBe(1); // and the body was downloaded exactly once
-    expect(await heldId()).toBe(drive.file?.snapshotId);
+    expect(cloud.reads).toBe(1); // and the body was downloaded exactly once
+    expect(await heldId()).toBe(cloud.file?.snapshotId);
     // The chain came with it, so the NEXT push hands it on.
-    expect((await getSettings()).syncAncestry).toEqual(drive.file?.ancestry);
+    expect((await getSettings()).syncAncestry).toEqual(cloud.file?.ancestry);
   });
 
   it('…but a remote that never saw us is still a conflict, however far ahead it is', async () => {
-    const drive = new FakeDrive();
+    const cloud = new FakeCloud();
     await seedBook(2);
-    await syncNow(drive); // revision 1
-    const ours = clone(drive.file)!;
+    await syncNow(cloud); // revision 1
+    const ours = clone(cloud.file)!;
     await db.transactions.add(txRow('a-only', -4242));
     await flushLocalRevision();
-    await syncNow(drive); // revision 2 — rows that exist only here and in Drive
+    await syncNow(cloud); // revision 2 — rows that exist only here and in the remote
     expect(await hasLocalChanges()).toBe(false);
 
     // A writer working from revision 1 replaces the file and pushes on twice
     // more. Its chain is long, and our snapshot is nowhere in it.
-    staleWriterPushes(drive, ours, (t) => (t.transactions as unknown[]).push(txRow('c-1')));
-    deviceBPushes(drive, (t) => (t.transactions as unknown[]).push(txRow('c-2')));
-    deviceBPushes(drive, (t) => (t.transactions as unknown[]).push(txRow('c-3')));
+    staleWriterPushes(cloud, ours, (t) => (t.transactions as unknown[]).push(txRow('c-1')));
+    deviceBPushes(cloud, (t) => (t.transactions as unknown[]).push(txRow('c-2')));
+    deviceBPushes(cloud, (t) => (t.transactions as unknown[]).push(txRow('c-3')));
 
-    const outcome = await syncNow(drive);
+    const outcome = await syncNow(cloud);
 
     expect(outcome.kind).toBe('conflict');
     expect(await db.transactions.get('a-only')).toBeTruthy(); // still only here
@@ -1255,68 +1313,89 @@ describe('the snapshot this device descends from is persisted', () => {
   });
 
   it('the chain is bounded, and running off the end asks rather than guesses', async () => {
-    const drive = new FakeDrive();
+    const cloud = new FakeCloud();
     await seedBook(1);
-    await syncNow(drive); // revision 1 — the id that will fall off the end
+    await syncNow(cloud); // revision 1 — the id that will fall off the end
 
     for (let i = 0; i <= SYNC_ANCESTRY_DEPTH; i++) {
-      deviceBPushes(drive, (t) => (t.transactions as unknown[]).push(txRow(`b-${i}`)));
+      deviceBPushes(cloud, (t) => (t.transactions as unknown[]).push(txRow(`b-${i}`)));
     }
-    expect(drive.file?.ancestry).toHaveLength(SYNC_ANCESTRY_DEPTH);
-    expect(drive.file?.ancestry).not.toContain(await heldId());
+    expect(cloud.file?.ancestry).toHaveLength(SYNC_ANCESTRY_DEPTH);
+    expect(cloud.file?.ancestry).not.toContain(await heldId());
 
     // Safe, not silent: this device cannot prove it is merely behind, so it
     // says so instead of applying a book it cannot vouch for.
-    const outcome = await syncNow(drive);
+    const outcome = await syncNow(cloud);
     expect(outcome.kind).toBe('conflict');
     expect(await db.transactions.get('tx-0')).toBeTruthy();
   });
 
   /**
-   * The migration, which the owner's live devices will actually take: a device
-   * that has synced many times under a build with no ancestry has a pulled
-   * REVISION and no id. Treating that null as "descends from nothing" would
-   * make every remote look unrelated and hand it a conflict on every sync, so
-   * it falls back to the revision table for exactly one sync and records an id
-   * on the way past.
+   * A REVISION WITH NO ID: what the deleted fallback table used to be for, and
+   * what happens to it now (D45, closing D2 and D4).
+   *
+   * The Drive build really did have devices in this state — they had synced
+   * many times under a build that predated ancestry — so the engine kept a
+   * second decision table that compared revision NUMBERS, adopted the head's
+   * id on the way past, and pulled with the descent check switched off. Both
+   * of those were defects (D2, D4) and the state cannot arise on Dropbox: no
+   * device has ever synced there, and every path that records an id records
+   * the revision with it.
+   *
+   * The table is deleted rather than repaired, so the state now gets what
+   * "cannot prove" means everywhere else in this file — the user is asked.
+   * These two tests exist because deleting a fallback is exactly the kind of
+   * change that quietly turns a refusal into a silent adoption.
    */
-  it('a device upgraded mid-lineage uses revision numbers once, then heals', async () => {
-    const drive = new FakeDrive();
+  it('a device with a revision but no id is ASKED, never handed a free pull (D4)', async () => {
+    const cloud = new FakeCloud();
     await seedBook(2);
-    await syncNow(drive); // revision 1
-    await updateSettings({ syncLastPulledSnapshotId: null }); // as an older build left it
-    deviceBPushes(drive, (t) => (t.transactions as unknown[]).push(txRow('b-1')));
+    await syncNow(cloud); // revision 1
+    await updateSettings({ syncLastPulledSnapshotId: null }); // the state under test
+    deviceBPushes(cloud, (t) => (t.transactions as unknown[]).push(txRow('b-1')));
 
-    const outcome = await syncNow(drive);
+    const outcome = await syncNow(cloud);
 
-    expect(outcome.kind).toBe('pulled'); // not a conflict with its own lineage
-    expect(await db.transactions.get('b-1')).toBeTruthy();
-    expect(await heldId()).toBe(drive.file?.snapshotId); // healed
+    // It is CLEAN and the remote is genuinely ahead, so the old table pulled.
+    // With no id there is nothing to check the remote's chain against, and a
+    // pull that skips the check is a pull that can delete rows existing
+    // nowhere else. It asks instead, and writes nothing on either side.
+    expect(outcome.kind).toBe('conflict');
+    expect(await db.transactions.get('b-1')).toBeUndefined();
+    expect(await heldId()).toBeNull();
+    expect(await db.transactions.count()).toBe(2);
   });
 
-  it('…and an upgraded device that has nothing to do adopts the head it agrees with', async () => {
-    const drive = new FakeDrive();
+  it('…and is never told "up to date" over a head it cannot prove it descends from (D2)', async () => {
+    const cloud = new FakeCloud();
     await seedBook(2);
-    await syncNow(drive);
+    await syncNow(cloud);
     await updateSettings({ syncLastPulledSnapshotId: null });
+    const writesBefore = cloud.writes;
 
-    expect((await syncNow(drive)).kind).toBe('up-to-date');
-    expect(await heldId()).toBe(drive.file?.snapshotId);
+    const outcome = await syncNow(cloud);
+
+    // D2 verbatim: the old table read "same revision number" as agreement and
+    // then recorded the head's whole stamp for a device that had proved
+    // nothing about it. Nothing is adopted and nothing is written.
+    expect(outcome.kind).toBe('conflict');
+    expect(await heldId()).toBeNull();
+    expect(cloud.writes).toBe(writesBefore);
   });
 
   it('a device with history and no id still refuses to re-seed a deleted file', async () => {
-    // The revision fallback must not weaken C13: evidence of history is OR'd,
-    // so a null id cannot make a device with 47 revisions look brand new.
-    const drive = new FakeDrive();
+    // Evidence of history is OR'd, so a null id cannot make a device with 47
+    // revisions look brand new (C13).
+    const cloud = new FakeCloud();
     await seedBook(2);
-    await syncNow(drive);
+    await syncNow(cloud);
     await updateSettings({ syncLastPulledSnapshotId: null });
-    drive.file = null;
+    cloud.file = null;
 
-    const outcome = await syncNow(drive);
+    const outcome = await syncNow(cloud);
     expect(outcome.kind).toBe('error');
-    if (outcome.kind === 'error') expect(outcome.message).toMatch(/no longer in your Google Drive/i);
-    expect(drive.file).toBeNull();
+    if (outcome.kind === 'error') expect(outcome.message).toMatch(/no longer in your Dropbox/i);
+    expect(cloud.file).toBeNull();
   });
 });
 
@@ -1325,88 +1404,88 @@ describe('a sync file that has gone missing is never quietly replaced', () => {
    * C13/C16. A device with history reads "no file" and used to seed a brand
    * new one at revision 1 — a second lineage, whose numbers every device then
    * compared against the first's as though they were one history. The file is
-   * usually not even gone: Drive's file list hides the bin, and the screen's
+   * usually not even gone: Dropbox hides deleted files by default, and the screen's
    * own reset instructions send the user through it.
    */
   it('the file is gone but this device had one ⇒ refuses, and writes nothing', async () => {
-    const drive = new FakeDrive();
+    const cloud = new FakeCloud();
     await seedBook(3);
-    await syncNow(drive); // revision 1
+    await syncNow(cloud); // revision 1
     await db.transactions.add(txRow('after-1'));
     await flushLocalRevision();
-    await syncNow(drive); // revision 2
+    await syncNow(cloud); // revision 2
     expect((await getSettings()).syncLastPulledRevision).toBe(2);
 
-    drive.file = null; // deleted in Drive
+    cloud.file = null; // deleted, and not recoverable
     const settingsBefore = await getSettings();
     const localBefore = await localDataTables();
 
-    const outcome = await syncNow(drive);
+    const outcome = await syncNow(cloud);
 
     expect(outcome.kind).toBe('error');
     if (outcome.kind !== 'error') throw new Error('unreachable');
-    expect(outcome.message).toMatch(/no longer in your Google Drive/i);
-    expect(drive.file).toBeNull(); // NOT re-seeded at revision 1
+    expect(outcome.message).toMatch(/no longer in your Dropbox/i);
+    expect(cloud.file).toBeNull(); // NOT re-seeded at revision 1
     expect(await getSettings()).toEqual(settingsBefore);
     expect(await localDataTables()).toEqual(localBefore);
   });
 
   it('the same device seeds normally when it genuinely has no history', async () => {
-    const drive = new FakeDrive();
+    const cloud = new FakeCloud();
     await seedBook(3);
-    expect(await syncNow(drive)).toMatchObject({ kind: 'pushed', revision: 1 });
-    expect(drive.file?.parentSnapshotId).toBeNull();
+    expect(await syncNow(cloud)).toMatchObject({ kind: 'pushed', revision: 1 });
+    expect(cloud.file?.parentSnapshotId).toBeNull();
   });
 
   it('re-seeding happens only when the user explicitly asks for it', async () => {
-    const drive = new FakeDrive();
+    const cloud = new FakeCloud();
     await seedBook(3);
-    await syncNow(drive);
-    drive.file = null;
-    expect((await syncNow(drive)).kind).toBe('error');
+    await syncNow(cloud);
+    cloud.file = null;
+    expect((await syncNow(cloud)).kind).toBe('error');
 
-    const outcome = await syncNow(drive, { resolve: 'reseed-remote' });
+    const outcome = await syncNow(cloud, { resolve: 'reseed-remote' });
     expect(outcome).toMatchObject({ kind: 'pushed', revision: 1 });
-    // `as` rather than an annotation: the local `drive.file = null` above
+    // `as` rather than an annotation: the local `cloud.file = null` above
     // narrows the property to `null`, which would make the assertions vacuous.
-    const reseeded = drive.file as SyncSnapshot | null;
+    const reseeded = cloud.file as SyncSnapshot | null;
     expect(reseeded).not.toBeNull();
     expect(reseeded?.parentSnapshotId ?? null).toBeNull();
-    expect(snapshotDataTables(drive.file)).toEqual(await localDataTables());
+    expect(snapshotDataTables(cloud.file)).toEqual(await localDataTables());
   });
 
-  it("a file in Drive's bin is neither written over nor duplicated", async () => {
-    const drive = new FakeDrive();
+  it('a file deleted in Dropbox is neither written over nor duplicated', async () => {
+    const cloud = new FakeCloud();
     await seedBook(3);
-    await syncNow(drive); // revision 1
-    const remoteBefore = clone(drive.file);
+    await syncNow(cloud); // revision 1
+    const remoteBefore = clone(cloud.file);
     await db.transactions.add(txRow('later-1'));
     await flushLocalRevision();
 
-    drive.trashed = true; // the user moved it to Drive's bin
+    cloud.trashed = true; // the user deleted it in Dropbox
 
-    const outcome = await syncNow(drive);
+    const outcome = await syncNow(cloud);
     expect(outcome.kind).toBe('error');
     if (outcome.kind !== 'error') throw new Error('unreachable');
-    expect(outcome.message).toMatch(/bin/i);
-    expect(drive.file).toEqual(remoteBefore); // untouched, still restorable
-    expect(drive.writes).toBe(1); // only the original push
+    expect(outcome.message).toMatch(/deleted files/i);
+    expect(cloud.file).toEqual(remoteBefore); // untouched, still restorable
+    expect(cloud.writes).toBe(1); // only the original push
     // Even an explicit re-seed is refused while it sits there: a new file
     // would end up beside the restored one.
-    expect((await syncNow(drive, { resolve: 'reseed-remote' })).kind).toBe('error');
-    expect(drive.file).toEqual(remoteBefore);
+    expect((await syncNow(cloud, { resolve: 'reseed-remote' })).kind).toBe('error');
+    expect(cloud.file).toEqual(remoteBefore);
   });
 
   it('a device that never synced is not blocked by a trashed file it has never seen', async () => {
     // It still refuses — the file EXISTS — but it says so rather than starting
     // a second one beside it.
-    const drive = new FakeDrive();
-    drive.file = makeSnapshot(9, { transactions: [txRow('remote-1')] });
-    drive.trashed = true;
+    const cloud = new FakeCloud();
+    cloud.file = makeSnapshot(9, { transactions: [txRow('remote-1')] });
+    cloud.trashed = true;
     await seedBook(2);
 
-    expect((await syncNow(drive)).kind).toBe('error');
-    expect(drive.writes).toBe(0);
+    expect((await syncNow(cloud)).kind).toBe('error');
+    expect(cloud.writes).toBe(0);
   });
 });
 
@@ -1427,26 +1506,26 @@ describe('a sync file that has gone missing is never quietly replaced', () => {
 
 describe('a write that lands during a sync is never applied over', () => {
   /** Set the remote one clean push ahead of us, so a pull is what happens next. */
-  async function cleanDeviceOnePullBehind(): Promise<FakeDrive> {
-    const drive = new FakeDrive();
+  async function cleanDeviceOnePullBehind(): Promise<FakeCloud> {
+    const cloud = new FakeCloud();
     await seedBook(3);
-    await syncNow(drive); // revision 1 — both sides agree
-    deviceBPushes(drive, (t) => (t.transactions as unknown[]).push(txRow('tx-from-imac', -4242)));
+    await syncNow(cloud); // revision 1 — both sides agree
+    deviceBPushes(cloud, (t) => (t.transactions as unknown[]).push(txRow('tx-from-imac', -4242)));
     expect(await hasLocalChanges()).toBe(false);
-    return drive;
+    return cloud;
   }
 
   const REFUSED = /still here and still unsent/i;
 
   it('the bump reached disk during the download ⇒ refuses, and keeps the row', async () => {
-    const drive = await cleanDeviceOnePullBehind();
-    const remoteBefore = clone(drive.file);
-    drive.duringNextRead = async () => {
+    const cloud = await cleanDeviceOnePullBehind();
+    const remoteBefore = clone(cloud.file);
+    cloud.duringNextRead = async () => {
       await db.transactions.add(txRow('typed-during-download', -999));
       await flushLocalRevision(); // the 250 ms timer fired before the apply
     };
 
-    const outcome = await syncNow(drive);
+    const outcome = await syncNow(cloud);
 
     expect(outcome.kind).toBe('error');
     if (outcome.kind !== 'error') throw new Error('unreachable');
@@ -1455,7 +1534,7 @@ describe('a write that lands during a sync is never applied over', () => {
     expect(await db.transactions.get('typed-during-download')).toBeTruthy();
     // …nothing of the remote's was applied…
     expect(await db.transactions.get('tx-from-imac')).toBeUndefined();
-    expect(drive.file).toEqual(remoteBefore);
+    expect(cloud.file).toEqual(remoteBefore);
     expect(savedBackups).toHaveLength(0);
     // …the bookkeeping still says revision 1, so the next sync decides afresh…
     const s = await getSettings();
@@ -1465,22 +1544,22 @@ describe('a write that lands during a sync is never applied over', () => {
   });
 
   it('and the next sync then handles it properly: conflict, resolve, nothing lost', async () => {
-    const drive = await cleanDeviceOnePullBehind();
-    drive.duringNextRead = async () => {
+    const cloud = await cleanDeviceOnePullBehind();
+    cloud.duringNextRead = async () => {
       await db.transactions.add(txRow('typed-during-download', -999));
       await flushLocalRevision();
     };
-    expect((await syncNow(drive)).kind).toBe('error');
+    expect((await syncNow(cloud)).kind).toBe('error');
 
     // Both sides really have moved now, and this time the engine says so.
-    const outcome = await syncNow(drive);
+    const outcome = await syncNow(cloud);
     expect(outcome.kind).toBe('conflict');
     if (outcome.kind !== 'conflict') throw new Error('unreachable');
     expect(outcome.local.counts.transactions).toBe(4);
     expect(outcome.remote.counts.transactions).toBe(4);
 
     // Answering it keeps both books: the loser is written to a safety file.
-    expect((await syncNow(drive, { resolve: 'keep-local' })).kind).toBe('pushed');
+    expect((await syncNow(cloud, { resolve: 'keep-local' })).kind).toBe('pushed');
     expect(await db.transactions.get('typed-during-download')).toBeTruthy();
     expect(savedBackups).toHaveLength(1);
     const rescued = (savedBackups[0]!.file.tables.transactions as { id: string }[]).map((t) => t.id);
@@ -1494,14 +1573,14 @@ describe('a write that lands during a sync is never applied over', () => {
    * unconditional clearPendingLocalChange().
    */
   it('the bump is still only in memory ⇒ refuses, and does NOT drop the flag', async () => {
-    const drive = await cleanDeviceOnePullBehind();
-    drive.duringNextRead = async () => {
+    const cloud = await cleanDeviceOnePullBehind();
+    cloud.duringNextRead = async () => {
       await db.transactions.add(txRow('typed-during-download', -999));
       // deliberately no flush: still coalescing
       expect(hasPendingLocalChange()).toBe(true);
     };
 
-    const outcome = await syncNow(drive);
+    const outcome = await syncNow(cloud);
 
     expect(outcome.kind).toBe('error');
     if (outcome.kind === 'error') expect(outcome.message).toMatch(REFUSED);
@@ -1513,13 +1592,13 @@ describe('a write that lands during a sync is never applied over', () => {
   });
 
   it('an EDIT to an existing row is protected too, not just an insert', async () => {
-    const drive = await cleanDeviceOnePullBehind();
-    drive.duringNextRead = async () => {
+    const cloud = await cleanDeviceOnePullBehind();
+    cloud.duringNextRead = async () => {
       await db.transactions.update('tx-0', { amountMinor: -777_00, notes: 'corrected' });
       await flushLocalRevision();
     };
 
-    expect((await syncNow(drive)).kind).toBe('error');
+    expect((await syncNow(cloud)).kind).toBe('error');
 
     const row = await db.transactions.get('tx-0');
     expect(row?.amountMinor).toBe(-777_00);
@@ -1533,8 +1612,8 @@ describe('a write that lands during a sync is never applied over', () => {
    * `withoutLocalChangeTracking` is how that looks from here.
    */
   it('a bump that only exists on disk (another tab flushed it) still stops the apply', async () => {
-    const drive = await cleanDeviceOnePullBehind();
-    drive.duringNextRead = async () => {
+    const cloud = await cleanDeviceOnePullBehind();
+    cloud.duringNextRead = async () => {
       await withoutLocalChangeTracking(async () => {
         await db.transactions.add(txRow('typed-in-another-tab', -55));
       });
@@ -1543,7 +1622,7 @@ describe('a write that lands during a sync is never applied over', () => {
       await db.settings.update('app', { syncLocalRevision: s.syncLocalRevision + 1 });
     };
 
-    expect((await syncNow(drive)).kind).toBe('error');
+    expect((await syncNow(cloud)).kind).toBe('error');
     expect(await db.transactions.get('typed-in-another-tab')).toBeTruthy();
     expect(await db.transactions.get('tx-from-imac')).toBeUndefined();
   });
@@ -1552,20 +1631,20 @@ describe('a write that lands during a sync is never applied over', () => {
     // No counter is consulted at all in this regime (hasLocalChanges asks
     // whether the book is pristine), so neither of the other two checks can
     // fire — only the pristine re-check inside the transaction can.
-    const drive = new FakeDrive();
-    drive.file = makeSnapshot(4, {
+    const cloud = new FakeCloud();
+    cloud.file = makeSnapshot(4, {
       accounts: [clone(account)],
       transactions: [txRow('real-1'), txRow('real-2')],
     });
     expect(await hasLocalChanges()).toBe(false); // pristine browser
 
-    drive.duringNextRead = async () => {
+    cloud.duringNextRead = async () => {
       await withoutLocalChangeTracking(async () => {
         await db.accounts.add({ ...clone(account), id: 'acc-typed-during-sync' });
       });
     };
 
-    const outcome = await syncNow(drive);
+    const outcome = await syncNow(cloud);
 
     expect(outcome.kind).toBe('error');
     if (outcome.kind === 'error') expect(outcome.message).toMatch(REFUSED);
@@ -1575,21 +1654,21 @@ describe('a write that lands during a sync is never applied over', () => {
   });
 
   /**
-   * The other long window: the user has chosen "keep the copy in Drive", the
+   * The other long window: the user has chosen "keep the copy in Dropbox", the
    * losing local book has been written to a safety file, and the save dialog
    * is sitting open. A row typed NOW is in neither the safety file nor the
    * remote, so applying would destroy it outright.
    */
   it('keep-remote refuses if something is typed after the safety backup was taken', async () => {
-    const drive = new FakeDrive();
+    const cloud = new FakeCloud();
     await seedBook(3);
-    await syncNow(drive);
-    deviceBPushes(drive, (t) => (t.transactions as unknown[]).push(txRow('tx-imac-1')));
+    await syncNow(cloud);
+    deviceBPushes(cloud, (t) => (t.transactions as unknown[]).push(txRow('tx-imac-1')));
     await db.transactions.add(txRow('tx-laptop-only', -777));
     await flushLocalRevision();
-    expect((await syncNow(drive)).kind).toBe('conflict');
+    expect((await syncNow(cloud)).kind).toBe('conflict');
 
-    const outcome = await syncNow(drive, {
+    const outcome = await syncNow(cloud, {
       resolve: 'keep-remote',
       saveBackup: async (file, name) => {
         savedBackups.push({ file: clone(file), name });
@@ -1611,14 +1690,14 @@ describe('a write that lands during a sync is never applied over', () => {
   it('but a change made BEFORE the safety backup is discarded as the user asked', async () => {
     // The control for the test above: keep-remote still works, and everything
     // it discards is in the file it just wrote.
-    const drive = new FakeDrive();
+    const cloud = new FakeCloud();
     await seedBook(3);
-    await syncNow(drive);
-    deviceBPushes(drive, (t) => (t.transactions as unknown[]).push(txRow('tx-imac-1')));
+    await syncNow(cloud);
+    deviceBPushes(cloud, (t) => (t.transactions as unknown[]).push(txRow('tx-imac-1')));
     await db.transactions.add(txRow('tx-laptop-only', -777));
     await flushLocalRevision();
 
-    const outcome = await syncNow(drive, { resolve: 'keep-remote' });
+    const outcome = await syncNow(cloud, { resolve: 'keep-remote' });
 
     expect(outcome.kind).toBe('pulled');
     expect(await db.transactions.get('tx-laptop-only')).toBeUndefined();
@@ -1628,8 +1707,8 @@ describe('a write that lands during a sync is never applied over', () => {
   });
 
   it('an undisturbed pull still pulls — the check is not a blanket refusal', async () => {
-    const drive = await cleanDeviceOnePullBehind();
-    const outcome = await syncNow(drive);
+    const cloud = await cleanDeviceOnePullBehind();
+    const outcome = await syncNow(cloud);
     expect(outcome.kind).toBe('pulled');
     expect(await db.transactions.get('tx-from-imac')).toBeTruthy();
     expect(await hasLocalChanges()).toBe(false);
@@ -1638,25 +1717,25 @@ describe('a write that lands during a sync is never applied over', () => {
 
 // ===========================================================================
 describe('conflict: refuse, describe, and only then act', () => {
-  async function bothSidesMoved(): Promise<FakeDrive> {
-    const drive = new FakeDrive();
+  async function bothSidesMoved(): Promise<FakeCloud> {
+    const cloud = new FakeCloud();
     await seedBook(3);
-    await syncNow(drive); // revision 1
-    deviceBPushes(drive, (t) => {
+    await syncNow(cloud); // revision 1
+    deviceBPushes(cloud, (t) => {
       (t.transactions as unknown[]).push(txRow('tx-imac-1'), txRow('tx-imac-2'));
     });
     await db.transactions.add(txRow('tx-laptop-only', -777));
     await flushLocalRevision();
-    return drive;
+    return cloud;
   }
 
   it('returns both sides described, and writes NOTHING', async () => {
-    const drive = await bothSidesMoved();
+    const cloud = await bothSidesMoved();
     const localBefore = await localDataTables();
-    const remoteBefore = clone(drive.file);
+    const remoteBefore = clone(cloud.file);
     const settingsBefore = await getSettings();
 
-    const outcome = await syncNow(drive);
+    const outcome = await syncNow(cloud);
 
     expect(outcome.kind).toBe('conflict');
     if (outcome.kind !== 'conflict') throw new Error('unreachable');
@@ -1665,40 +1744,40 @@ describe('conflict: refuse, describe, and only then act', () => {
     expect(outcome.remote.revision).toBe(2);
     expect(outcome.local.counts.transactions).toBe(4); // 3 seeded + 1 new
     expect(outcome.remote.counts.transactions).toBe(5); // 3 pushed + 2 theirs
-    expect(outcome.remote.savedAt).toBe(drive.file?.savedAt);
+    expect(outcome.remote.savedAt).toBe(cloud.file?.savedAt);
 
     // Nothing at all changed: not the book, not the remote, not the bookkeeping.
     expect(await localDataTables()).toEqual(localBefore);
-    expect(drive.file).toEqual(remoteBefore);
-    expect(drive.writes).toBe(1); // just the original push
+    expect(cloud.file).toEqual(remoteBefore);
+    expect(cloud.writes).toBe(1); // just the original push
     expect(await getSettings()).toEqual(settingsBefore);
     expect(savedBackups).toHaveLength(0);
   });
 
   it('a remote that went BACKWARDS is a conflict too, never a silent rollback', async () => {
-    const drive = new FakeDrive();
+    const cloud = new FakeCloud();
     await seedBook(3);
-    await syncNow(drive); // revision 1
+    await syncNow(cloud); // revision 1
     await db.transactions.add(txRow('tx-4'));
     await flushLocalRevision();
-    await syncNow(drive); // revision 2, local clean
+    await syncNow(cloud); // revision 2, local clean
     expect((await getSettings()).syncLastPulledRevision).toBe(2);
 
-    // Someone restores an older file into Drive.
-    drive.file = makeSnapshot(1, { transactions: [txRow('old-1')] });
+    // Someone restores an older file into the remote.
+    cloud.file = makeSnapshot(1, { transactions: [txRow('old-1')] });
 
-    const outcome = await syncNow(drive);
+    const outcome = await syncNow(cloud);
     expect(outcome.kind).toBe('conflict');
     expect(await db.transactions.count()).toBe(4); // untouched
   });
 
   it('keep-local: backs up the losing REMOTE first, then pushes above both', async () => {
-    const drive = await bothSidesMoved();
-    expect((await syncNow(drive)).kind).toBe('conflict');
+    const cloud = await bothSidesMoved();
+    expect((await syncNow(cloud)).kind).toBe('conflict');
 
-    const outcome = await syncNow(drive, { resolve: 'keep-local' });
+    const outcome = await syncNow(cloud, { resolve: 'keep-local' });
 
-    expect(outcome).toEqual({ kind: 'pushed', revision: 3, snapshotId: drive.file?.snapshotId });
+    expect(outcome).toEqual({ kind: 'pushed', revision: 3, snapshotId: cloud.file?.snapshotId });
     // The safety file holds the side that lost, in normal backup format.
     expect(savedBackups).toHaveLength(1);
     expect(savedBackups[0]!.name).toMatch(/^mymoney-conflict-remote-rev2-\d{4}-\d{2}-\d{2}\.json$/);
@@ -1707,15 +1786,15 @@ describe('conflict: refuse, describe, and only then act', () => {
     expect(savedIds).toContain('tx-imac-1');
     expect(savedIds).toContain('tx-imac-2');
     // …and only then was the remote replaced.
-    expect(snapshotDataTables(drive.file)).toEqual(await localDataTables());
+    expect(snapshotDataTables(cloud.file)).toEqual(await localDataTables());
     expect(await db.transactions.get('tx-laptop-only')).toBeTruthy();
   });
 
   it('keep-remote: backs up the losing LOCAL book first, then applies', async () => {
-    const drive = await bothSidesMoved();
-    expect((await syncNow(drive)).kind).toBe('conflict');
+    const cloud = await bothSidesMoved();
+    expect((await syncNow(cloud)).kind).toBe('conflict');
 
-    const outcome = await syncNow(drive, { resolve: 'keep-remote' });
+    const outcome = await syncNow(cloud, { resolve: 'keep-remote' });
 
     expect(outcome.kind).toBe('pulled');
     expect(savedBackups).toHaveLength(1);
@@ -1725,33 +1804,33 @@ describe('conflict: refuse, describe, and only then act', () => {
     // Local now IS the remote.
     expect(await db.transactions.get('tx-laptop-only')).toBeUndefined();
     expect(await db.transactions.get('tx-imac-1')).toBeTruthy();
-    expect(snapshotDataTables(drive.file)).toEqual(await localDataTables());
+    expect(snapshotDataTables(cloud.file)).toEqual(await localDataTables());
     expect(await hasLocalChanges()).toBe(false);
   });
 
   it('if the safety backup cannot be written, NOTHING is destroyed', async () => {
-    const drive = await bothSidesMoved();
+    const cloud = await bothSidesMoved();
     const localBefore = await localDataTables();
-    const remoteBefore = clone(drive.file);
+    const remoteBefore = clone(cloud.file);
     setConflictBackupSaver(async () => {
       throw new Error('Disk full');
     });
 
-    const keepRemote = await syncNow(drive, { resolve: 'keep-remote' });
+    const keepRemote = await syncNow(cloud, { resolve: 'keep-remote' });
     expect(keepRemote.kind).toBe('error');
     if (keepRemote.kind !== 'error') throw new Error('unreachable');
     expect(keepRemote.message).toMatch(/Disk full/);
     expect(keepRemote.message).toMatch(/nothing was replaced/i);
     expect(await localDataTables()).toEqual(localBefore);
 
-    const keepLocal = await syncNow(drive, { resolve: 'keep-local' });
+    const keepLocal = await syncNow(cloud, { resolve: 'keep-local' });
     expect(keepLocal.kind).toBe('error');
-    expect(drive.file).toEqual(remoteBefore);
+    expect(cloud.file).toEqual(remoteBefore);
     expect(await localDataTables()).toEqual(localBefore);
   });
 
   it('the built-in saver: a cancelled save aborts the resolution', async () => {
-    const drive = await bothSidesMoved();
+    const cloud = await bothSidesMoved();
     const localBefore = await localDataTables();
     setConflictBackupSaver(null); // use the real default
 
@@ -1759,7 +1838,7 @@ describe('conflict: refuse, describe, and only then act', () => {
     stubAnchorDownload();
     vi.stubGlobal('showSaveFilePicker', () => Promise.reject(abort));
 
-    const outcome = await syncNow(drive, { resolve: 'keep-remote' });
+    const outcome = await syncNow(cloud, { resolve: 'keep-remote' });
 
     expect(outcome.kind).toBe('error');
     if (outcome.kind === 'error') expect(outcome.message).toMatch(/cancelled/i);
@@ -1767,7 +1846,7 @@ describe('conflict: refuse, describe, and only then act', () => {
   });
 
   it('the built-in saver: a completed save lets the resolution proceed', async () => {
-    const drive = await bothSidesMoved();
+    const cloud = await bothSidesMoved();
     setConflictBackupSaver(null);
 
     let written = '';
@@ -1785,7 +1864,7 @@ describe('conflict: refuse, describe, and only then act', () => {
     });
     stubAnchorDownload();
 
-    const outcome = await syncNow(drive, { resolve: 'keep-remote' });
+    const outcome = await syncNow(cloud, { resolve: 'keep-remote' });
 
     expect(outcome.kind).toBe('pulled');
     expect(suggested).toMatch(/^mymoney-conflict-local-rev1-/);
@@ -1796,9 +1875,9 @@ describe('conflict: refuse, describe, and only then act', () => {
   });
 
   it('a per-call saver overrides the installed one', async () => {
-    const drive = await bothSidesMoved();
+    const cloud = await bothSidesMoved();
     const seen: string[] = [];
-    const outcome = await syncNow(drive, {
+    const outcome = await syncNow(cloud, {
       resolve: 'keep-local',
       saveBackup: async (_file, name) => {
         seen.push(name);
@@ -1811,12 +1890,12 @@ describe('conflict: refuse, describe, and only then act', () => {
   });
 
   it('resolve is an answer, not a mode: it does nothing when there is no conflict', async () => {
-    const drive = new FakeDrive();
+    const cloud = new FakeCloud();
     await seedBook();
-    await syncNow(drive);
-    expect(await syncNow(drive, { resolve: 'keep-remote' })).toEqual({
+    await syncNow(cloud);
+    expect(await syncNow(cloud, { resolve: 'keep-remote' })).toEqual({
       kind: 'up-to-date',
-      snapshotId: drive.file?.snapshotId,
+      snapshotId: cloud.file?.snapshotId,
     });
     expect(savedBackups).toHaveLength(0);
   });
@@ -1840,15 +1919,15 @@ describe('conflict: refuse, describe, and only then act', () => {
 
 describe('the losing side is kept where the app can PROVE it is kept', () => {
   /** Both sides have moved: a resolution must now destroy one of them. */
-  async function conflicted(): Promise<FakeDrive> {
-    const drive = new FakeDrive();
+  async function conflicted(): Promise<FakeCloud> {
+    const cloud = new FakeCloud();
     await seedBook(3);
-    await syncNow(drive); // revision 1 — both sides agree
-    deviceBPushes(drive, (t) => (t.transactions as unknown[]).push(txRow('tx-imac-1')));
+    await syncNow(cloud); // revision 1 — both sides agree
+    deviceBPushes(cloud, (t) => (t.transactions as unknown[]).push(txRow('tx-imac-1')));
     await db.transactions.add(txRow('tx-laptop-only', -777));
     await flushLocalRevision();
-    expect((await syncNow(drive)).kind).toBe('conflict');
-    return drive;
+    expect((await syncNow(cloud)).kind).toBe('conflict');
+    return cloud;
   }
 
   const idsIn = (file: BackupFile): string[] =>
@@ -1871,11 +1950,11 @@ describe('the losing side is kept where the app can PROVE it is kept', () => {
   }
 
   it('iPhone/Safari: the silent download is no longer what a book is destroyed on', async () => {
-    const drive = await conflicted();
+    const cloud = await conflicted();
     setConflictBackupSaver(null); // the real ladder
     stubAnchorDownload(); // no picker, no share sheet ⇒ the rung that says nothing
 
-    const outcome = await syncNow(drive, { resolve: 'keep-remote' });
+    const outcome = await syncNow(cloud, { resolve: 'keep-remote' });
 
     expect(outcome.kind).toBe('pulled');
     expect(anchorDownloads).toHaveLength(1); // the file was still offered…
@@ -1898,9 +1977,9 @@ describe('the losing side is kept where the app can PROVE it is kept', () => {
     // the anchor instead, so the resolution proceeded on a file that was never
     // written. backup.ts always kept write/close outside its try for exactly
     // this reason; there is now only one ladder, so this cannot drift again.
-    const drive = await conflicted();
+    const cloud = await conflicted();
     const localBefore = await localDataTables();
-    const remoteBefore = clone(drive.file);
+    const remoteBefore = clone(cloud.file);
     setConflictBackupSaver(null);
     stubAnchorDownload();
     vi.stubGlobal('showSaveFilePicker', () =>
@@ -1915,23 +1994,23 @@ describe('the losing side is kept where the app can PROVE it is kept', () => {
       }),
     );
 
-    const outcome = await syncNow(drive, { resolve: 'keep-remote' });
+    const outcome = await syncNow(cloud, { resolve: 'keep-remote' });
 
     expect(outcome.kind).toBe('error');
     if (outcome.kind === 'error') expect(outcome.message).toMatch(/nothing was replaced/i);
     expect(anchorDownloads).toEqual([]); // no silent second attempt
     expect(await localDataTables()).toEqual(localBefore);
-    expect(drive.file).toEqual(remoteBefore);
+    expect(cloud.file).toEqual(remoteBefore);
     expect(await listRecoveryRecords()).toEqual([]);
   });
 
   it('on a phone the share sheet is used, not the rung that reports nothing', async () => {
-    const drive = await conflicted();
+    const cloud = await conflicted();
     setConflictBackupSaver(null);
     stubAnchorDownload();
     const { shared } = stubShareSheet('ok');
 
-    const outcome = await syncNow(drive, { resolve: 'keep-remote' });
+    const outcome = await syncNow(cloud, { resolve: 'keep-remote' });
 
     expect(outcome.kind).toBe('pulled');
     expect(anchorDownloads).toEqual([]); // the share sheet took it
@@ -1944,13 +2023,13 @@ describe('the losing side is kept where the app can PROVE it is kept', () => {
     // A cancel is the user saying stop, and it is the one answer the file save
     // can give that means something. It stops BEFORE the recovery copy is
     // written, so a cancelled attempt leaves nothing behind either.
-    const drive = await conflicted();
+    const cloud = await conflicted();
     const localBefore = await localDataTables();
     setConflictBackupSaver(null);
     stubAnchorDownload();
     stubShareSheet('cancelled');
 
-    const outcome = await syncNow(drive, { resolve: 'keep-remote' });
+    const outcome = await syncNow(cloud, { resolve: 'keep-remote' });
 
     expect(outcome.kind).toBe('error');
     if (outcome.kind === 'error') expect(outcome.message).toMatch(/cancelled/i);
@@ -1961,12 +2040,12 @@ describe('the losing side is kept where the app can PROVE it is kept', () => {
   it('if the copy cannot be KEPT on this device, nothing is destroyed', async () => {
     // The gate itself, in both directions. The file saver succeeds throughout,
     // which is the point: a saved file is not enough on its own any more.
-    const drive = await conflicted();
+    const cloud = await conflicted();
     const localBefore = await localDataTables();
-    const remoteBefore = clone(drive.file);
+    const remoteBefore = clone(cloud.file);
     vi.spyOn(recoveryDb.bodies, 'put').mockRejectedValue(new Error('QuotaExceededError'));
 
-    const keepRemote = await syncNow(drive, { resolve: 'keep-remote' });
+    const keepRemote = await syncNow(cloud, { resolve: 'keep-remote' });
     expect(keepRemote.kind).toBe('error');
     if (keepRemote.kind === 'error') {
       expect(keepRemote.message).toMatch(/Quota/);
@@ -1974,9 +2053,9 @@ describe('the losing side is kept where the app can PROVE it is kept', () => {
     }
     expect(await localDataTables()).toEqual(localBefore);
 
-    const keepLocal = await syncNow(drive, { resolve: 'keep-local' });
+    const keepLocal = await syncNow(cloud, { resolve: 'keep-local' });
     expect(keepLocal.kind).toBe('error');
-    expect(drive.file).toEqual(remoteBefore);
+    expect(cloud.file).toEqual(remoteBefore);
     expect(await localDataTables()).toEqual(localBefore);
 
     expect(savedBackups).toHaveLength(2); // the FILE was saved both times
@@ -1987,9 +2066,9 @@ describe('the losing side is kept where the app can PROVE it is kept', () => {
     // The exact shape of the defect: a save function that returns whether or
     // not a byte reached disk. It is still allowed to say nothing — it just no
     // longer authorises anything.
-    const drive = await conflicted();
+    const cloud = await conflicted();
 
-    const outcome = await syncNow(drive, {
+    const outcome = await syncNow(cloud, {
       resolve: 'keep-remote',
       saveBackup: async () => undefined as unknown as BackupSaveResult,
     });
@@ -2000,24 +2079,24 @@ describe('the losing side is kept where the app can PROVE it is kept', () => {
     expect(idsIn(await readRecoveryBackup(record!.id))).toContain('tx-laptop-only');
   });
 
-  it('keep-local keeps the copy that was in Drive', async () => {
-    const drive = await conflicted();
+  it('keep-local keeps the copy that was in Dropbox', async () => {
+    const cloud = await conflicted();
 
-    const outcome = await syncNow(drive, { resolve: 'keep-local' });
+    const outcome = await syncNow(cloud, { resolve: 'keep-local' });
 
     expect(outcome.kind).toBe('pushed');
     const [record] = await listRecoveryRecords();
     expect(record!.reason).toBe('conflict-keep-local');
-    expect(record!.label).toMatch(/Google Drive/);
+    expect(record!.label).toMatch(/Dropbox/);
     expect(record!.fileName).toMatch(/^mymoney-conflict-remote-rev2-/);
     expect(idsIn(await readRecoveryBackup(record!.id))).toContain('tx-imac-1');
   });
 
   it('the kept copy brings the book back — and not the other device with it', async () => {
-    const drive = await conflicted();
+    const cloud = await conflicted();
     const bookBefore = await localDataTables();
 
-    expect((await syncNow(drive, { resolve: 'keep-remote' })).kind).toBe('pulled');
+    expect((await syncNow(cloud, { resolve: 'keep-remote' })).kind).toBe('pulled');
     const afterPull = await getSettings();
     expect(await db.transactions.get('tx-laptop-only')).toBeUndefined();
 
@@ -2040,18 +2119,18 @@ describe('the losing side is kept where the app can PROVE it is kept', () => {
     // …so the next sync is a clean push of the restored book, not a conflict
     // and not a silent re-pull: the device is dirty, and it descends from the
     // head it actually read.
-    const next = await syncNow(drive);
+    const next = await syncNow(cloud);
     expect(next.kind).toBe('pushed');
-    expect(snapshotDataTables(drive.file)).toEqual(await localDataTables());
+    expect(snapshotDataTables(cloud.file)).toEqual(await localDataTables());
   });
 
   it('repeated conflicts cannot fill the device up', async () => {
-    const drive = await conflicted();
+    const cloud = await conflicted();
     for (let i = 0; i < RECOVERY_KEEP + 2; i++) {
-      deviceBPushes(drive, (t) => (t.transactions as unknown[]).push(txRow(`tx-imac-${i + 2}`)));
+      deviceBPushes(cloud, (t) => (t.transactions as unknown[]).push(txRow(`tx-imac-${i + 2}`)));
       await db.transactions.add(txRow(`tx-laptop-${i}`, -100 - i));
       await flushLocalRevision();
-      expect((await syncNow(drive, { resolve: 'keep-remote' })).kind).toBe('pulled');
+      expect((await syncNow(cloud, { resolve: 'keep-remote' })).kind).toBe('pulled');
     }
     const listed = await listRecoveryRecords();
     expect(listed).toHaveLength(RECOVERY_KEEP);
@@ -2070,9 +2149,9 @@ describe('refusing bad remote data', () => {
   };
 
   it('garbage in the sync file is refused without touching local data', async () => {
-    const drive = new FakeDrive();
+    const cloud = new FakeCloud();
     await seedBook();
-    await syncNow(drive);
+    await syncNow(cloud);
     const before = await localDataTables();
 
     const garbage: unknown[] = [
@@ -2087,11 +2166,11 @@ describe('refusing bad remote data', () => {
     ];
 
     for (const bad of garbage) {
-      drive.file = bad as SyncSnapshot;
+      cloud.file = bad as SyncSnapshot;
       // The meta head still claims a newer revision, so the engine tries.
-      drive.metaReads = 0;
+      cloud.metaReads = 0;
       const outcome = await syncNow({
-        ...drive,
+        ...cloud,
         isConnected: () => true,
         readRemoteMeta: async () => ({
           revision: 2,
@@ -2114,17 +2193,17 @@ describe('refusing bad remote data', () => {
   });
 
   it('a snapshot from a NEWER build is refused, by syncNow and by applyRemote', async () => {
-    const drive = new FakeDrive();
+    const cloud = new FakeCloud();
     await seedBook();
-    await syncNow(drive);
+    await syncNow(cloud);
     const before = await localDataTables();
 
     const future = makeSnapshot(2, { transactions: [txRow('future-1')] }, {
       schemaVersion: SCHEMA_VERSION + 1,
     });
-    drive.file = future;
+    cloud.file = future;
 
-    const outcome = await syncNow(drive);
+    const outcome = await syncNow(cloud);
     expect(outcome.kind).toBe('error');
     if (outcome.kind === 'error') expect(outcome.message).toMatch(/newer version/i);
     await localUntouched(before);
@@ -2134,54 +2213,54 @@ describe('refusing bad remote data', () => {
   });
 
   it('a remote head with a nonsense revision is refused', async () => {
-    const drive = new FakeDrive();
+    const cloud = new FakeCloud();
     await seedBook();
-    drive.file = makeSnapshot(1, {});
-    const bad = { ...drive, isConnected: () => true, readRemoteMeta: async () => ({ revision: -3, savedAt: T0, deviceName: 'x' }) } as unknown as SyncTransport;
+    cloud.file = makeSnapshot(1, {});
+    const bad = { ...cloud, isConnected: () => true, readRemoteMeta: async () => ({ revision: -3, savedAt: T0, deviceName: 'x' }) } as unknown as SyncTransport;
     const outcome = await syncNow(bad);
     expect(outcome.kind).toBe('error');
   });
 
   it('transport failures surface as outcomes, never as thrown errors', async () => {
-    const drive = new FakeDrive();
+    const cloud = new FakeCloud();
     await seedBook();
-    drive.failMetaWith = new Error('Drive said no');
-    let outcome = await syncNow(drive);
+    cloud.failMetaWith = new Error('Dropbox said no');
+    let outcome = await syncNow(cloud);
     expect(outcome).toEqual({
       kind: 'error',
-      message: 'Could not read the sync file: Drive said no',
+      message: 'Could not read the sync file: Dropbox said no',
     });
 
     // A transport that reports its own typed reasons is understood.
-    drive.failMetaWith = Object.assign(new Error("You're offline"), {
+    cloud.failMetaWith = Object.assign(new Error("You're offline"), {
       name: 'SyncTransportError',
       kind: 'offline',
     });
-    expect(await syncNow(drive)).toEqual({ kind: 'offline' });
+    expect(await syncNow(cloud)).toEqual({ kind: 'offline' });
 
-    drive.failMetaWith = Object.assign(new Error('Not connected'), {
+    cloud.failMetaWith = Object.assign(new Error('Not connected'), {
       name: 'SyncTransportError',
       kind: 'not-connected',
     });
-    expect(await syncNow(drive)).toEqual({ kind: 'not-connected' });
+    expect(await syncNow(cloud)).toEqual({ kind: 'not-connected' });
 
     // A failed upload leaves the bookkeeping alone so the next try repeats it.
-    drive.failMetaWith = null;
-    drive.failWriteWith = new Error('upload failed');
-    outcome = await syncNow(drive);
+    cloud.failMetaWith = null;
+    cloud.failWriteWith = new Error('upload failed');
+    outcome = await syncNow(cloud);
     expect(outcome.kind).toBe('error');
     expect((await getSettings()).syncLastPulledRevision).toBe(0);
     expect(await hasLocalChanges()).toBe(true);
   });
 
   it('a sync file that vanishes between head and body is an error, not a wipe', async () => {
-    const drive = new FakeDrive();
+    const cloud = new FakeCloud();
     await seedBook();
-    await syncNow(drive);
+    await syncNow(cloud);
     const before = await localDataTables();
-    deviceBPushes(drive, (t) => (t.transactions as unknown[]).push(txRow('theirs')));
+    deviceBPushes(cloud, (t) => (t.transactions as unknown[]).push(txRow('theirs')));
     const vanishing = {
-      ...drive,
+      ...cloud,
       isConnected: () => true,
       readRemoteMeta: async () => ({ revision: 2, savedAt: T0, deviceName: 'iMac' }),
       readRemote: async () => null,
@@ -2216,17 +2295,17 @@ describe('applyRemote', () => {
   });
 
   it('a failed apply inside syncNow reports an error and changes nothing', async () => {
-    const drive = new FakeDrive();
+    const cloud = new FakeCloud();
     await seedBook(3);
-    await syncNow(drive);
+    await syncNow(cloud);
     const before = await localDataTables();
 
     // A legitimate child of what we pushed — so the engine agrees to pull it —
     // whose rows are fatal: the same primary key twice.
-    deviceBPushes(drive, (t) => {
+    deviceBPushes(cloud, (t) => {
       t.transactions = [txRow('d'), txRow('d')];
     });
-    const outcome = await syncNow(drive);
+    const outcome = await syncNow(cloud);
 
     expect(outcome.kind).toBe('error');
     if (outcome.kind === 'error') expect(outcome.message).toMatch(/nothing on this device/i);
@@ -2312,7 +2391,7 @@ describe('localSnapshot', () => {
 // ===========================================================================
 describe('two devices alternating cleanly', () => {
   it('never conflicts, and every revision is exactly one more than the last', async () => {
-    const drive = new FakeDrive();
+    const cloud = new FakeCloud();
     await seedBook(2);
 
     const revisions: number[] = [];
@@ -2321,36 +2400,36 @@ describe('two devices alternating cleanly', () => {
       if (o.kind === 'pushed' || o.kind === 'pulled') revisions.push(o.revision);
     };
 
-    record(await syncNow(drive)); // A pushes 1
-    deviceBPushes(drive, (t) => (t.transactions as unknown[]).push(txRow('b-1')));
-    record(await syncNow(drive)); // A pulls 2
+    record(await syncNow(cloud)); // A pushes 1
+    deviceBPushes(cloud, (t) => (t.transactions as unknown[]).push(txRow('b-1')));
+    record(await syncNow(cloud)); // A pulls 2
     await db.transactions.add(txRow('a-1'));
     await flushLocalRevision();
-    record(await syncNow(drive)); // A pushes 3
-    deviceBPushes(drive, (t) => (t.transactions as unknown[]).push(txRow('b-2')));
-    record(await syncNow(drive)); // A pulls 4
+    record(await syncNow(cloud)); // A pushes 3
+    deviceBPushes(cloud, (t) => (t.transactions as unknown[]).push(txRow('b-2')));
+    record(await syncNow(cloud)); // A pulls 4
     await db.transactions.delete('tx-0');
     await flushLocalRevision();
-    record(await syncNow(drive)); // A pushes 5
-    record(await syncNow(drive)); // up-to-date
+    record(await syncNow(cloud)); // A pushes 5
+    record(await syncNow(cloud)); // up-to-date
 
     expect(revisions).toEqual([1, 2, 3, 4, 5]);
-    expect(snapshotDataTables(drive.file)).toEqual(await localDataTables());
+    expect(snapshotDataTables(cloud.file)).toEqual(await localDataTables());
     const ids = (await db.transactions.toArray()).map((t) => t.id).sort();
     expect(ids).toEqual(['a-1', 'b-1', 'b-2', 'tx-1']);
     expect(savedBackups).toHaveLength(0); // nothing ever lost a fight
   });
 
   it('reports a truthful state for the UI', async () => {
-    const drive = new FakeDrive();
+    const cloud = new FakeCloud();
     await seedBook(2);
-    let state = await getSyncState(drive);
+    let state = await getSyncState(cloud);
     expect(state.connected).toBe(true);
     expect(state.lastSyncedAt).toBeNull();
     expect(state.hasLocalChanges).toBe(true);
 
-    await syncNow(drive);
-    state = await getSyncState(drive);
+    await syncNow(cloud);
+    state = await getSyncState(cloud);
     expect(state.lastPulledRevision).toBe(1);
     expect(state.remoteRevision).toBe(1);
     expect(state.hasLocalChanges).toBe(false);
@@ -2358,7 +2437,7 @@ describe('two devices alternating cleanly', () => {
 
     await db.transactions.add(txRow('later'));
     await flushLocalRevision();
-    expect((await getSyncState(drive)).hasLocalChanges).toBe(true);
+    expect((await getSyncState(cloud)).hasLocalChanges).toBe(true);
   });
 });
 
@@ -2380,7 +2459,7 @@ function mulberry32(seed: number): () => number {
 describe('property: the two sides never silently diverge', () => {
   it('holds over a randomised sequence of edits, remote writes and syncs', async () => {
     const rng = mulberry32(20260827);
-    const drive = new FakeDrive();
+    const cloud = new FakeCloud();
     await seedBook(2); // real data, never pushed ⇒ genuinely dirty
 
     const everCreated = new Set<string>(['tx-0', 'tx-1']);
@@ -2408,28 +2487,28 @@ describe('property: the two sides never silently diverge', () => {
       } else if (roll < 0.5) {
         // ---- the other device, which always syncs cleanly, pushes
         const id = `b-${counter++}`;
-        deviceBPushes(drive, (t) => {
+        deviceBPushes(cloud, (t) => {
           (t.transactions as unknown[]).push(txRow(id, -(1 + counter)));
         });
         everCreated.add(id);
       } else {
         // ---- a sync
         const localBefore = await localDataTables();
-        const remoteBefore = clone(drive.file);
+        const remoteBefore = clone(cloud.file);
         const dirtyBefore = await (async () => {
           await flushLocalRevision();
           return hasLocalChanges();
         })();
-        const remoteRevBefore = drive.file?.revision ?? 0;
+        const remoteRevBefore = cloud.file?.revision ?? 0;
         const backupsAtStepStart = savedBackups.length;
 
-        let outcome = await syncNow(drive);
+        let outcome = await syncNow(cloud);
 
         if (outcome.kind === 'conflict') {
           conflicts++;
           // A conflict must change absolutely nothing.
           expect(await localDataTables()).toEqual(localBefore);
-          expect(drive.file).toEqual(remoteBefore);
+          expect(cloud.file).toEqual(remoteBefore);
           expect(outcome.local.counts.transactions).toBe(
             (localBefore.transactions as unknown[]).length,
           );
@@ -2439,7 +2518,7 @@ describe('property: the two sides never silently diverge', () => {
           // Now answer it, the way a user would.
           const resolve = rng() < 0.5 ? 'keep-local' : 'keep-remote';
           const backupsBefore = savedBackups.length;
-          outcome = await syncNow(drive, { resolve });
+          outcome = await syncNow(cloud, { resolve });
           // Whatever happened, the loser was written out first.
           expect(savedBackups.length).toBe(backupsBefore + 1);
           expect(savedBackups.at(-1)!.name).toContain(
@@ -2450,13 +2529,13 @@ describe('property: the two sides never silently diverge', () => {
         switch (outcome.kind) {
           case 'up-to-date':
             // THE INVARIANT: "nothing to do" must mean the two sides agree.
-            expect(snapshotDataTables(drive.file)).toEqual(await localDataTables());
-            expect(drive.file).toEqual(remoteBefore);
+            expect(snapshotDataTables(cloud.file)).toEqual(await localDataTables());
+            expect(cloud.file).toEqual(remoteBefore);
             break;
           case 'pushed':
             pushes++;
             expect(outcome.revision).toBeGreaterThan(remoteRevBefore);
-            expect(snapshotDataTables(drive.file)).toEqual(await localDataTables());
+            expect(snapshotDataTables(cloud.file)).toEqual(await localDataTables());
             expect(await hasLocalChanges()).toBe(false);
             break;
           case 'pulled':
@@ -2464,7 +2543,7 @@ describe('property: the two sides never silently diverge', () => {
             // A pull may only ever run over a device with nothing to lose —
             // unless the user explicitly chose to discard, in which case the
             // discarded side is in a safety file (asserted above).
-            expect(snapshotDataTables(drive.file)).toEqual(await localDataTables());
+            expect(snapshotDataTables(cloud.file)).toEqual(await localDataTables());
             expect(await hasLocalChanges()).toBe(false);
             break;
           default:
@@ -2482,7 +2561,7 @@ describe('property: the two sides never silently diverge', () => {
       // ---- after EVERY step: no transaction has ever simply vanished.
       const localIds = new Set((await db.transactions.toArray()).map((t) => t.id));
       const remoteIds = new Set(
-        ((drive.file?.tables.transactions ?? []) as { id: string }[]).map((t) => t.id),
+        ((cloud.file?.tables.transactions ?? []) as { id: string }[]).map((t) => t.id),
       );
       for (const id of everCreated) {
         const safe = localIds.has(id) || remoteIds.has(id) || rescued.has(id);
@@ -2498,7 +2577,7 @@ describe('property: the two sides never silently diverge', () => {
 });
 
 // ===========================================================================
-// The same property, run against a Drive that a rule-breaking writer keeps
+// The same property, run against a remote that a rule-breaking writer keeps
 // interfering with — the case the first property test structurally cannot
 // reach, because its only other device always writes off the CURRENT file.
 // ===========================================================================
@@ -2506,7 +2585,7 @@ describe('property: the two sides never silently diverge', () => {
 describe('property: ancestry holds even when someone writes off a stale head', () => {
   it('never fast-forwards over a remote that does not descend from this device', async () => {
     const rng = mulberry32(20260828);
-    const drive = new FakeDrive();
+    const cloud = new FakeCloud();
     await seedBook(2);
 
     const everCreated = new Set<string>(['tx-0', 'tx-1']);
@@ -2520,7 +2599,7 @@ describe('property: ancestry holds even when someone writes off a stale head', (
     // What a device with the persisted field will hold; threaded by hand until
     // it exists (see SyncOptions.lastPulledSnapshotId).
     let pulledSnapshotId: string | null = null;
-    /** Snapshots that HAVE been in Drive — the stale writer picks from these. */
+    /** Snapshots that HAVE been the head — the stale writer picks from these. */
     const history: SyncSnapshot[] = [];
     let counter = 0;
     let conflicts = 0;
@@ -2528,7 +2607,7 @@ describe('property: ancestry holds even when someone writes off a stale head', (
     let staleWrites = 0;
 
     const remember = () => {
-      if (drive.file) history.push(clone(drive.file));
+      if (cloud.file) history.push(clone(cloud.file));
     };
 
     for (let step = 0; step < 120; step++) {
@@ -2541,7 +2620,7 @@ describe('property: ancestry holds even when someone writes off a stale head', (
         if (rng() < 0.5) await flushLocalRevision();
       } else if (roll < 0.45) {
         const id = `b-${counter++}`;
-        deviceBPushes(drive, (t) => (t.transactions as unknown[]).push(txRow(id, -(1 + counter))));
+        deviceBPushes(cloud, (t) => (t.transactions as unknown[]).push(txRow(id, -(1 + counter))));
         everCreated.add(id);
         remember();
       } else if (roll < 0.55 && history.length > 0) {
@@ -2551,7 +2630,7 @@ describe('property: ancestry holds even when someone writes off a stale head', (
         // breaks the chain, which is exactly what must not go unnoticed.
         const stale = history[Math.floor(rng() * history.length)]!;
         const id = `c-${counter++}`;
-        staleWriterPushes(drive, stale, (t) =>
+        staleWriterPushes(cloud, stale, (t) =>
           (t.transactions as unknown[]).push(txRow(id, -(1 + counter))),
         );
         everCreated.add(id);
@@ -2559,7 +2638,7 @@ describe('property: ancestry holds even when someone writes off a stale head', (
         remember();
       } else {
         const localBefore = await localDataTables();
-        const remoteBefore = clone(drive.file);
+        const remoteBefore = clone(cloud.file);
         const heldBefore = pulledSnapshotId;
         const dirtyBefore = await (async () => {
           await flushLocalRevision();
@@ -2567,14 +2646,14 @@ describe('property: ancestry holds even when someone writes off a stale head', (
         })();
         const backupsAtStepStart = savedBackups.length;
 
-        let outcome = await syncNow(drive, { lastPulledSnapshotId: pulledSnapshotId });
+        let outcome = await syncNow(cloud, { lastPulledSnapshotId: pulledSnapshotId });
 
         if (outcome.kind === 'conflict') {
           conflicts++;
           expect(await localDataTables()).toEqual(localBefore);
-          expect(drive.file).toEqual(remoteBefore);
+          expect(cloud.file).toEqual(remoteBefore);
           const resolve = rng() < 0.5 ? 'keep-local' : 'keep-remote';
-          outcome = await syncNow(drive, { resolve, lastPulledSnapshotId: pulledSnapshotId });
+          outcome = await syncNow(cloud, { resolve, lastPulledSnapshotId: pulledSnapshotId });
           expect(savedBackups.length).toBeGreaterThan(backupsAtStepStart);
         }
 
@@ -2583,16 +2662,16 @@ describe('property: ancestry holds even when someone writes off a stale head', (
             // "Nothing to do" must mean the two sides really are the same
             // book — the claim that used to be made on the strength of a
             // matching revision number over completely different data.
-            expect(snapshotDataTables(drive.file)).toEqual(await localDataTables());
-            expect(drive.file?.snapshotId).toBe(pulledSnapshotId);
+            expect(snapshotDataTables(cloud.file)).toEqual(await localDataTables());
+            expect(cloud.file?.snapshotId).toBe(pulledSnapshotId);
             break;
           case 'pushed':
-            expect(snapshotDataTables(drive.file)).toEqual(await localDataTables());
+            expect(snapshotDataTables(cloud.file)).toEqual(await localDataTables());
             expect(await hasLocalChanges()).toBe(false);
             break;
           case 'pulled':
             pulls++;
-            expect(snapshotDataTables(drive.file)).toEqual(await localDataTables());
+            expect(snapshotDataTables(cloud.file)).toEqual(await localDataTables());
             // A pull nobody was asked about is only ever a TRUE fast-forward:
             // this device had nothing unsent, and what it applied grew
             // directly out of what it already had.
@@ -2611,7 +2690,7 @@ describe('property: ancestry holds even when someone writes off a stale head', (
           case 'error':
             // Only ever a refusal that changed nothing.
             expect(await localDataTables()).toEqual(localBefore);
-            expect(drive.file).toEqual(remoteBefore);
+            expect(cloud.file).toEqual(remoteBefore);
             break;
           default:
             throw new Error(`unexpected outcome ${outcome.kind}`);
@@ -2625,7 +2704,7 @@ describe('property: ancestry holds even when someone writes off a stale head', (
 
       const localIds = new Set((await db.transactions.toArray()).map((t) => t.id));
       const remoteIds = new Set(
-        ((drive.file?.tables.transactions ?? []) as { id: string }[]).map((t) => t.id),
+        ((cloud.file?.tables.transactions ?? []) as { id: string }[]).map((t) => t.id),
       );
       for (const id of everCreated) {
         const safe = localIds.has(id) || remoteIds.has(id) || rescued.has(id);
@@ -2646,18 +2725,251 @@ describe('an answer to one question is not an answer to another', () => {
   // keep-local branch would overwrite a remote the user was never shown, and
   // without the safety copy that branch is built around.
   it('reseed-remote does not resolve a conflict', async () => {
-    const drive = new FakeDrive();
+    const cloud = new FakeCloud();
     await seedBook(3);
-    await syncNow(drive); // revision 1
-    deviceBPushes(drive, (t) => (t.transactions as unknown[]).push(txRow('b-1')));
+    await syncNow(cloud); // revision 1
+    deviceBPushes(cloud, (t) => (t.transactions as unknown[]).push(txRow('b-1')));
     await db.transactions.add(txRow('a-1'));
     await flushLocalRevision();
-    const remoteBefore = clone(drive.file);
+    const remoteBefore = clone(cloud.file);
 
-    const outcome = await syncNow(drive, { resolve: 'reseed-remote' });
+    const outcome = await syncNow(cloud, { resolve: 'reseed-remote' });
 
     expect(outcome.kind).toBe('conflict');
-    expect(drive.file).toEqual(remoteBefore);
+    expect(cloud.file).toEqual(remoteBefore);
     expect(savedBackups).toHaveLength(0);
+  });
+});
+
+// ===========================================================================
+// D1–D4 — the four defects the Drive design left open, closed by the
+// separation rather than by four more guards (D45)
+// ===========================================================================
+//
+// src/sync/held.ts is the record of why sync was stopped: three rounds of
+// review, each fix opening the next hole, all of it downstream of TWO FIELDS
+// EACH DOING TWO JOBS. On Dropbox the two jobs separate — `rev` is the
+// transport's compare-and-swap token, `snapshotId`/`parentSnapshotId`/
+// `ancestry` are causal identity inside the body — and these four tests pin
+// the consequences.
+//
+// Each one was written to FAIL against the previous engine. The exact failures
+// are recorded in the commit message for this change.
+describe('D1–D4, closed', () => {
+  /**
+   * D1. keep-local used to declare `ctx.head.snapshotId` — the id the FILE
+   * REPORTED ABOUT ITSELF at the top of the sync — as the parent of the
+   * snapshot it then uploaded, and `localSnapshot` mints that same id into
+   * `ancestry`. Every other device reads an ancestry entry as proof of
+   * descent, so the resolution published a lineage claim about a snapshot
+   * nobody here had looked inside.
+   *
+   * The head read and the body download are two different moments. This test
+   * puts a third device's write in between them, which is the ordinary way
+   * they come apart, and asserts that what the push names is the body it
+   * actually replaced — the one it described and wrote to a safety file.
+   */
+  it('D1: keep-local names the body it replaced, never the id the head claimed', async () => {
+    const cloud = new FakeCloud();
+    await seedBook(3);
+    await syncNow(cloud); // S1, ours
+    const s1 = cloud.file!.snapshotId!;
+    deviceBPushes(cloud, (t) => (t.transactions as unknown[]).push(txRow('tx-imac-1')));
+    const s2 = cloud.file!.snapshotId!;
+    await db.transactions.add(txRow('tx-laptop-only', -777));
+    await flushLocalRevision();
+    expect((await syncNow(cloud)).kind).toBe('conflict');
+
+    // A THIRD write lands between the head read and the download, so the head
+    // says S2 and the bytes that arrive are S3.
+    cloud.afterNextMetaRead = () => {
+      deviceBPushes(cloud, (t) => (t.transactions as unknown[]).push(txRow('tx-imac-2')));
+    };
+
+    const outcome = await syncNow(cloud, { resolve: 'keep-local' });
+    const s3 = (cloud.file!.ancestry ?? [])[0];
+
+    expect(outcome.kind).toBe('pushed');
+    // The parent is the snapshot whose CONTENTS this device read, and the
+    // chain behind it is that body's own chain — one lineage, from one set of
+    // bytes. The old code named S2 here and produced the chain [S2, S2, S1],
+    // in which the snapshot it actually destroyed does not appear at all.
+    expect(cloud.file!.parentSnapshotId).toBe(s3);
+    expect(cloud.file!.ancestry).toEqual([s3, s2, s1]);
+    expect(cloud.file!.ancestry).not.toContain(undefined);
+
+    // …and the safety copy holds THAT body — the rows that were destroyed, not
+    // the rows the head claimed were there.
+    const [record] = await listRecoveryRecords();
+    expect(record!.reason).toBe('conflict-keep-local');
+    const kept = (await readRecoveryBackup(record!.id)).tables.transactions as { id: string }[];
+    expect(kept.map((t) => t.id)).toContain('tx-imac-2');
+  });
+
+  /**
+   * …AND THE ENGINE DOES NOT LEAN ON THE TRANSPORT TO CATCH IT.
+   *
+   * Dropbox's compare-and-swap refuses a write whose parent is no longer the
+   * head, so the test above ends in a refusal rather than a lie landing in the
+   * file — the defect is caught, just not by the code that committed it. That
+   * is not the standard here: the Drive transport had no such precondition,
+   * the next one might not either, and a lineage claim is something this
+   * engine publishes about ITSELF.
+   *
+   * So the same scenario, against a remote that accepts whatever it is given.
+   * What the pushed snapshot claims is then the engine's word alone.
+   */
+  it('D1: …and does not lean on the transport to catch it', async () => {
+    const cloud = new NoPreconditionCloud();
+    await seedBook(3);
+    await syncNow(cloud);
+    const s1 = cloud.file!.snapshotId!;
+    deviceBPushes(cloud, (t) => (t.transactions as unknown[]).push(txRow('tx-imac-1')));
+    const s2 = cloud.file!.snapshotId!;
+    await db.transactions.add(txRow('tx-laptop-only', -777));
+    await flushLocalRevision();
+    expect((await syncNow(cloud)).kind).toBe('conflict');
+
+    let s3 = '';
+    cloud.afterNextMetaRead = () => {
+      deviceBPushes(cloud, (t) => (t.transactions as unknown[]).push(txRow('tx-imac-2')));
+      s3 = cloud.file!.snapshotId!;
+    };
+
+    expect((await syncNow(cloud, { resolve: 'keep-local' })).kind).toBe('pushed');
+
+    // The chain published to every other device names the snapshot this
+    // resolution actually replaced. Naming the head's claim instead produced
+    // [S2, S2, S1]: the destroyed snapshot missing, an id duplicated, and a
+    // descent claim about bytes nobody here had read.
+    expect(cloud.file!.parentSnapshotId).toBe(s3);
+    expect(cloud.file!.ancestry).toEqual([s3, s2, s1]);
+  });
+
+  /**
+   * D2. `upToDate()` used to write a whole stamp — id, revision, savedAt,
+   * deviceId — straight off `readRemoteMeta`, for a device that had proved
+   * nothing about that head. It was reachable through the revision-number
+   * fallback: a clean device whose recorded NUMBER matched was told it agreed,
+   * and then recorded which file it supposedly agreed with.
+   *
+   * Both halves are gone. There is no fallback, so a device that cannot name
+   * what it descends from is asked; and agreeing writes nothing at all, so
+   * there is no id to adopt off a head read in the first place.
+   */
+  it('D2: agreeing with the head adopts nothing and writes nothing', async () => {
+    const cloud = new FakeCloud();
+    await seedBook(2);
+    await syncNow(cloud);
+    const before = await getSettings();
+
+    expect((await syncNow(cloud)).kind).toBe('up-to-date');
+    expect(await getSettings()).toEqual(before);
+
+    // And the door it came through is shut: a device with a matching revision
+    // number but no id of its own is asked, never told it agrees.
+    await updateSettings({ syncLastPulledSnapshotId: null });
+    const outcome = await syncNow(cloud);
+    expect(outcome.kind).toBe('conflict');
+    expect((await getSettings()).syncLastPulledSnapshotId).toBeNull();
+  });
+
+  /**
+   * D3. A keep-remote resolution could apply a body with no identity, leaving
+   * this device with `syncLastPulledSnapshotId: null` and a revision above
+   * zero — the fallback's home ground — from where its next push minted the
+   * same unprovable claim as D1.
+   *
+   * Identity is now required at three separate points, and this test names all
+   * three, because the guarantee must not rest on any one of them: the
+   * transport refuses such a body at the door, `validateSnapshot` refuses it
+   * before a row is written, and the decision table refuses to compare a head
+   * that has no identity against a device that has none either.
+   */
+  const namelessSnapshot = () =>
+    makeSnapshot(2, { transactions: [txRow('remote-1')] }, { snapshotId: undefined });
+
+  it('D3: a body with no identity fails validation', async () => {
+    const checked = validateSnapshot(namelessSnapshot());
+    expect(checked.ok).toBe(false);
+    if (!checked.ok) expect(checked.error).toMatch(/does not say which snapshot it is/i);
+  });
+
+  it('D3: …so it can never be applied over the book', async () => {
+    await seedBook(2);
+    const before = await localDataTables();
+    await expect(applyRemote(namelessSnapshot())).rejects.toThrow(/which snapshot it is/i);
+    expect(await localDataTables()).toEqual(before);
+    // The state D3 produced — a book applied, and no id to prove anything
+    // about it afterwards — is now unreachable.
+    expect((await getSettings()).syncLastPulledSnapshotId).toBeNull();
+  });
+
+  it('D3: …and a head with no identity is never compared against a device that has none', async () => {
+    // Two absences are equal, and equality reads as agreement. The real
+    // transport refuses such a head at the door; this stands in for one that
+    // forgot, because the guarantee must not rest on that.
+    //
+    // The device is CLEAN and has a history — the state in which "the head is
+    // the snapshot I descend from" is answered by comparing one null with
+    // another, and answered 'up to date' over a book it has never seen.
+    await seedBook(2);
+    await syncNow(new FakeCloud());
+    await updateSettings({ syncLastPulledSnapshotId: null });
+    const before = await localDataTables();
+    const nameless = namelessSnapshot();
+    const namelessHead: SyncTransport = {
+      isConnected: () => true,
+      connect: async () => {},
+      disconnect: async () => {},
+      readRemote: async () => clone(nameless),
+      writeRemote: async () => {
+        throw new Error('nothing may be written against a head with no identity');
+      },
+      readRemoteMeta: async () => ({
+        revision: 2,
+        savedAt: nameless.savedAt,
+        deviceName: nameless.deviceName,
+        snapshotId: null,
+        parentSnapshotId: null,
+      }),
+    };
+
+    const outcome = await syncNow(namelessHead);
+
+    expect(outcome.kind).toBe('error');
+    if (outcome.kind === 'error') {
+      expect(outcome.message).toMatch(/does not say which snapshot it is/i);
+    }
+    expect(await localDataTables()).toEqual(before);
+  });
+
+  /**
+   * D4. The fallback's pull passed `descendsFrom: null` — "do not check
+   * descent" — even for a device holding an id perfectly capable of being
+   * checked, so a clean device could be pulled onto a book that named nothing
+   * of its lineage.
+   *
+   * `AdoptionWarrant`'s `descendsFrom` is no longer nullable, so no branch can
+   * ask for a pull with the check switched off. A device that genuinely
+   * descends from nothing has to say so with the other warrant, in writing.
+   */
+  it('D4: a clean device is never pulled onto a book that does not name its lineage', async () => {
+    const cloud = new FakeCloud();
+    await seedBook(2);
+    await syncNow(cloud); // ours, revision 1
+    const ours = cloud.file!.snapshotId!;
+
+    // A file from somewhere else entirely, ahead of us on the numbers and
+    // naming no part of our lineage. Numbers are what the fallback compared.
+    cloud.file = makeSnapshot(5, { transactions: [txRow('stranger-1')] });
+
+    const outcome = await syncNow(cloud);
+
+    expect(outcome.kind).toBe('conflict');
+    expect(await db.transactions.get('stranger-1')).toBeUndefined();
+    expect(await db.transactions.count()).toBe(2);
+    expect((await getSettings()).syncLastPulledSnapshotId).toBe(ours);
+    expect(cloud.writes).toBe(1); // only the original push
   });
 });

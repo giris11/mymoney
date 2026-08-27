@@ -1,7 +1,7 @@
 // Onboarding step: get your data in (SPEC §4, D24) — four ways to begin.
 //
 // 'restore' matters more than it looks: backups are how data moves between
-// devices until Phase 3's optional Drive sync (SPEC §13), and after an
+// devices until Phase 3's optional Dropbox sync (SPEC §13), and after an
 // "Erase all data" the app returns HERE. Without this option a fresh install —
 // a new iPhone, or a restored laptop — would have to invent accounts it is
 // about to throw away just to reach Settings → Backup.

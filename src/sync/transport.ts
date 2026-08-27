@@ -1,130 +1,172 @@
-// Google Drive transport for sync (D42) — Drive v3 REST over fetch.
+// Dropbox transport for sync (D44) — Dropbox HTTP API v2 over fetch.
 //
-// The user's own Drive holds ONE file, `mymoney-sync.json`, created by this
-// app. Nothing else in Drive is visible to us: the grant is `drive.file`
-// (see src/sync/googleAuth.ts), which is per-file access to files this app
-// created. There is no server of ours anywhere in this path, no SDK, and no
-// new dependency — Drive v3 is a plain REST API and `fetch` is enough.
+// The user's own Dropbox holds ONE file, `/mymoney-sync.json`, inside the app
+// folder Dropbox creates for this app. Nothing else in their Dropbox is
+// visible to us: the app is registered as a SCOPED APP WITH APP FOLDER ACCESS
+// (see src/sync/dropboxAuth.ts), so every path below is relative to that
+// folder and the rest of their Dropbox may as well not exist. There is no
+// server of ours anywhere in this path, no SDK, and no new dependency — the
+// Dropbox API is plain HTTP and `fetch` is enough.
 //
-// THE RULE THIS FILE IS BUILT AROUND: never silently lose the remote.
-// A sync that stops and asks is a good sync; one that quietly loses a week of
-// spending is worthless (SPEC §2.6). Concretely, that means:
+// ===========================================================================
+// WHY THIS FILE REPLACED THE GOOGLE DRIVE ONE
+// ===========================================================================
 //
-//  1. WRITES ARE ONE ATOMIC REQUEST. Content and metadata travel together in a
-//     single `uploadType=multipart` call, so Drive either commits BOTH or
-//     neither. If the network dies mid-upload, Drive never completes the
-//     request: it discards the partial body, the existing file keeps its
-//     previous content AND its previous appProperties, and the local side sees
-//     a thrown SyncTransportError meaning "not pushed" — nothing to reconcile,
-//     just retry. The alternative (upload content, then patch appProperties)
-//     was rejected precisely because its failure window leaves the file's
-//     stated revision disagreeing with its contents, and every device would
-//     then reason from a lie.
-//  1a. A WRITE IS CONDITIONAL ON ITS PARENT, AND IS READ BACK. Drive has no
-//     If-Match for files.update, so the check is done here: immediately before
-//     the upload we re-read the head and refuse unless its snapshotId is still
-//     the `parentSnapshotId` this snapshot was built on, and immediately after
-//     we read it back and refuse to report success unless OUR snapshotId is
-//     what landed. Without this, two devices that both read revision N both
-//     PATCH revision N, the second silently erases the first, and both record
-//     agreement — the wipe this subsystem exists to prevent. The window being
-//     closed is long: a 3 MB export plus a 3 MB upload on a phone connection,
-//     and in the conflict path a save dialog that can sit open for minutes.
-//     A refused write costs one redundant sync; an unrefused one costs a book.
-//  1b. …AND THE PARENT'S ID IS NOT ENOUGH ON ITS OWN (C18). files.update
-//     MERGES appProperties: a key the writer omits KEEPS ITS OLD VALUE. A
-//     device on a build from before ancestry existed sends no snapshotId, so
-//     its upload leaves the PREVIOUS writer's id sitting on a file whose
-//     contents it has just replaced — and 1a's check, reading only that id,
-//     says "still the parent I was built on". Neither does the revision it
-//     also writes save us: the engine asks for head + 1, so our write is
-//     always strictly above, and that guard can only fire on a legacy writer
-//     that is AHEAD of us. So writeRemote also takes `expectHead` — the whole
-//     stamp the caller read (revision, savedAt, deviceId beside the id) — and
-//     refuses unless the head still matches all of it. Those are exactly the
-//     fields such a writer DOES write, which is the only reason they can
-//     testify that it wrote.
+// Drive sync accumulated twenty confirmed defects across four review rounds
+// and was held in code (src/sync/held.ts) rather than shipped. Two of the root
+// causes were properties of the DRIVE API, not of our logic, and no amount of
+// care in this file could have removed them:
+//
+//   RC1  DRIVE HAS NO CONDITIONAL WRITE. Two devices that both read revision N
+//        could both write revision N. The loser could not tell, and neither
+//        could anyone else. All we could do was read the file back afterwards
+//        and hope to notice — detection, after the bytes had already landed on
+//        top of somebody's book.
+//   RC2  DRIVE'S appProperties MERGE PER KEY. A device on an older build,
+//        writing no snapshot id, left the PREVIOUS device's identity stamped
+//        on a file whose contents were now its own. Our engine read that
+//        identity as proof of ancestry and said "up to date" over a stranger's
+//        book (C18), then found the same hole through a second door (C19).
+//
+// The design underneath both was one where TWO FIELDS EACH DID TWO
+// INCOMPATIBLE JOBS: `parentSnapshotId` was both the transport's
+// compare-and-swap token and a causal-descent claim other devices trust, and a
+// recorded stamp was both "what I last saw" and "what I have proved". That is
+// what kept regenerating defects (see the hold note in src/sync/held.ts).
+//
+// ON DROPBOX THOSE TWO JOBS SEPARATE CLEANLY, AND THIS FILE KEEPS THEM APART.
+// It is the entire point of the migration:
+//
+//   rev            THE COMPARE-AND-SWAP TOKEN. Opaque, issued by Dropbox,
+//                  changes on every write, and cannot be forged, merged or
+//                  guessed by any writer. It lives ONLY in this file: neither
+//                  the engine nor the snapshot body has any business with it.
+//                  `files/upload` takes it as `mode: update(<rev>)`, so the
+//                  precondition, the bytes and an integrity check are ONE
+//                  request that Dropbox either commits or rejects. RC1 becomes
+//                  PREVENTED rather than detected.
+//
+//   snapshotId /   CAUSAL IDENTITY. Lives INSIDE THE FILE BODY, which is
+//   parentSnapshotId/  replaced wholesale on every write. There is no per-key
+//   ancestry       metadata store to merge, so a writer cannot inherit another
+//                  writer's identity by omitting a field — it has no way to
+//                  leave the old value behind. RC2 becomes STRUCTURALLY
+//                  IMPOSSIBLE rather than guarded against.
+//
+// The join between them is the only interesting thing this file does. The
+// engine's precondition is causal ("replace the head only if it is still
+// snapshot P"); Dropbox's precondition is a rev. So the transport translates:
+// it uses a rev it has OBSERVED to belong to snapshot P — an observation it
+// can vouch for, because a rev names one exact file content and therefore one
+// exact snapshotId. If it holds no such observation it goes and looks. And if
+// the observation has since gone stale, IT DOES NOT MATTER: Dropbox rejects
+// the write, because the rev is the real precondition and the read was only
+// ever how we found it.
+//
+// ===========================================================================
+// WHAT WAS DELETED WITH DRIVE, AND MUST NOT COME BACK
+// ===========================================================================
+//
+//   fitProperty(), MAX_APP_PROPERTY_BYTES, MAX_SNAPSHOT_ID_BYTES — Drive
+//     capped one appProperties entry at 124 BYTES for key and value together,
+//     so a device named in Tamil could overflow it and kill sync outright. Our
+//     identity fields now travel in the JSON body with everything else. There
+//     is no byte budget, nothing to truncate, and truncating an identity was
+//     always the more dangerous half of that apparatus.
+//   THE PRE-WRITE HEAD RE-READ — Drive had no If-Match, so the only
+//     approximation of a compare-and-swap was to re-read the head as late as
+//     possible and hope the gap was small. The gap could not be closed. Now
+//     the rev in `mode: update` closes it exactly, and any read this file does
+//     before a write is an optimisation (a better error message, and the
+//     causal check the engine asks for) — never the safety mechanism. Bringing
+//     back a mandatory pre-write read would be re-adding a race.
+//   confirmLanded() — the post-write read-back. A Drive 200 said only that the
+//     bytes were accepted, so we re-read the file to see whether somebody had
+//     overwritten it in the meantime. Dropbox's upload RESPONSE is the
+//     confirmation: it carries the new `rev`, the `path_lower` (which proves
+//     nothing was renamed) and the `content_hash` (which proves the stored
+//     bytes are our bytes). One request, verified from its own answer.
+//   Dropbox's own equivalent of appProperties — "property groups", via
+//     files/properties/*. NOT USED, and `files.metadata.write` is deliberately
+//     not requested. Property groups are written in a SEPARATE call from the
+//     upload, so they can disagree with the file's contents. That is RC2 with
+//     a different logo.
+//
+// ===========================================================================
+// THE RULES THIS FILE IS STILL BUILT AROUND (unchanged; they were never the
+// problem)
+// ===========================================================================
+//
+//  1. NEVER SILENTLY LOSE THE REMOTE. A sync that stops and asks is a good
+//     sync; one that quietly loses a week of spending is worthless (SPEC §2.6).
 //  2. A FILE THAT EXISTS IS NEVER REPORTED AS ABSENT. readRemoteMeta() returns
-//     null ONLY when there is genuinely no sync file. If a file exists but its
-//     appProperties are missing or unusable, it falls back to reading the file
-//     and deriving the metadata from the snapshot itself. Returning null there
-//     would tell the engine "no remote yet", and the engine would push — over
-//     the top of a snapshot nobody had seen. A file in DRIVE'S BIN counts as
-//     existing: `files.list` hides trashed files, so the known file id is
-//     looked up directly and its `trashed` flag reported, because a device
-//     that answered "no file" there went on to start a second lineage at
-//     revision 1 while the first was one click from being restored.
-//  3. WE NEVER DELETE ANYTHING. disconnect() drops the local grant; the Drive
-//     file is left exactly where it is. There is no code path in this app that
-//     deletes the remote snapshot.
-//  4. MONEY IS MOVED, NEVER TOUCHED. The snapshot is serialised with
-//     JSON.stringify and parsed with JSON.parse. Amounts are integer minor
-//     units and stay integers; no rounding, no coercion, no re-interpretation
-//     happens anywhere in this file (SPEC §6).
+//     null ONLY when the file has never existed. A DELETED file is reported as
+//     existing-but-gone (`trashed: true`), because Dropbox keeps deleted files
+//     restorable and a device that answered "no file" there went on to start a
+//     second lineage at revision 1 (C13).
+//  3. WE NEVER DELETE ANYTHING. disconnect() drops this device's grant; the
+//     file stays exactly where it is. No code path in this app deletes it.
+//  4. MONEY IS MOVED, NEVER TOUCHED. JSON.stringify out, JSON.parse in.
+//     Amounts are integer minor units and stay integers; no rounding, no
+//     coercion, no re-interpretation happens anywhere in this file (SPEC §6).
 //  5. EVERY REQUEST IS BOUNDED END TO END, BODY INCLUDED. The abort timer is
 //     held until the response body has been read, not released when the
 //     headers arrive: a connection that delivers "200 OK" and then goes silent
 //     used to leave the read hanging for ever behind a spinner that never
-//     stopped and an error that never came.
+//     stopped and an error that never came (C10).
 //
-// COST: metadata checks run on every sync check and the owner's snapshot is
-// ~3 MB, so readRemoteMeta() reads the file's appProperties — a few hundred
-// bytes — and never the file body. Locked by test.
+// COST, AND HOW IT IS PAID. Drive kept a copy of the head's identity in
+// appProperties, so a sync check cost a few hundred bytes. Dropbox has no such
+// store — identity is in the body, which is the whole reason RC2 is gone — so
+// the cheap head read (files/get_metadata) returns the `rev` and the
+// `content_hash` and nothing else we can read. That is still enough to answer
+// the commonest question ("has anything changed?") for free, and the transport
+// remembers the identity it derived for a given rev. THAT CACHE CANNOT LIE:
+// a rev names one immutable file content, so an entry keyed by rev (and
+// re-checked against content_hash) describes that content or misses. Only a
+// rev this device has never seen costs a download — and a rev it has never
+// seen is one it is about to pull anyway.
 
-import type { SyncRemoteMeta, SyncSnapshot, SyncStamp, SyncTransport } from './types';
+import type { SyncRemoteMeta, SyncSnapshot, SyncTransport } from './types';
 import {
-  createGoogleTokenProvider,
+  createDropboxTokenProvider,
   isOffline,
   SyncTransportError,
   type TokenProvider,
-} from './googleAuth';
+} from './dropboxAuth';
 
-/** The one file this app keeps in the user's Drive. */
+/** The one file this app keeps, inside its own Dropbox app folder. */
 export const SYNC_FILE_NAME = 'mymoney-sync.json';
 
-export const DRIVE_API = 'https://www.googleapis.com/drive/v3';
-export const DRIVE_UPLOAD_API = 'https://www.googleapis.com/upload/drive/v3';
+/** Its path. App-folder-relative: this is the root as far as the app can see. */
+export const SYNC_FILE_PATH = `/${SYNC_FILE_NAME}`;
+
+export const DROPBOX_RPC = 'https://api.dropboxapi.com/2';
+export const DROPBOX_CONTENT = 'https://content.dropboxapi.com/2';
 
 /** Metadata calls are small; a hung one must never wedge the app. */
-export const DRIVE_TIMEOUT_MS = 20_000;
+export const DROPBOX_TIMEOUT_MS = 20_000;
 
 /** Uploads/downloads carry megabytes over a phone connection — be patient,
  *  but still bounded. */
-export const DRIVE_TRANSFER_TIMEOUT_MS = 120_000;
+export const DROPBOX_TRANSFER_TIMEOUT_MS = 120_000;
 
 /**
- * Google recommends resumable upload above ~5 MB. Below it, a single multipart
- * request is both simpler and strictly safer (see rule 1 above). The owner's
- * snapshot is ~3 MB today; if it ever crosses this line, writeRemote refuses
- * rather than pushing its luck on a phone connection — that is the "when in
- * doubt, refuse and ask" rule applied to our own upload.
+ * Dropbox's hard ceiling for a single `files/upload` request is 150 MB; above
+ * it an upload SESSION is required, which is a different protocol with a
+ * different failure surface. The owner's snapshot is ~3 MB, so this is never
+ * close — and if it ever were, refusing is the "when in doubt, refuse and ask"
+ * rule applied to our own upload.
  */
-export const MULTIPART_MAX_BYTES = 5 * 1024 * 1024;
+export const UPLOAD_MAX_BYTES = 150 * 1024 * 1024;
 
 /**
- * Drive's hard limit on one appProperties entry: 124 BYTES for key and value
- * together, in UTF-8. Bytes, not characters — "Girish's iPhone 📱" is 18
- * characters but 21 bytes, and a device named in Tamil or Sinhala runs to
- * three bytes a letter. Truncating by character count would sail past the
- * limit, Drive would reject the whole upload with a 400, and sync would be
- * dead for exactly the users with non-Latin device names. See fitProperty().
+ * The transport's memory of the head, kept across reloads. Holds NO financial
+ * data — a rev, a hash, and the identity fields a conflict dialog prints. See
+ * the COST note in the header for why it is sound: it is keyed by a rev, and a
+ * rev names one exact file content.
  */
-export const MAX_APP_PROPERTY_BYTES = 124;
-
-/**
- * The room a snapshot id has inside that budget, measured against the LONGEST
- * key it is stored under ('parentSnapshotId'). Ids are uid()s — 36 ASCII
- * characters — so this is never close, and it is checked rather than trimmed
- * on purpose: fitProperty() shortens a display label, which is harmless, but a
- * TRUNCATED IDENTITY is worse than no identity at all. Two half-ids can
- * collide, and a collision here reads as "the same snapshot" to every device.
- */
-export const MAX_SNAPSHOT_ID_BYTES = MAX_APP_PROPERTY_BYTES - 'parentSnapshotId'.length;
-
-/** Cached pointer to the Drive file. A hint, not a record: it holds no
- *  financial data and is rebuilt by searching Drive by name if it is wrong or
- *  missing, so losing it costs one extra request and nothing else. */
-export const FILE_ID_STORAGE_KEY = 'mymoney.sync.drive.fileId';
+export const HEAD_CACHE_STORAGE_KEY = 'mymoney.sync.dropbox.head';
 
 // ---------------------------------------------------------------------------
 // The contract
@@ -132,11 +174,138 @@ export const FILE_ID_STORAGE_KEY = 'mymoney.sync.drive.fileId';
 
 /**
  * Re-exported, not redeclared: the interface itself lives in ./types.ts so the
- * engine can depend on it without an import edge into this Google-specific
+ * engine can depend on it without an import edge into this provider-specific
  * module, while `import type { SyncTransport } from './transport'` still works
  * as pinned. One declaration, so the two halves cannot drift apart.
  */
 export type { SyncTransport } from './types';
+
+// ---------------------------------------------------------------------------
+// The Dropbox-API-Arg wire format — the part with a trap in it
+// ---------------------------------------------------------------------------
+
+/**
+ * How `files/upload` is told what to do with the bytes.
+ *
+ * ⚠️ `update` MUST be spelled `{".tag":"update","update":"<rev>"}` and NEVER
+ * `"update"`. Dropbox's union serialisation allows the bare-string shorthand
+ * ONLY for members that carry no value; `update` carries a rev, and the
+ * shorthand is rejected outright: "This shorthand is not allowed for non-Void
+ * members." A 400 is the good outcome. The bad outcome is the one this type
+ * exists to make impossible — somebody "fixing" that 400 by falling back to
+ * `overwrite`, which would reinstate RC1 exactly: an unconditional write that
+ * silently replaces whatever is there. `add` is a Void member, so `"add"`
+ * would be legal, but it is spelled the long way here too so that no reader
+ * has to remember which is which.
+ *
+ * Locked by test: tests/sync-transport.test.ts inspects the serialised header
+ * of a real write, not this type.
+ */
+export type DropboxWriteMode = { '.tag': 'add' } | { '.tag': 'update'; update: string };
+
+/** The exact CommitInfo this app sends. Every field is load-bearing. */
+export interface DropboxUploadArg {
+  path: string;
+  mode: DropboxWriteMode;
+  /**
+   * FALSE, ALWAYS. `autorename: true` turns a lost race into a 200 OK on a
+   * file called "mymoney-sync (1).json": the write "succeeds", the device
+   * records that Dropbox holds its book, and the book it actually holds is
+   * somebody else's. The response's path_lower is checked against what we
+   * asked for as well, so a server-side rename could not slip past unnoticed
+   * either.
+   */
+  autorename: false;
+  /** No push notification for a background housekeeping write. */
+  mute: true;
+  /**
+   * Dropbox's own words: be more strict about how each WriteMode detects
+   * conflict — for example, always return a conflict error when mode is
+   * `update` and the given rev does not match, EVEN IF THE EXISTING FILE HAS
+   * BEEN DELETED. Without it, a `update(rev)` against a deleted file can be
+   * treated as a create, which is precisely the "start a second lineage over a
+   * restorable file" failure (C13) arriving through the write path.
+   */
+  strict_conflict: true;
+  /**
+   * Dropbox verifies the stored bytes against this and rejects a mismatch, so
+   * a corrupted upload cannot land and be believed. Sent on EVERY write.
+   */
+  content_hash: string;
+}
+
+/**
+ * Build the CommitInfo. `rev === null` means "there is no file yet", which is
+ * `add` — with autorename false, so a race to seed the file FAILS rather than
+ * quietly creating a second one beside it.
+ */
+export function uploadArg(rev: string | null, contentHash: string): DropboxUploadArg {
+  return {
+    path: SYNC_FILE_PATH,
+    mode: rev === null ? { '.tag': 'add' } : { '.tag': 'update', update: rev },
+    autorename: false,
+    mute: true,
+    strict_conflict: true,
+    content_hash: contentHash,
+  };
+}
+
+/**
+ * Serialise an API arg for the `Dropbox-API-Arg` HTTP HEADER.
+ *
+ * Header values are bytes, not text: a raw non-ASCII character in one is at
+ * best mangled and at worst rejected by an intermediary, and the failure would
+ * be silent and intermittent. Dropbox documents the fix — escape everything
+ * above U+007F as \uXXXX, which JSON accepts and which is pure ASCII. Our args
+ * are ASCII by construction today (a fixed path, a rev, a hex hash), so this
+ * is belt and braces; it is here because "by construction today" is exactly
+ * the kind of assumption that stops being true quietly.
+ */
+export function serialiseApiArg(arg: unknown): string {
+  // Escapes everything outside printable ASCII, DEL included. Written with
+  // explicit \u escapes rather than the literal characters so that the range
+  // stays readable in a diff.
+  return JSON.stringify(arg).replace(
+    /[\u007f-\uffff]/g,
+    (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// content_hash
+// ---------------------------------------------------------------------------
+
+const HASH_BLOCK_BYTES = 4 * 1024 * 1024;
+
+/**
+ * Dropbox's content hash, exactly as they define it: split the file into 4 MiB
+ * blocks, SHA-256 each block, concatenate those digests in order, SHA-256 the
+ * concatenation, print it as lowercase hex. (An empty file therefore hashes
+ * the empty concatenation, which is SHA-256 of nothing — no special case.)
+ *
+ * It is computed here, sent with the upload, and compared against what Dropbox
+ * reports back. That is the difference between "Dropbox accepted 3 MB" and
+ * "Dropbox is holding the 3 MB we meant to send".
+ */
+export async function dropboxContentHash(bytes: Uint8Array<ArrayBuffer>): Promise<string> {
+  const subtle = globalThis.crypto?.subtle;
+  if (!subtle) {
+    throw new SyncTransportError(
+      'config',
+      'This browser cannot check the integrity of the sync file (it may not be a secure ' +
+        'context), so nothing was uploaded.',
+    );
+  }
+  const blocks: Uint8Array<ArrayBuffer>[] = [];
+  for (let offset = 0; offset < bytes.length; offset += HASH_BLOCK_BYTES) {
+    const slice = bytes.subarray(offset, Math.min(offset + HASH_BLOCK_BYTES, bytes.length));
+    blocks.push(new Uint8Array(await subtle.digest('SHA-256', slice)));
+  }
+  const joined = new Uint8Array(blocks.length * 32);
+  blocks.forEach((b, i) => joined.set(b, i * 32));
+  const digest = new Uint8Array(await subtle.digest('SHA-256', joined));
+  return [...digest].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
 
 // ---------------------------------------------------------------------------
 // Small helpers
@@ -150,51 +319,6 @@ function storage(): Storage | null {
   }
 }
 
-interface FileIdStore {
-  get(): string | null;
-  set(id: string | null): void;
-}
-
-const localFileIdStore: FileIdStore = {
-  get() {
-    try {
-      return storage()?.getItem(FILE_ID_STORAGE_KEY) ?? null;
-    } catch {
-      return null;
-    }
-  },
-  set(id) {
-    try {
-      const s = storage();
-      if (!s) return;
-      if (id) s.setItem(FILE_ID_STORAGE_KEY, id);
-      else s.removeItem(FILE_ID_STORAGE_KEY);
-    } catch {
-      /* the pointer is a cache; failing to persist it is harmless */
-    }
-  },
-};
-
-/**
- * Fit one appProperties value inside Drive's per-entry byte budget, trimming
- * whole CODE POINTS so an emoji or a combining pair is dropped intact rather
- * than sliced in half into a lone surrogate.
- *
- * This only ever shortens the label carried in the cheap metadata read; the
- * snapshot itself keeps the full value, so nothing about the user's data is
- * lost — only the preview string a conflict dialog shows before the full file
- * is fetched.
- */
-export function fitProperty(key: string, value: string): string {
-  const encoder = new TextEncoder();
-  const budget = MAX_APP_PROPERTY_BYTES - encoder.encode(key).length;
-  if (budget <= 0) return '';
-  if (encoder.encode(value).length <= budget) return value;
-  const points = Array.from(value);
-  while (points.length > 0 && encoder.encode(points.join('')).length > budget) points.pop();
-  return points.join('');
-}
-
 function isAbort(e: unknown): boolean {
   return (
     typeof e === 'object' &&
@@ -205,97 +329,156 @@ function isAbort(e: unknown): boolean {
 }
 
 /**
- * One Drive response, with its body ALREADY READ — see driveRequest. Callers
- * never touch a live stream, which is what keeps every read inside the
- * request's timeout.
+ * One Dropbox response, with its body ALREADY READ — see dropboxRequest.
+ * Callers never touch a live stream, which is what keeps every read inside the
+ * request's timeout (rule 5).
  */
-interface DriveResponse {
+interface DropboxResponse {
   status: number;
   ok: boolean;
   /** The complete body, read while the abort timer was still armed. */
   text: string;
+  /** `Dropbox-API-Result` on a content endpoint: the file's metadata. */
+  apiResult: string | null;
+  retryAfterSeconds: number | null;
 }
 
-/** JSON from a body we have in hand, as a typed error rather than a raw throw. */
-function parseJson<T>(res: DriveResponse, what: string): T {
+function parseJson<T>(res: DropboxResponse, what: string): T {
   try {
     return JSON.parse(res.text) as T;
   } catch {
     throw new SyncTransportError(
       'remote',
-      `Google Drive's answer when asked to ${what} was not readable. Nothing was changed.`,
+      `Dropbox's answer when asked to ${what} was not readable. Nothing was changed.`,
     );
   }
 }
 
 /**
- * Turn a non-OK Drive response into a typed error with a message a person can
- * act on. Drive answers `{"error":{"code":403,"errors":[{"reason":"…"}],
- * "message":"…"}}`; a body we cannot parse must not stop us reporting the
- * status.
+ * Every `.tag` anywhere inside a Dropbox error body, plus the slash-separated
+ * words of `error_summary`.
+ *
+ * Dropbox nests its errors ({"error":{".tag":"path","reason":{".tag":
+ * "conflict","conflict":{".tag":"file"}}}}) and the exact depth differs per
+ * endpoint and has changed over time. Matching on a FLAT SET of tags is
+ * deliberately shallow-minded: it cannot be broken by a new wrapper level, and
+ * every question this file asks ("was that a conflict?", "is the account
+ * full?") is a question about whether a tag is present at all.
+ *
+ * `error_summary` is included because Dropbox documents it as debug-only, so
+ * it is used as CORROBORATION, never as the sole source — the structured tags
+ * come first and the summary only adds words the structure already implied.
  */
-function errorFromResponse(res: DriveResponse, what: string): SyncTransportError {
-  let detail = '';
-  let reasons: string[] = [];
-  if (res.text) {
-    try {
-      const body = JSON.parse(res.text) as {
-        error?: { message?: string; errors?: { reason?: string }[] };
-      };
-      detail = body.error?.message ?? res.text.slice(0, 200);
-      reasons = (body.error?.errors ?? [])
-        .map((e) => (typeof e?.reason === 'string' ? e.reason : ''))
-        .filter((r) => r !== '');
-    } catch {
-      detail = res.text.slice(0, 200);
+export function errorTags(body: string): Set<string> {
+  const tags = new Set<string>();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body) as unknown;
+  } catch {
+    return tags;
+  }
+  const walk = (node: unknown, depth: number): void => {
+    if (depth > 8 || typeof node !== 'object' || node === null) return;
+    for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+      if (key === '.tag' && typeof value === 'string') tags.add(value);
+      else walk(value, depth + 1);
+    }
+  };
+  walk(parsed, 0);
+  const summary = (parsed as { error_summary?: unknown }).error_summary;
+  if (typeof summary === 'string') {
+    for (const word of summary.split(/[/.]/)) {
+      if (word !== '') tags.add(word);
     }
   }
+  return tags;
+}
+
+/**
+ * Turn a non-OK Dropbox response into a typed error with a message a person
+ * can act on.
+ *
+ * The distinction that matters most here is PERMANENT versus TRANSIENT. A full
+ * Dropbox will not clear on its own, no amount of waiting helps, and only the
+ * owner can fix it; reporting it as rate limiting told the owner of the Drive
+ * build to "try again shortly" for ever while every push failed and the
+ * off-site copy silently stopped advancing.
+ */
+function errorFromResponse(res: DropboxResponse, what: string): SyncTransportError {
+  const tags = errorTags(res.text);
+  const detail = res.text ? res.text.slice(0, 200) : '';
+
   if (res.status === 401) {
-    return new SyncTransportError('auth', 'Google sign-in has expired. Reconnect to sync.');
+    return new SyncTransportError('auth', 'Dropbox sign-in has expired. Reconnect to sync.');
   }
   if (res.status === 403) {
-    // Drive overloads 403 THREE ways: "you may not", "you asked too often",
-    // and "your Drive is full" — and the last two both say the word "quota".
-    //
-    // A FULL DRIVE IS PERMANENT. It will not clear on its own, no amount of
-    // waiting helps, and only the owner can fix it. Reporting it as rate
-    // limiting told them to "try again shortly" for ever while every push
-    // failed and the off-site copy silently stopped advancing. The reason code
-    // that tells the two apart is in the body Drive already sent; it used to
-    // be parsed and thrown away.
-    if (reasons.includes('storageQuotaExceeded') || /storage quota/i.test(detail)) {
+    return new SyncTransportError(
+      'auth',
+      `Dropbox refused the request (${detail || 'permission denied'}). Reconnect to sync.`,
+    );
+  }
+  if (res.status === 409) {
+    // PERMANENT, and only the owner can fix it.
+    if (tags.has('insufficient_space')) {
       return new SyncTransportError(
         'remote',
-        'Your Google Drive is full, so nothing could be saved to it. Nothing on this ' +
-          'device was changed. Free up space in Drive (emptying its bin often does it) ' +
-          'and sync again — until then this device is the only copy of your recent changes.',
+        'Your Dropbox is full, so nothing could be saved to it. Nothing on this device was ' +
+          'changed. Free up space in Dropbox and sync again — until then this device is the ' +
+          'only copy of your recent changes.',
       );
     }
-    // Telling someone to reconnect when they have merely hit a rate limit sends
-    // them round a consent loop that cannot help.
-    if (
-      reasons.some((r) => /rate|quota|limit|backend/i.test(r)) ||
-      /rate|quota|limit|backend/i.test(detail)
-    ) {
+    // THE COMPARE-AND-SWAP REFUSAL. This is the whole mechanism working: the
+    // file is no longer the revision this upload was built on, so Dropbox
+    // refused it rather than letting it land. Nothing was written.
+    if (tags.has('conflict')) {
       return new SyncTransportError(
-        'network',
-        'Google Drive is rate-limiting requests just now. Nothing was changed; try again shortly.',
+        'remote',
+        'Another device saved to Dropbox while this one was preparing its upload, so nothing ' +
+          'was uploaded — this snapshot was built on an older version of the file. Nothing on ' +
+          'this device was changed. Sync again to see what changed.',
+      );
+    }
+    if (tags.has('not_found')) {
+      return new SyncTransportError(
+        'remote',
+        'The sync file this upload was based on is no longer in Dropbox, so nothing was ' +
+          'uploaded and nothing on this device was changed.',
+      );
+    }
+    if (tags.has('no_write_permission') || tags.has('team_folder')) {
+      return new SyncTransportError(
+        'auth',
+        'Dropbox will not let this app write its sync file. Nothing was changed.',
       );
     }
     return new SyncTransportError(
-      'auth',
-      `Google Drive refused the request (${detail || 'permission denied'}). Reconnect to sync.`,
+      'remote',
+      `Dropbox refused to ${what} (${detail || 'no reason given'}). Nothing was changed.`,
     );
   }
   if (res.status === 429 || res.status >= 500) {
+    const wait = res.retryAfterSeconds;
     return new SyncTransportError(
       'network',
-      `Google Drive is busy right now (HTTP ${res.status}). Nothing was changed; try again shortly.`,
+      `Dropbox is busy right now (HTTP ${res.status}). Nothing was changed; try again` +
+        `${wait ? ` in about ${wait} seconds` : ' shortly'}.`,
+    );
+  }
+  if (res.status === 400) {
+    // Dropbox's 400 means WE sent something malformed — a bad Dropbox-API-Arg,
+    // most likely. It is our bug, not the user's, and it must be loud rather
+    // than swallowed as "try again": the one way to make it go away by
+    // "fixing" the request is to weaken the write mode, which is the failure
+    // this whole migration exists to end.
+    return new SyncTransportError(
+      'remote',
+      `Dropbox rejected this app's request as malformed, so nothing was uploaded and nothing ` +
+        `on this device was changed. This is a fault in the app, not in your data. (${detail})`,
     );
   }
   return new SyncTransportError(
     'remote',
-    `Google Drive couldn't ${what} (HTTP ${res.status}${detail ? `: ${detail}` : ''}).`,
+    `Dropbox couldn't ${what} (HTTP ${res.status}${detail ? `: ${detail}` : ''}).`,
   );
 }
 
@@ -311,13 +494,13 @@ export function parseSnapshot(text: string): SyncSnapshot {
   } catch {
     throw new SyncTransportError(
       'remote',
-      "The sync file in Google Drive isn't readable (it is not valid JSON). Nothing on this device was changed.",
+      "The sync file in Dropbox isn't readable (it is not valid JSON). Nothing on this device was changed.",
     );
   }
-  return vetSnapshot(json, 'The sync file in Google Drive');
+  return vetSnapshot(json, 'The sync file in Dropbox');
 }
 
-function vetSnapshot(json: unknown, subject: string, opts: { forWriting?: boolean } = {}): SyncSnapshot {
+function vetSnapshot(json: unknown, subject: string): SyncSnapshot {
   const bad = (why: string) =>
     new SyncTransportError('remote', `${subject} ${why}. Nothing on this device was changed.`);
 
@@ -338,29 +521,56 @@ function vetSnapshot(json: unknown, subject: string, opts: { forWriting?: boolea
   // refused rather than shown with blanks in it.
   for (const field of ['savedAt', 'deviceId', 'deviceName'] as const) {
     if (typeof o[field] !== 'string' || (o[field] as string) === '') {
-      throw bad(`does not say ${field === 'savedAt' ? 'when it was written' : 'which device wrote it'}`);
+      throw bad(
+        `does not say ${field === 'savedAt' ? 'when it was written' : 'which device wrote it'}`,
+      );
     }
   }
-  // Identity and ancestry. ASYMMETRIC ON PURPOSE: reading tolerates a file
-  // written before ancestry existed (refusing it would strand a working sync
-  // file, and the engine already treats "no identity" as "cannot use the
-  // ancestry table"), but WRITING one is refused outright — a snapshot with no
-  // id cannot be pointed at by its children, and cannot be checked when it is
-  // read back, so it would reopen the hole this whole mechanism closes.
+  // ---- IDENTITY IS NOW REQUIRED IN BOTH DIRECTIONS, AND THAT IS A CHANGE ---
+  //
+  // The Drive version was asymmetric on purpose: writing a snapshot with no id
+  // was refused, but READING one was tolerated, because a file written by a
+  // build from before ancestry existed was sitting in the owner's Drive and
+  // refusing it would have stranded a working sync file.
+  //
+  // ON DROPBOX THERE IS NO SUCH FILE AND THERE NEVER CAN BE. No build of this
+  // app has ever written to Dropbox — the app folder is created by this
+  // migration — and the pre-ancestry build cannot reach it even in principle:
+  // it holds a Google client id and talks to a different API. So the only
+  // things that could produce an identity-less body here are a hand edit, a
+  // third-party tool, or a future build of ours that regressed.
+  //
+  // TOLERATING IT WOULD BE ACTIVELY DANGEROUS, which is why the asymmetry goes
+  // rather than merely being unnecessary. syncEngine takes the ancestry branch
+  // only when the head reports an id; without one it falls through to the
+  // revision-NUMBER fallback, where a clean device whose recorded number
+  // happens to match reports 'up-to-date' — over a book it has never seen. On
+  // Drive that hole was closed by comparing the whole stamp (C18), which
+  // worked because Drive's merge left the id in place and the OTHER fields
+  // gave the writer away. Here there is no merge and no stamp to compare: the
+  // body simply has no id, so the engine never reaches the branch that would
+  // have questioned it.
+  //
+  // Refusing at the door restores "when in doubt, refuse and ask", and makes
+  // the unsound fallback table unreachable through this transport.
+  //
+  // NOTE also what is NOT checked here any more: the id's LENGTH IN BYTES.
+  // Drive capped one appProperties entry at 124 bytes for key and value
+  // together, so an id had to be measured before it could be stored. Identity
+  // now travels in the body with everything else and has no budget to fit in.
   const idField = (field: 'snapshotId' | 'parentSnapshotId', nullable: boolean) => {
     const v = o[field];
     if (v === undefined || (nullable && v === null)) return null;
     if (typeof v !== 'string' || v === '') throw bad(`has an unusable ${field}`);
-    if (new TextEncoder().encode(v).length > MAX_SNAPSHOT_ID_BYTES) {
-      throw bad(`has a ${field} too long to store safely`);
-    }
     return v;
   };
-  const snapshotId = idField('snapshotId', false);
-  idField('parentSnapshotId', true);
-  if (opts.forWriting && snapshotId === null) {
-    throw bad('has no snapshot id, so nothing could descend from it');
+  if (idField('snapshotId', false) === null) {
+    throw bad(
+      'carries no snapshot identity, so no device could tell what it descends from ' +
+        '(it was not written by this app)',
+    );
   }
+  idField('parentSnapshotId', true);
 
   if (typeof o.tables !== 'object' || o.tables === null || Array.isArray(o.tables)) {
     throw bad('has no data tables');
@@ -369,17 +579,6 @@ function vetSnapshot(json: unknown, subject: string, opts: { forWriting?: boolea
     if (!Array.isArray(rows)) throw bad(`has a damaged "${name}" table`);
   }
   return json as SyncSnapshot;
-}
-
-/**
- * An appProperties value read back as an id: absent, empty and non-string all
- * mean "no id". Empty string matters — it is how a null parent is stored,
- * because Drive's files.update MERGES appProperties (a key left out keeps its
- * previous value, which would let a stale parent survive a write) while a null
- * value DELETES the key. Storing '' and decoding it here covers both.
- */
-function idProperty(value: unknown): string | null {
-  return typeof value === 'string' && value !== '' ? value : null;
 }
 
 /** Rows across every table — used for the summary counts the UI shows. */
@@ -391,63 +590,134 @@ export function countRows(snap: SyncSnapshot): Record<string, number> {
   return counts;
 }
 
+/** Identity read out of a snapshot body: absent and empty both mean "none". */
+function idOf(value: unknown): string | null {
+  return typeof value === 'string' && value !== '' ? value : null;
+}
+
+/** The identity fields of a snapshot, in the shape the engine reads. */
+function metaOf(snap: SyncSnapshot): Omit<SyncRemoteMeta, 'rev' | 'trashed'> {
+  return {
+    revision: snap.revision,
+    savedAt: snap.savedAt,
+    deviceName: snap.deviceName,
+    deviceId: idOf(snap.deviceId),
+    snapshotId: idOf(snap.snapshotId),
+    parentSnapshotId: idOf(snap.parentSnapshotId),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// The head cache — a rev, and what this device knows that rev to be
+// ---------------------------------------------------------------------------
+
+/**
+ * One observation: "the file at rev R has content hash H, and its body says it
+ * is snapshot S descending from P".
+ *
+ * The reason this is sound, and the reason Drive's equivalent was not: a rev
+ * names one exact immutable file content. Two devices that observe the same
+ * rev necessarily observed the same bytes, so an entry can be shared, cached,
+ * persisted or handed between profiles without ever describing a file it did
+ * not come from. Drive's appProperties were a SEPARATE mutable store that
+ * could disagree with the bytes beside it — which is exactly what RC2 was.
+ *
+ * It is still only ever a cache: every entry is re-checked against the rev AND
+ * the content hash that a fresh files/get_metadata reports, and a miss simply
+ * costs a download.
+ */
+export interface HeadObservation {
+  rev: string;
+  contentHash: string;
+  meta: Omit<SyncRemoteMeta, 'rev' | 'trashed'>;
+}
+
+export interface HeadStore {
+  get(): HeadObservation | null;
+  set(value: HeadObservation | null): void;
+}
+
+const localHeadStore: HeadStore = {
+  get() {
+    try {
+      const raw = storage()?.getItem(HEAD_CACHE_STORAGE_KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw) as HeadObservation;
+      // A cache entry missing either key cannot be matched against anything,
+      // so it is not an entry.
+      if (typeof parsed?.rev !== 'string' || typeof parsed?.contentHash !== 'string') return null;
+      if (typeof parsed?.meta !== 'object' || parsed.meta === null) return null;
+      return parsed;
+    } catch {
+      return null;
+    }
+  },
+  set(value) {
+    try {
+      const s = storage();
+      if (!s) return;
+      if (value) s.setItem(HEAD_CACHE_STORAGE_KEY, JSON.stringify(value));
+      else s.removeItem(HEAD_CACHE_STORAGE_KEY);
+    } catch {
+      /* the cache is an optimisation; failing to persist it costs a download */
+    }
+  },
+};
+
 // ---------------------------------------------------------------------------
 // Transport
 // ---------------------------------------------------------------------------
 
-export interface DriveTransportOptions {
-  /** Identity source. Defaults to the real GIS-backed provider. */
+export interface DropboxTransportOptions {
+  /** Identity source. Defaults to the real PKCE-backed provider. */
   auth?: TokenProvider;
-  /** The user's own OAuth client id, when using the default provider. */
+  /** The Dropbox app key, when using the default provider. */
+  appKey?: () => string | Promise<string>;
+  /**
+   * @deprecated The Drive-era name, where the owner supplied their own OAuth
+   * client id. Passed through to the auth provider, which treats a non-empty
+   * value as an app key and ignores a blank one. Accepted only so the Settings
+   * screen keeps working unchanged across the provider swap.
+   */
   clientId?: () => string | Promise<string>;
-  /** Test seam for the cached Drive file id. */
-  fileIdStore?: FileIdStore;
+  /** Test seam for the head cache. */
+  headStore?: HeadStore;
 }
 
-interface FileRef {
-  id: string;
-  appProperties?: Record<string, string>;
-  /** The file is in Drive's bin. It still exists (rule 2). */
-  trashed?: boolean;
-}
+/** What files/get_metadata told us: a live file, a deleted one, or nothing. */
+type HeadState =
+  | { kind: 'file'; rev: string; contentHash: string | null }
+  | { kind: 'deleted' }
+  | { kind: 'absent' };
 
-export function createDriveTransport(opts: DriveTransportOptions = {}): SyncTransport {
+export function createDropboxTransport(opts: DropboxTransportOptions = {}): SyncTransport {
   const auth =
     opts.auth ??
-    createGoogleTokenProvider({
-      clientId:
-        opts.clientId ??
-        (() => {
-          throw new SyncTransportError(
-            'config',
-            'No Google client ID configured for sync. See docs/DRIVE-SETUP.md.',
-          );
-        }),
-    });
-  const fileIds = opts.fileIdStore ?? localFileIdStore;
+    createDropboxTokenProvider({ appKey: opts.appKey, clientId: opts.clientId });
+  const heads = opts.headStore ?? localHeadStore;
 
   /**
-   * One authorised Drive request, on a leash, with exactly one retry after a
-   * 401 (tokens last about an hour, so an expiry mid-session is normal, not an
-   * error to show anyone). `allowStatus` lets a caller handle an expected
-   * status — 404 for "the cached file id is stale" — instead of throwing.
+   * One authorised Dropbox request, on a leash, with exactly one retry after a
+   * 401 (access tokens are short-lived, so an expiry mid-session is normal,
+   * not an error to show anyone). `allowStatus` lets a caller handle an
+   * expected status — 409 for "no such path" — instead of throwing.
    */
-  async function driveRequest(
+  async function dropboxRequest(
     url: string,
     init: RequestInit,
-    o: { timeoutMs?: number; what: string; allowStatus?: number[]; retried?: boolean } = {
-      what: 'talk to Drive',
-    },
-  ): Promise<DriveResponse> {
+    o: { timeoutMs?: number; what: string; allowStatus?: number[]; retried?: boolean },
+  ): Promise<DropboxResponse> {
     if (isOffline()) {
       throw new SyncTransportError('offline', "You're offline, so nothing was synced.");
     }
     const token = await auth.getToken();
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), o.timeoutMs ?? DRIVE_TIMEOUT_MS);
+    const timer = setTimeout(() => controller.abort(), o.timeoutMs ?? DROPBOX_TIMEOUT_MS);
     let status: number;
     let ok: boolean;
     let text: string;
+    let apiResult: string | null = null;
+    let retryAfterSeconds: number | null = null;
     try {
       const res = await fetch(url, {
         ...init,
@@ -456,492 +726,391 @@ export function createDriveTransport(opts: DriveTransportOptions = {}): SyncTran
         // cookies, no referrer. The URL never carries personal data.
         credentials: 'omit',
         referrerPolicy: 'no-referrer',
-        headers: { ...(init.headers as Record<string, string> | undefined), authorization: `Bearer ${token}` },
+        headers: {
+          ...(init.headers as Record<string, string> | undefined),
+          authorization: `Bearer ${token}`,
+        },
       });
       status = res.status;
       ok = res.ok;
-      // THE BODY IS READ HERE, INSIDE THE LEASH. `fetch` resolves when the
-      // HEADERS arrive; the megabytes come afterwards. Releasing the timer at
-      // that point — which is what a `finally` around the fetch alone does —
-      // left every body read in this file unbounded and unabortable, so a
-      // connection that answered "200 OK" and then went silent (a phone
-      // leaving coverage, a captive portal) hung for ever: the promise never
-      // settled, the caller never returned, and the Sync screen sat on
-      // "Syncing…" with no error and no way out but a reload. Reading here
-      // costs one buffered string on paths that discard it (the largest is the
-      // ~3 MB snapshot we were going to parse anyway) and makes the timeout
-      // mean what its name says.
+      apiResult = res.headers?.get?.('dropbox-api-result') ?? null;
+      const retryAfter = res.headers?.get?.('retry-after') ?? null;
+      const seconds = Number(retryAfter);
+      retryAfterSeconds = Number.isFinite(seconds) && seconds > 0 ? seconds : null;
+      // THE BODY IS READ HERE, INSIDE THE LEASH (rule 5). `fetch` resolves
+      // when the HEADERS arrive; the megabytes come afterwards. Releasing the
+      // timer at that point left every body read unbounded and unabortable, so
+      // a connection that answered "200 OK" and then went silent hung for
+      // ever: the promise never settled and the Sync screen sat on "Syncing…"
+      // with no error and no way out but a reload.
       text = await res.text();
     } catch (e) {
       if (isAbort(e)) {
         throw new SyncTransportError(
           'timeout',
-          `Google Drive took too long to ${o.what}. Nothing was changed; try again.`,
+          `Dropbox took too long to ${o.what}. Nothing was changed; try again.`,
         );
       }
       if (isOffline()) {
         throw new SyncTransportError('offline', "You're offline, so nothing was synced.");
       }
-      throw new SyncTransportError(
-        'network',
-        `Couldn't reach Google Drive to ${o.what}. Nothing was changed.`,
-        { cause: e },
-      );
+      throw new SyncTransportError('network', `Couldn't reach Dropbox to ${o.what}.`, { cause: e });
     } finally {
       clearTimeout(timer);
     }
 
     if (status === 401 && !o.retried) {
-      // The token died mid-session. Drop it, get a fresh one, try once more.
+      // The access token died mid-session. Drop it, refresh, try once more.
       auth.invalidate();
-      return driveRequest(url, init, { ...o, retried: true });
+      return dropboxRequest(url, init, { ...o, retried: true });
     }
-    const res: DriveResponse = { status, ok, text };
+    const res: DropboxResponse = { status, ok, text, apiResult, retryAfterSeconds };
     if (ok || o.allowStatus?.includes(status)) return res;
     throw errorFromResponse(res, o.what);
   }
 
-  /**
-   * The file with this id, or null if there is no such file. A TRASHED file is
-   * returned, flagged — see rule 2 in the header: it exists, it is restorable,
-   * and calling it absent is what let a device start a second lineage.
-   */
-  async function fetchRefById(id: string): Promise<FileRef | null> {
-    const res = await driveRequest(
-      `${DRIVE_API}/files/${encodeURIComponent(id)}?fields=id,trashed,appProperties`,
-      { method: 'GET' },
-      { what: 'check the sync file', allowStatus: [404] },
-    );
-    if (res.status === 404) return null;
-    const body = parseJson<{ id?: string; trashed?: boolean; appProperties?: Record<string, string> }>(
-      res,
-      'check the sync file',
-    );
-    if (!body.id) return null;
-    return { id: body.id, appProperties: body.appProperties, trashed: Boolean(body.trashed) };
+  /** A Dropbox FileMetadata, in the fields this file reads. */
+  interface FileMetadata {
+    '.tag'?: string;
+    rev?: string;
+    size?: number;
+    path_lower?: string;
+    content_hash?: string;
+  }
+
+  function vetFileMetadata(m: FileMetadata, what: string): { rev: string; contentHash: string | null } {
+    if (typeof m.rev !== 'string' || m.rev === '') {
+      throw new SyncTransportError(
+        'remote',
+        `Dropbox did not say which version of the sync file this is, so this device can't ${what} safely. Nothing was changed.`,
+      );
+    }
+    return { rev: m.rev, contentHash: typeof m.content_hash === 'string' ? m.content_hash : null };
   }
 
   /**
-   * Find the sync file. `drive.file` means this search can only ever see files
-   * this app created, so there is no way for it to stumble onto the user's own
-   * documents.
+   * The cheap head read. Costs a few hundred bytes and never the file body.
    *
-   * If several files share the name (Drive allows duplicates, and a user can
-   * copy a file), the one with the HIGHEST revision wins, then the most
-   * recently modified. Picking by revision is the only tie-break that matches
-   * what the number means; the chosen id is then cached so the choice is
-   * stable across sessions.
+   * `include_deleted` is what makes rule 2 possible on Dropbox: without it, a
+   * deleted file and a file that never existed both come back as path/not_found
+   * and are indistinguishable. Dropbox keeps deleted files restorable, so
+   * telling the engine "there is no file" about one is how a device that had
+   * synced 47 times would start a second lineage at revision 1 (C13).
    */
-  async function searchForRef(): Promise<FileRef | null> {
-    const q = `name = '${SYNC_FILE_NAME}' and trashed = false`;
-    const url =
-      `${DRIVE_API}/files?q=${encodeURIComponent(q)}&spaces=drive&pageSize=20` +
-      `&orderBy=modifiedTime desc&fields=${encodeURIComponent('files(id,name,modifiedTime,appProperties)')}`;
-    const res = await driveRequest(url, { method: 'GET' }, { what: 'look for the sync file' });
-    const body = parseJson<{
-      files?: Array<{ id?: string; appProperties?: Record<string, string>; modifiedTime?: string }>;
-    }>(res, 'look for the sync file');
-    const files = (body.files ?? []).filter((f): f is { id: string; appProperties?: Record<string, string>; modifiedTime?: string } =>
-      typeof f.id === 'string' && f.id.length > 0,
+  async function readHead(): Promise<HeadState> {
+    const res = await dropboxRequest(
+      `${DROPBOX_RPC}/files/get_metadata`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ path: SYNC_FILE_PATH, include_deleted: true }),
+      },
+      { what: 'check the sync file', allowStatus: [409] },
     );
-    if (files.length === 0) return null;
-    // Already ordered newest-first by Drive; a real revision beats that.
-    let best = files[0]!;
-    let bestRevision = revisionOf(best.appProperties);
-    for (const f of files.slice(1)) {
-      const rev = revisionOf(f.appProperties);
-      if (rev > bestRevision) {
-        best = f;
-        bestRevision = rev;
+    if (res.status === 409) {
+      const tags = errorTags(res.text);
+      if (tags.has('not_found')) return { kind: 'absent' };
+      throw errorFromResponse(res, 'check the sync file');
+    }
+    const body = parseJson<FileMetadata>(res, 'check the sync file');
+    if (body['.tag'] === 'deleted') return { kind: 'deleted' };
+    if (body['.tag'] === 'folder') {
+      throw new SyncTransportError(
+        'remote',
+        'There is a FOLDER where the sync file should be in Dropbox, so nothing was read or ' +
+          'written. Move or rename it and sync again.',
+      );
+    }
+    const { rev, contentHash } = vetFileMetadata(body, 'read the sync file');
+    return { kind: 'file', rev, contentHash };
+  }
+
+  /**
+   * Download the file, verify it, and remember what rev it was.
+   *
+   * The integrity check is the one Dropbox offers and costs a hash of bytes we
+   * already hold: `Dropbox-API-Result` carries the file's own content_hash, so
+   * a truncated or mangled transfer is caught here rather than becoming a
+   * parse error the user cannot interpret — or, worse, valid JSON that is
+   * missing rows.
+   */
+  async function download(): Promise<{ snap: SyncSnapshot; observation: HeadObservation }> {
+    const res = await dropboxRequest(
+      `${DROPBOX_CONTENT}/files/download`,
+      {
+        method: 'POST',
+        headers: { 'dropbox-api-arg': serialiseApiArg({ path: SYNC_FILE_PATH }) },
+      },
+      { what: 'download the sync file', timeoutMs: DROPBOX_TRANSFER_TIMEOUT_MS },
+    );
+    let described: { rev: string; contentHash: string | null } | null = null;
+    if (res.apiResult) {
+      let parsed: FileMetadata;
+      try {
+        parsed = JSON.parse(res.apiResult) as FileMetadata;
+      } catch {
+        throw new SyncTransportError(
+          'remote',
+          "Dropbox's description of the sync file was not readable, so this device can't trust " +
+            'what it downloaded. Nothing on this device was changed.',
+        );
       }
+      described = vetFileMetadata(parsed, 'read the sync file');
     }
-    fileIds.set(best.id);
-    return { id: best.id, appProperties: best.appProperties };
-  }
-
-  function revisionOf(props: Record<string, string> | undefined): number {
-    const raw = Number(props?.revision);
-    return Number.isInteger(raw) && raw >= 0 ? raw : -1;
+    if (!described) {
+      throw new SyncTransportError(
+        'remote',
+        "Dropbox sent the sync file without saying which version it is, so this device can't " +
+          'trust it. Nothing on this device was changed.',
+      );
+    }
+    const bytes = new TextEncoder().encode(res.text);
+    const hash = await dropboxContentHash(bytes);
+    if (described.contentHash && described.contentHash !== hash) {
+      throw new SyncTransportError(
+        'remote',
+        'The sync file downloaded from Dropbox does not match the copy Dropbox is holding — ' +
+          'the transfer was damaged. Nothing on this device was changed; try again.',
+      );
+    }
+    const snap = parseSnapshot(res.text);
+    const observation: HeadObservation = {
+      rev: described.rev,
+      contentHash: described.contentHash ?? hash,
+      meta: metaOf(snap),
+    };
+    heads.set(observation);
+    return { snap, observation };
   }
 
   /**
-   * Which field of the stamp the head no longer agrees with, or null when it
-   * still matches in every respect. The NAME is returned rather than a
-   * boolean so the refusal can tell the owner what actually changed.
-   *
-   * A field the head does not report ABSTAINS instead of failing: damaged or
-   * hand-edited appProperties must not turn every push into a refusal, and a
-   * head missing these keys is one readRemoteMeta() would have read from the
-   * file body anyway. Abstention is safe here because it is never the only
-   * check — identity is compared exactly, above and here, and the fields that
-   * matter for C18 (revision, savedAt, deviceId) are precisely the ones a
-   * legacy writer DOES write. It is "no evidence", not "evidence of no".
+   * What this device knows about the file at `rev`: the cached observation if
+   * it is genuinely about that rev, otherwise a download.
    */
-  function headStampMismatch(
-    props: Record<string, string> | undefined,
-    expected: SyncStamp,
-  ): string | null {
-    if (idProperty(props?.snapshotId) !== expected.snapshotId) return 'identity';
-    const revision = revisionOf(props);
-    if (revision >= 0 && revision !== expected.revision) return 'version number';
-    const savedAt = props?.savedAt;
-    if (typeof savedAt === 'string' && savedAt !== '' && savedAt !== expected.savedAt) {
-      return 'save time';
+  async function observe(head: { rev: string; contentHash: string | null }): Promise<HeadObservation> {
+    const cached = heads.get();
+    if (
+      cached &&
+      cached.rev === head.rev &&
+      (head.contentHash === null || cached.contentHash === head.contentHash)
+    ) {
+      return cached;
     }
-    const deviceId = idProperty(props?.deviceId);
-    const expectedDeviceId = expected.deviceId ?? null;
-    if (deviceId !== null && expectedDeviceId !== null && deviceId !== expectedDeviceId) {
-      return 'writing device';
-    }
-    return null;
+    return (await download()).observation;
   }
 
-  /**
-   * The current sync file, or null when there genuinely is not one.
-   *
-   * The trashed case is the interesting one. `files.list` cannot see a file in
-   * the bin (its query says `trashed = false`, and Drive excludes them anyway),
-   * so a device whose known file was binned used to search, find nothing, and
-   * report "no sync file" — indistinguishable from a device that had never
-   * synced. The known id is therefore looked up DIRECTLY: if it comes back
-   * trashed we prefer a live file of the same name when the user has already
-   * made one, and otherwise return the trashed file, flagged, with the pointer
-   * left intact. Deliberately: that pointer is the only evidence left that the
-   * file exists at all.
-   */
-  async function findRef(): Promise<FileRef | null> {
-    const cached = fileIds.get();
-    if (cached) {
-      const ref = await fetchRefById(cached);
-      if (ref && !ref.trashed) return ref;
-      if (ref?.trashed) return (await searchForRef()) ?? ref;
-      fileIds.set(null); // stale pointer (the file was deleted) — search again
-    }
-    return searchForRef();
-  }
-
-  async function downloadSnapshot(id: string): Promise<SyncSnapshot> {
-    const res = await driveRequest(
-      `${DRIVE_API}/files/${encodeURIComponent(id)}?alt=media`,
-      { method: 'GET' },
-      { what: 'download the sync file', timeoutMs: DRIVE_TRANSFER_TIMEOUT_MS },
-    );
-    return parseSnapshot(res.text);
-  }
-
-  /**
-   * Build the single multipart/related body that carries metadata and content
-   * together. The boundary is random and verified absent from the payload — a
-   * boundary that appeared inside the JSON would truncate the upload, which is
-   * exactly the class of silent corruption this file refuses to allow.
-   */
-  function multipart(metadata: unknown, content: string): { body: string; contentType: string } {
-    const meta = JSON.stringify(metadata);
-    let boundary = '';
-    do {
-      boundary = `mymoney-${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
-      // The metadata carries the user's device name, so check it too — not just
-      // the snapshot body.
-    } while (content.includes(boundary) || meta.includes(boundary));
-    const body =
-      `--${boundary}\r\n` +
-      'Content-Type: application/json; charset=UTF-8\r\n\r\n' +
-      `${meta}\r\n` +
-      `--${boundary}\r\n` +
-      'Content-Type: application/json; charset=UTF-8\r\n\r\n' +
-      `${content}\r\n` +
-      `--${boundary}--`;
-    return { body, contentType: `multipart/related; boundary=${boundary}` };
-  }
-
-  /**
-   * Prove that the file in Drive is OUR write, and throw if it is not.
-   *
-   * A 200 from the upload only says Drive accepted the bytes; it says nothing
-   * about what happened a moment later. Another device's push can land between
-   * our PATCH and this read, and the one thing that must never follow is this
-   * device recording "Drive holds my book". It costs one small GET on the rare
-   * path (a push), and buys the difference between a redundant sync and a
-   * silent, unrecoverable overwrite.
-   *
-   * It fails CLOSED: an unreadable read-back is reported as a clobber. The
-   * caller then leaves the device dirty and pushes again next time, which is
-   * the harmless direction to be wrong in.
-   */
-  async function confirmLanded(id: string, snapshotId: string): Promise<void> {
-    const after = await fetchRefById(id);
-    if (after && !after.trashed && idProperty(after.appProperties?.snapshotId) === snapshotId) {
-      return;
-    }
-    throw new SyncTransportError(
-      'remote',
-      'Google Drive accepted the upload but the sync file no longer holds this ' +
-        "device's data — another device wrote at the same moment. Nothing on this device " +
-        'was changed, and it has NOT been recorded as backed up. Sync again to see what ' +
-        'the other device wrote.',
-    );
-  }
+  // `stampMismatch()` USED TO LIVE HERE, and its removal is the last of the
+  // Drive apparatus. It compared the head's whole stamp — snapshotId, then
+  // revision, savedAt and deviceId — and named which field had moved. On Drive
+  // it was the ONLY check that could see a legacy writer replacing the file's
+  // contents while our snapshotId merged through on top (C18).
+  //
+  // It went because it had become a SECOND identity check that no caller could
+  // reach. Its own note said it stayed "because syncEngine still passes
+  // `expectHead`"; D45 stopped passing it, leaving the branches dead behind an
+  // optional argument nothing supplied. Dropbox has no merge — the identity in
+  // the body is written by whoever wrote the body, so `snapshotId` answers the
+  // question on its own, and the rev in `mode: update` refuses the write
+  // regardless of what any read concluded. See the note where `SyncStamp` used
+  // to be declared in ./types.ts.
 
   return {
-    isConnected: () => auth.hasValidToken(),
+    isConnected: () => auth.isConnected(),
 
     connect: () => auth.connect(),
 
     async disconnect() {
-      // The Drive file stays exactly where it is. Disconnecting is about this
-      // device's access, never about destroying the user's data.
-      fileIds.set(null);
+      // The Dropbox file stays exactly where it is. Disconnecting is about
+      // this device's access, never about destroying the user's data (rule 3).
+      heads.set(null);
       await auth.disconnect();
     },
 
     async readRemote() {
-      const ref = await findRef();
-      if (!ref) return null;
-      return downloadSnapshot(ref.id);
+      const head = await readHead();
+      if (head.kind === 'absent') return null;
+      if (head.kind === 'deleted') {
+        throw new SyncTransportError(
+          'remote',
+          'The sync file has been deleted from Dropbox, so there was nothing to read. Restore ' +
+            'it from Dropbox’s deleted files and sync again.',
+        );
+      }
+      // No cache short-circuit here on purpose: readRemote's contract is the
+      // ROWS, and the head cache holds only identity. The cache earns its
+      // keep in readRemoteMeta, which is the call that runs on every sync
+      // check whether or not anything has changed.
+      return (await download()).snap;
     },
 
     async readRemoteMeta(): Promise<SyncRemoteMeta | null> {
-      const ref = await findRef();
-      if (!ref) return null; // genuinely no file — the only null this returns
-
-      // `trashed` is carried on every branch below: the engine must be able to
-      // tell "the file is in the bin" from "the file is fine", and it is not
-      // the transport's business which of them ends the sync.
-      const trashed = ref.trashed ? { trashed: true as const } : {};
-      const props = ref.appProperties;
-      const revision = Number(props?.revision);
-      const savedAt = props?.savedAt;
-      const deviceName = props?.deviceName;
-      if (
-        Number.isInteger(revision) &&
-        revision >= 0 &&
-        typeof savedAt === 'string' &&
-        savedAt !== '' &&
-        typeof deviceName === 'string'
-      ) {
+      const head = await readHead();
+      // The ONLY null this returns: the file has never existed (rule 2).
+      if (head.kind === 'absent') return null;
+      if (head.kind === 'deleted') {
+        // It EXISTS and is restorable, so it must never read as "no file yet".
+        // Dropbox's DeletedMetadata carries a path and nothing else — no rev,
+        // no size, no bytes — so the identity fields below are genuinely
+        // unknowable here rather than merely unread. The engine tests
+        // `trashed` before it looks at any of them and stops.
         return {
-          revision,
-          savedAt,
-          deviceName,
-          // Carried because the engine compares the WHOLE stamp, not just the
-          // identity: `snapshotId` survives a writer that omits it (Drive
-          // merges appProperties), while `deviceId` is written by every
-          // writer, including a build from before ancestry existed. See
-          // SyncStamp and Settings.syncLastPulledSavedAt.
-          deviceId: idProperty(props?.deviceId),
-          snapshotId: idProperty(props?.snapshotId),
-          parentSnapshotId: idProperty(props?.parentSnapshotId),
-          ...trashed,
+          revision: 0,
+          savedAt: '',
+          deviceName: '',
+          deviceId: null,
+          snapshotId: null,
+          parentSnapshotId: null,
+          trashed: true,
         };
       }
-
-      // The cheap path failed: the file exists but its appProperties are
-      // missing or damaged (hand-edited, or written by some other tool). Read
-      // the file and take the metadata from the snapshot itself. This is the
-      // slow path on purpose — reporting null here would tell the engine there
-      // is no remote, and the next push would flatten a snapshot nobody saw.
-      const snap = await downloadSnapshot(ref.id);
-      return {
-        revision: snap.revision,
-        savedAt: snap.savedAt,
-        deviceName: snap.deviceName,
-        deviceId: idProperty(snap.deviceId),
-        snapshotId: idProperty(snap.snapshotId),
-        parentSnapshotId: idProperty(snap.parentSnapshotId),
-        ...trashed,
-      };
+      const observation = await observe(head);
+      return { ...observation.meta, rev: observation.rev };
     },
 
-    async writeRemote(snap, expectHead) {
+    async writeRemote(snap) {
       // Vet our own payload before it leaves: a snapshot we would refuse to
       // read back is a snapshot we must not write. Stricter than the read
       // side — this one must carry an identity (see vetSnapshot).
-      vetSnapshot(snap, 'This snapshot', { forWriting: true });
-      const snapshotId = snap.snapshotId as string; // guaranteed by vetSnapshot
+      vetSnapshot(snap, 'This snapshot');
       const parentSnapshotId = snap.parentSnapshotId ?? null;
 
       const content = JSON.stringify(snap);
-      // Measured in BYTES, not string length: a payee name in Tamil is one
-      // JS character but three UTF-8 bytes, so counting characters would let a
+      // Measured in BYTES, not string length: a payee name in Tamil is one JS
+      // character but three UTF-8 bytes, so counting characters would let a
       // snapshot well over the limit through.
-      const bytes = new TextEncoder().encode(content).length;
-      if (bytes > MULTIPART_MAX_BYTES) {
+      const bytes = new TextEncoder().encode(content);
+      if (bytes.length > UPLOAD_MAX_BYTES) {
         throw new SyncTransportError(
           'remote',
-          `This snapshot is ${(bytes / 1024 / 1024).toFixed(1)} MB, too large for a single safe upload. Use a backup file to move it (Settings → Backup).`,
+          `This snapshot is ${(bytes.length / 1024 / 1024).toFixed(1)} MB, too large for a single safe upload. Use a backup file to move it (Settings → Backup).`,
         );
       }
+      const contentHash = await dropboxContentHash(bytes);
 
-      const metadata = {
-        name: SYNC_FILE_NAME,
-        mimeType: 'application/json',
-        // Read by readRemoteMeta() so a sync check costs a few hundred bytes
-        // instead of megabytes. Values must be strings.
-        appProperties: {
-          app: 'MyMoney',
-          revision: String(snap.revision),
-          savedAt: fitProperty('savedAt', String(snap.savedAt)),
-          deviceId: fitProperty('deviceId', String(snap.deviceId)),
-          deviceName: fitProperty('deviceName', String(snap.deviceName)),
-          schemaVersion: String(snap.schemaVersion),
-          // NOT passed through fitProperty: an id is compared, not displayed,
-          // and a trimmed one would quietly compare equal to somebody else's.
-          // vetSnapshot has already refused anything that would not fit.
-          snapshotId,
-          // '' rather than an omitted key, because Drive MERGES appProperties
-          // on update: leaving it out would keep the previous write's parent.
-          parentSnapshotId: parentSnapshotId ?? '',
-        },
-      };
-      const { body, contentType } = multipart(metadata, content);
+      // ---- THE PRECONDITION, in two clearly separate halves ---------------
+      //
+      // CAUSAL (the engine's): replace the head only if it is still the
+      // snapshot this book was built on. Answered from the file BODY, which no
+      // writer can inherit from another.
+      //
+      // TRANSPORT (Dropbox's): the file must still be at this exact rev when
+      // the bytes arrive. Answered by Dropbox, atomically, in the same request
+      // as the upload.
+      //
+      // The second is what makes the first safe to answer from an OBSERVATION
+      // rather than a fresh read. Drive had to re-read the head as late as
+      // possible and hope; here a stale observation simply produces a rev
+      // Dropbox rejects. That is why the pre-write head re-read is gone.
+      let rev: string | null = null;
 
-      // ONE request. Drive commits content and appProperties together or not
-      // at all, so a connection that drops mid-upload leaves the previous
-      // snapshot completely intact — not a truncated file, not a file whose
-      // stated revision lies about its contents.
-      const send = (url: string, method: 'POST' | 'PATCH') =>
-        driveRequest(
-          url,
-          { method, body, headers: { 'content-type': contentType } },
-          { what: 'save the sync file', timeoutMs: DRIVE_TRANSFER_TIMEOUT_MS, allowStatus: [404] },
-        );
-
-      // THE PRECONDITION. Read the head as late as possible — Drive has no
-      // If-Match for files.update, so this is the closest thing to a
-      // compare-and-swap available, and the comparison is against the snapshot
-      // this upload was actually built on. `findRef` already fetches
-      // appProperties, so the id we need costs nothing extra; the old code
-      // fetched exactly this and used only `existing.id`.
-      const head = await findRef();
-
-      if (head?.trashed) {
-        throw new SyncTransportError(
-          'remote',
-          "The sync file is in Google Drive's bin, so nothing was uploaded. Restore it in " +
-            'Drive, or empty the bin, and sync again.',
-        );
-      }
-
-      // The caller asserted there is NO file — the only state in which a
-      // create is safe. One appeared between its head read and this one, so
-      // whatever is in it was written by somebody whose work a create would
-      // sit beside (two files called mymoney-sync.json) or, worse, whose head
-      // this upload would replace unseen.
-      if (expectHead === null && head) {
-        throw new SyncTransportError(
-          'remote',
-          'A sync file appeared in Google Drive while this one was preparing its upload, so ' +
-            'nothing was uploaded and nothing on this device was changed. Sync again to see ' +
-            'what is in it.',
-        );
-      }
-
-      if (head) {
-        // SECOND, INDEPENDENT GUARD: never write at or below the head's own
-        // revision. Every legitimate write of ours is strictly above both
-        // sides, so this cannot refuse a sound push — but it catches one case
-        // the identity check cannot. A device still running a build from
-        // before ancestry writes appProperties WITHOUT a snapshotId, and
-        // files.update merges, so the previous snapshotId survives on a file
-        // whose contents have changed underneath it. Identity alone would then
-        // read as "still mine". The revision it also writes gives it away —
-        // but ONLY when that revision is at or above ours, which is why it is
-        // not sufficient on its own either (see the stamp check below).
-        const headRevision = revisionOf(head.appProperties);
-        if (headRevision >= 0 && headRevision >= snap.revision) {
-          throw new SyncTransportError(
-            'remote',
-            `The sync file in Google Drive is already at version ${headRevision}, so nothing ` +
-              'was uploaded — another device has saved since this snapshot was built. Nothing ' +
-              'on this device was changed. Sync again to see what changed.',
-          );
-        }
-        const headSnapshotId = idProperty(head.appProperties?.snapshotId);
-        if (headSnapshotId !== parentSnapshotId) {
-          throw new SyncTransportError(
-            'remote',
-            'Another device saved to Google Drive while this one was preparing its upload, ' +
-              'so nothing was uploaded — this snapshot was built on an older version of the ' +
-              'file. Nothing on this device was changed. Sync again to see what changed.',
-          );
-        }
-        // THIRD GUARD, AND THE ONLY ONE THAT SEES A LEGACY WRITE THAT IS
-        // BEHIND US (C18). The two checks above are both blind to it: the
-        // revision guard only fires at or above our own number, and the
-        // identity check compares a field the legacy writer never sent, which
-        // Drive therefore MERGED FROM OUR OWN PREVIOUS WRITE. So a device on
-        // an old build can replace the file's contents in the window between
-        // the caller's head read and this one, and the head will still swear
-        // it is ours. The stamp the caller actually read is the only thing
-        // left to compare against, and every field in it — revision, savedAt,
-        // deviceId — is a field that writer DID write.
-        //
-        // Rejected: making this the ONLY check and dropping the identity one
-        // above. It cannot be, because `expectHead` is optional (a caller
-        // written against the older shape passes nothing) and because the
-        // identity check is the one that names the right cause when a modern
-        // device wins the race.
-        if (expectHead) {
-          const mismatch = headStampMismatch(head.appProperties, expectHead);
-          if (mismatch) {
+      if (parentSnapshotId === null) {
+        // "There is no file." Deliberately NOT preceded by a check that there
+        // is no file: `add` with autorename:false IS that check, performed by
+        // Dropbox at the moment of the write, so a race to seed the file loses
+        // cleanly instead of quietly creating a second one beside it.
+        rev = null;
+      } else {
+        const cached = heads.get();
+        if (cached && cached.meta.snapshotId === parentSnapshotId) {
+          // The ordinary path: the engine read the head moments ago, so we
+          // already hold the rev that IS that snapshot. No request.
+          rev = cached.rev;
+        } else {
+          // No usable observation — a fresh tab, a cleared cache, or a head
+          // that has moved. Go and look, which may cost a download.
+          const head = await readHead();
+          if (head.kind === 'absent') {
             throw new SyncTransportError(
               'remote',
-              'The sync file in Google Drive is no longer the one this upload was built on ' +
-                `(its ${mismatch} has changed), so nothing was uploaded — another device wrote ` +
-                "to it, and it kept this file's old identity because Drive merges file " +
-                'properties. Nothing on this device was changed. Sync again to see what ' +
-                'that device wrote.',
+              'The sync file this upload was based on is no longer in Dropbox, so nothing was ' +
+                'uploaded and nothing on this device was changed.',
             );
           }
+          if (head.kind === 'deleted') {
+            throw new SyncTransportError(
+              'remote',
+              'The sync file has been deleted from Dropbox, so nothing was uploaded. Restore it ' +
+                'from Dropbox’s deleted files, or empty them, and sync again.',
+            );
+          }
+          const observation = await observe(head);
+          if (observation.meta.snapshotId !== parentSnapshotId) {
+            throw new SyncTransportError(
+              'remote',
+              'Another device saved to Dropbox while this one was preparing its upload, so ' +
+                'nothing was uploaded — this snapshot was built on an older version of the ' +
+                'file. Nothing on this device was changed. Sync again to see what changed.',
+            );
+          }
+          rev = observation.rev;
         }
-        const res = await send(
-          `${DRIVE_UPLOAD_API}/files/${encodeURIComponent(head.id)}?uploadType=multipart&fields=id`,
-          'PATCH',
-        );
-        if (res.status !== 404) {
-          await confirmLanded(head.id, snapshotId);
-          return;
-        }
-        // The file was deleted between our check and our write. Re-creating it
-        // is only safe for a snapshot that descends from nothing: for any
-        // other, a fresh file would start a SECOND lineage at this revision
-        // number while the original may still be in the bin, and every device
-        // would then compare two unrelated histories as one.
-        fileIds.set(null);
-        if (parentSnapshotId !== null) {
-          throw new SyncTransportError(
-            'remote',
-            'The sync file this upload was based on has been deleted from Google Drive, so ' +
-              'nothing was uploaded and nothing on this device was changed.',
-          );
-        }
-      } else if (parentSnapshotId !== null) {
-        // Same rule, reached the other way: we were told to descend from a
-        // file that is no longer there.
-        throw new SyncTransportError(
-          'remote',
-          'The sync file this upload was based on is no longer in Google Drive, so nothing ' +
-            'was uploaded and nothing on this device was changed.',
-        );
       }
 
-      const res = await send(`${DRIVE_UPLOAD_API}/files?uploadType=multipart&fields=id`, 'POST');
-      if (res.status === 404) {
-        throw new SyncTransportError('remote', "Google Drive wouldn't create the sync file.");
+      // ---- ONE REQUEST: precondition, bytes and integrity check together ---
+      const arg = uploadArg(rev, contentHash);
+      const res = await dropboxRequest(
+        `${DROPBOX_CONTENT}/files/upload`,
+        {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/octet-stream',
+            'dropbox-api-arg': serialiseApiArg(arg),
+          },
+          body: bytes,
+        },
+        {
+          what: 'save the sync file',
+          timeoutMs: DROPBOX_TRANSFER_TIMEOUT_MS,
+          // 409 is handled here rather than by the generic mapper, because the
+          // SAME status means two different things to a person depending on
+          // which mode we sent, and "sync again to see what changed" is wrong
+          // advice for a file that has only just appeared.
+          allowStatus: [409],
+        },
+      );
+      if (res.status === 409) {
+        if (rev === null && errorTags(res.text).has('conflict')) {
+          throw new SyncTransportError(
+            'remote',
+            'A sync file appeared in Dropbox while this one was preparing its upload, so ' +
+              'nothing was uploaded and nothing on this device was changed. Sync again to see ' +
+              'what is in it.',
+          );
+        }
+        throw errorFromResponse(res, 'save the sync file');
       }
-      const created = parseJson<{ id?: string }>(res, 'save the sync file');
-      if (!created.id) {
-        // We asked for `fields=id`, so this cannot normally happen — and
-        // without an id there is no way to read the write back. Reporting
-        // success unverified is the one thing this path may not do.
+
+      // ---- THE RESPONSE IS THE CONFIRMATION -------------------------------
+      // No read-back. Dropbox has told us what it stored; the three things
+      // worth knowing are all in this one body.
+      const landed = parseJson<FileMetadata>(res, 'save the sync file');
+
+      // 1. NOT RENAMED. autorename is false, so this can only differ if
+      //    Dropbox changed behaviour under us — and a "successful" write to
+      //    "mymoney-sync (1).json" is a lost race wearing a 200.
+      if (typeof landed.path_lower !== 'string' || landed.path_lower !== SYNC_FILE_PATH) {
         throw new SyncTransportError(
           'remote',
-          "Google Drive did not say where it saved the sync file, so this device can't " +
-            'confirm the upload. Nothing on this device was changed; sync again.',
+          `Dropbox saved the upload to ${landed.path_lower ?? 'somewhere unexpected'} instead of ` +
+            `${SYNC_FILE_PATH}, so this device has NOT been recorded as backed up. Sync again.`,
         );
       }
-      fileIds.set(created.id);
-      await confirmLanded(created.id, snapshotId);
+      // 2. OUR BYTES. Dropbox validates content_hash on the way in and echoes
+      //    it back; comparing it here means a silent corruption cannot be
+      //    recorded as a successful push.
+      if (typeof landed.content_hash === 'string' && landed.content_hash !== contentHash) {
+        throw new SyncTransportError(
+          'remote',
+          'Dropbox stored something different from what this device sent, so the upload has ' +
+            'NOT been recorded. Nothing on this device was changed; sync again.',
+        );
+      }
+      // 3. THE NEW REV, TAKEN FROM THE RESPONSE. Never assumed, never derived,
+      //    never "the old one plus something" — it is an opaque token and the
+      //    only authority on its value is the answer we were just given. Every
+      //    later write preconditions on it.
+      const { rev: newRev } = vetFileMetadata(landed, 'confirm the upload');
+      heads.set({ rev: newRev, contentHash, meta: metaOf(snap) });
     },
   };
 }

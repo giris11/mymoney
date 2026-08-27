@@ -41,9 +41,9 @@ function formatBytes(n: number): string {
 /** What each kept copy IS, in the words of the choice that produced it. */
 const RECOVERY_REASON_TEXT: Record<RecoveryRecord['reason'], string> = {
   'conflict-keep-local':
-    'The copy that was in Google Drive, kept when you chose this device’s copy instead.',
+    'The copy that was in Dropbox, kept when you chose this device’s copy instead.',
   'conflict-keep-remote':
-    'Everything that was on this device, kept when you chose the copy from Google Drive instead.',
+    'Everything that was on this device, kept when you chose the copy from Dropbox instead.',
 };
 
 const PERSIST_TEXT: Record<PersistState, string> = {
@@ -266,7 +266,7 @@ export default function BackupSection() {
         <Card>
           <h2 className="text-sm font-semibold text-text">Replaced copies</h2>
           <p className="mt-1 text-sm text-muted">
-            When you chose between this device and Google Drive, the copy you did not keep was
+            When you chose between this device and Dropbox, the copy you did not keep was
             saved here first. These are complete backups of the book as it stood at that moment —
             the app keeps the most recent few and drops the oldest.
           </p>

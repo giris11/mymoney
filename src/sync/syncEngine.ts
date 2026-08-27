@@ -1,9 +1,9 @@
-// The sync engine (D42; SPEC §8.3 "optional Google Drive backup sync").
+// The sync engine (D42/D45; SPEC §8.3 "optional cloud backup sync").
 //
 // WHAT THIS IS FOR. The app has no server, so every browser holds its own
 // IndexedDB. Open the site on a second device and it is empty. This module
 // moves the WHOLE BOOK between devices through one file in the user's own
-// Google Drive: last-writer-wins at the file level, with the crucial
+// Dropbox app folder: last-writer-wins at the file level, with the crucial
 // exception that when both sides have moved it refuses to pick a winner.
 //
 // THE GOVERNING RULE — WHEN IN DOUBT, REFUSE AND ASK. This is the first
@@ -28,36 +28,48 @@
 //    so a failure halfway leaves the original book exactly as it was.
 //
 // HOW IT DECIDES: CAUSAL ANCESTRY, NOT VERSION NUMBERS. Every snapshot
-// written to Drive carries an immutable `snapshotId` and the `parentSnapshotId`
-// it was built on top of, so "is the file in Drive the one my book grew out
-// of?" is a question with an answer. It used to be answered with `revision`,
-// which cannot answer it: two devices that both read revision N could both
-// WRITE revision N (nothing made the second write fail), so the loser's push
-// vanished while both sides recorded agreement — and the next pull deleted a
-// month of the owner's transactions with no conflict and no safety file. A
-// re-created Drive file restarts numbering at 1, so equality did not even
-// imply the same FILE. `revision` survives for display and ordering; it is no
-// longer a safety input. Each snapshot also carries a bounded chain of the
+// carries an immutable `snapshotId` and the `parentSnapshotId` it was built on
+// top of, IN THE FILE BODY, so "is the file in the cloud the one my book grew
+// out of?" is a question with an answer. It used to be answered with
+// `revision`, which cannot answer it: two devices that both read revision N
+// could both WRITE revision N (nothing made the second write fail), so the
+// loser's push vanished while both sides recorded agreement — and the next
+// pull deleted a month of the owner's transactions with no conflict and no
+// safety file. A re-created file restarts numbering at 1, so equality did not
+// even imply the same FILE. `revision` survives for display and ordering; it
+// is no longer a safety input, and THERE IS NO LONGER A FALLBACK TABLE THAT
+// TREATS IT AS ONE. Each snapshot also carries a bounded chain of the
 // ancestors behind it, so a device several pushes behind can still be told
 // apart from a device on a different lineage — otherwise "cannot prove
 // descent" would mean a conflict every time the other device synced twice.
 //
-// AND IDENTITY IS COMPARED AS A WHOLE STAMP, NOT AS ONE FIELD (C18). Google
-// Drive MERGES appProperties on files.update: a key the writer leaves out
-// keeps its previous value. A device still running a build from before
-// ancestry existed writes no snapshotId at all, so after ITS upload the file
-// holds ITS book while OUR snapshotId is still sitting on it, merged through
-// from our own earlier write. Comparing the id alone therefore reported
-// 'up-to-date' over a stranger's book, and the next push destroyed that
-// device's rows with no conflict, no prompt and no safety file — the C1 wipe
-// again, through a different door. So this device records the WHOLE STAMP it
-// left on the head — snapshotId AND revision AND savedAt AND deviceId — and
-// the head counts as "the snapshot I left there" only if every field still
-// agrees. The extra fields are exactly the ones a foreign writer ACTIVELY
-// WRITES, and only an actively-written field can testify that somebody wrote.
-// The transport's write-side revision guard cannot stand in for this: the
-// engine asks for head + 1, so our write is always strictly above the head's
-// own number and that guard can only fire on a legacy writer that is AHEAD.
+// WHAT WAS DELETED HERE, AND WHY IT IS SAFE TO DELETE (D45). Until this
+// rewrite the engine also recorded and compared a whole STAMP —
+// snapshotId AND revision AND savedAt AND deviceId — through
+// `headStillOurs`/`proveHeadFromBody` and a pair of settings keys
+// (syncLastPulledSavedAt / syncLastPulledDeviceId), with verdicts
+// 'agrees' / 'diverged' / 'unproven'. Every line of that existed to
+// compensate for ONE property of Google Drive: appProperties MERGE on
+// files.update, so a writer that omitted `snapshotId` left OURS sitting on a
+// file whose contents were now its own book (C18/C19). Identity lived in a
+// mutable store BESIDE the bytes, so it could describe a file it had not come
+// from, and the id alone could not be believed.
+//
+// On Dropbox identity lives INSIDE THE BODY, which is replaced wholesale on
+// every write: no writer can inherit another writer's identity by leaving a
+// field out, and the transport refuses to read or write a body that carries
+// none at all. `snapshotId` therefore answers the question on its own, and the
+// stamp apparatus was answering a question that can no longer be asked. Left
+// in place it was not merely redundant but actively harmful — it was the door
+// D2 came through, where a device recorded a whole stamp for a head it had
+// never proved anything about. The separation is the fix; the stamp was the
+// symptom.
+//
+// WHAT REPLACED IT IS NOT TRUST, IT IS A GATE. Nothing adopts or overwrites a
+// book without the BODY bearing out the reason for doing so — see THE ADOPTION
+// GATE below, and `PushParent`, which is the same idea on the write side: a
+// push may name as its parent only a snapshot this device has actually seen
+// the body of, never a field off a head read (D1).
 //
 // MONEY IS NEVER TOUCHED. A snapshot is `exportBackup()`'s tables verbatim:
 // whole rows, integer minor units, moved and compared but never arithmetic'd.
@@ -92,11 +104,16 @@ import {
   type RecoveryRecord,
 } from '../backup/backup';
 import { nowISO, todayISO, uid } from '../lib/util';
+// SyncStamp is deliberately NOT imported any more. It is the Drive-era "whole
+// stamp" (see the header): the transport still accepts one as an optional
+// second argument to writeRemote, and the engine no longer builds one, because
+// every field in it now derives from the same body as the identity beside it.
+// A stamp built from a head read could only ever disagree with that head by
+// disagreeing about the identity first, which the transport checks anyway.
 import type {
   SyncOutcome,
   SyncRemoteMeta,
   SyncSnapshot,
-  SyncStamp,
   SyncState,
   SyncSummary,
   SyncTransport,
@@ -185,8 +202,25 @@ let lastKnownRemoteRevision: number | null = null;
  */
 export async function hasLocalChanges(settings?: Settings): Promise<boolean> {
   const s = settings ?? (await getSettings());
-  if (s.syncLastPulledRevision === 0) return !(await isPristineBook(s));
+  if (!hasAgreedWithARemote(s.syncLastPulledSnapshotId, s.syncLastPulledRevision)) {
+    return !(await isPristineBook(s));
+  }
   return s.syncLocalRevision !== s.syncSyncedLocalRevision;
+}
+
+/**
+ * Has this device ever agreed with a remote file? ONE definition, used by both
+ * things that ask: which dirtiness regime applies (above), and whether "there
+ * is no file" means "first sync" or "the file has been deleted" (C13).
+ *
+ * Two questions asking the same thing in two different ways is how this
+ * subsystem generated defects for four rounds, so they now ask the same
+ * function. The evidence is OR'd, never AND'd: an id OR a revision above zero
+ * is history, because the safe reading of partial evidence is always "this
+ * device has a past to protect".
+ */
+function hasAgreedWithARemote(snapshotId: string | null, revision: number): boolean {
+  return snapshotId !== null || revision > 0;
 }
 
 async function isPristineBook(s: Settings): Promise<boolean> {
@@ -360,7 +394,7 @@ async function localCounts(): Promise<Record<string, number>> {
  * `syncNow` had in hand when it decided to push, `null` for the first write of
  * a lineage. A FRESH snapshotId is minted on every call, never reused and
  * never derived from anything: two builds of the same book are two snapshots,
- * because they can land in Drive at different moments and only the file that
+ * because they can land in Dropbox at different moments and only the file that
  * actually landed may be claimed as an ancestor.
  * @param olderAncestors what the PARENT descends from, newest first — this
  * device's own record of the chain, or the downloaded snapshot's when the user
@@ -371,7 +405,7 @@ export async function localSnapshot(
   revision?: number,
   parentSnapshotId: string | null = null,
   olderAncestors: readonly string[] = [],
-): Promise<SyncSnapshot> {
+): Promise<IdentifiedSnapshot> {
   const { deviceId, deviceName } = await ensureSyncIdentity();
   const s = await getSettings();
   const file = await exportBackup();
@@ -402,8 +436,28 @@ export function snapshotToBackupFile(snap: SyncSnapshot): BackupFile {
   };
 }
 
+/**
+ * A snapshot that has been through `validateSnapshot`, and therefore CARRIES AN
+ * IDENTITY. Every function below that can change what this device's book is —
+ * or what it claims to descend from — takes one of these rather than a bare
+ * SyncSnapshot, so "we might not know what this is" stops being a state the
+ * rest of the file has to keep handling.
+ *
+ * That used to be a state, and it was D3's door. Drive genuinely held files
+ * written before ancestry existed, so reading tolerated a missing snapshotId;
+ * a keep-remote resolution could then apply an identity-less body, leave this
+ * device with `syncLastPulledSnapshotId: null`, drop it onto the revision-
+ * number fallback, and let its next push mint an unprovable parent (D1 again,
+ * by a second route). NO SUCH FILE CAN EXIST IN DROPBOX — no build of this app
+ * has ever written there, and the transport refuses an identity-less body at
+ * the door in both directions — so tolerating one here bought nothing and cost
+ * that. Refused here too, because the engine must not depend on a particular
+ * transport having remembered to refuse it first.
+ */
+export type IdentifiedSnapshot = SyncSnapshot & { snapshotId: string };
+
 export type SnapshotValidation =
-  | { ok: true; snap: SyncSnapshot }
+  | { ok: true; snap: IdentifiedSnapshot }
   | { ok: false; error: string };
 
 /**
@@ -426,14 +480,13 @@ export function validateSnapshot(parsed: unknown): SnapshotValidation {
   if (typeof parsed.savedAt !== 'string') {
     return fail('The sync file has no valid "savedAt" timestamp.');
   }
-  // Identity and ancestry are OPTIONAL here on purpose: a file written before
-  // ancestry existed has neither, and refusing to read it would strand a
-  // perfectly good sync file (and the book in it) in the owner's Drive. What
-  // is refused is a value of the wrong SHAPE — an identity we cannot compare
-  // is worse than one we know we do not have, because the decision table would
-  // then compare two garbage values and find them equal.
-  if (parsed.snapshotId !== undefined && (typeof parsed.snapshotId !== 'string' || parsed.snapshotId === '')) {
-    return fail('The sync file has an unusable snapshot id.');
+  // IDENTITY IS REQUIRED, and that is a change from the Drive build (see
+  // IdentifiedSnapshot). It used to be optional because pre-ancestry files
+  // really were sitting in owners' Drives; on Dropbox none can exist, and
+  // tolerating one is what let a keep-remote resolution leave this device with
+  // no id and no way to prove anything afterwards (D3).
+  if (typeof parsed.snapshotId !== 'string' || parsed.snapshotId === '') {
+    return fail('The sync file does not say which snapshot it is.');
   }
   if (
     parsed.parentSnapshotId !== undefined &&
@@ -458,7 +511,7 @@ export function validateSnapshot(parsed: unknown): SnapshotValidation {
   };
   const checked = validateBackup(asBackup);
   if (!checked.ok) return fail(checked.error.replace(/\bbackup\b/gi, 'sync file'));
-  return { ok: true, snap: parsed as unknown as SyncSnapshot };
+  return { ok: true, snap: parsed as unknown as IdentifiedSnapshot };
 }
 
 /**
@@ -639,9 +692,9 @@ const messageOf = (e: unknown): string =>
   e instanceof Error ? e.message : typeof e === 'string' ? e : 'unknown error';
 
 /**
- * Turn a transport failure into an outcome. Duck-typed on purpose: the Drive
+ * Turn a transport failure into an outcome. Duck-typed on purpose: the Dropbox
  * transport throws its own `SyncTransportError` with a `kind`, and this module
- * stays free of any import edge into the Google-specific code (and keeps
+ * stays free of any import edge into the provider-specific code (and keeps
  * working with any other transport, including the test fake).
  */
 function outcomeFromError(e: unknown, context: string): SyncOutcome {
@@ -665,7 +718,7 @@ export interface SyncOptions {
    * there is nothing to settle — it is an answer to a question, never a mode.
    *
    * 'reseed-remote' answers the one question that is not a two-sided conflict:
-   * the sync file this device was using is GONE from Drive. There is no remote
+   * the sync file this device was using is GONE. There is no remote
    * side to keep, so the only choices are "start a new file from this device"
    * and "do nothing", and neither may be taken on the user's behalf.
    */
@@ -684,181 +737,215 @@ export interface SyncOptions {
    *               any remote file.
    *   a string    the id of the last remote snapshot this book descends from.
    *
-   * Persisted since phase 2 as `Settings.syncLastPulledSnapshotId` (device-
-   * local, see DEVICE_LOCAL_SETTING_KEYS), written back after every 'pushed',
-   * 'pulled' and 'up-to-date'. This option remains because the engine must
-   * stay testable without reaching into the settings row, and because a caller
-   * driving two books in one process (the tests do) needs to say which one it
-   * means.
+   * Persisted as `Settings.syncLastPulledSnapshotId` (device-local, see
+   * DEVICE_LOCAL_SETTING_KEYS), written back after every 'pushed' and
+   * 'pulled' — and, since D45, after nothing else. 'up-to-date' used to write
+   * it too, which is D2: a device that had proved nothing about the head
+   * recorded a whole stamp for it off a head read. Now the only two things
+   * that record an id are the two that have held the bytes.
+   *
+   * This option remains because the engine must stay testable without reaching
+   * into the settings row, and because a caller driving two books in one
+   * process (the tests do) needs to say which one it means.
    */
   lastPulledSnapshotId?: string | null;
 }
 
 /**
  * What the user is told when the file this device was syncing with is no
- * longer in Drive. Both messages exist to stop ONE action: quietly starting a
+ * longer there. Both messages exist to stop ONE action: quietly starting a
  * second sync file at revision 1, which is how a device with 47 revisions of
  * history ends up reading a different book from every other device (C13/C16).
  */
 const LOST_REMOTE_MESSAGE =
-  'The sync file this device was using is no longer in your Google Drive. ' +
+  'The sync file this device was using is no longer in your Dropbox. ' +
   'Nothing on this device was changed, and nothing was uploaded. ' +
-  'Either restore it in Drive (check the bin) and sync again, or choose to start a ' +
-  'new sync file from this device — this device will not start one on its own, because ' +
-  'your other devices would then be syncing with a different file.';
+  'Either restore it in Dropbox (check your deleted files) and sync again, or choose to ' +
+  'start a new sync file from this device — this device will not start one on its own, ' +
+  'because your other devices would then be syncing with a different file.';
 
 const TRASHED_REMOTE_MESSAGE =
-  "The sync file is in Google Drive's bin. Nothing on this device was changed, and " +
-  'nothing was uploaded. Restore it in Drive and sync again, or empty the bin first if ' +
-  'you meant to start over — while it sits in the bin this device will neither write ' +
-  'over it nor start a second file beside it.';
+  'The sync file has been deleted from Dropbox. Nothing on this device was changed, and ' +
+  'nothing was uploaded. Restore it from Dropbox’s deleted files and sync again, or empty ' +
+  'them first if you meant to start over — while it is merely deleted this device will ' +
+  'neither write over it nor start a second file beside it.';
+
+/**
+ * What the user is told when the head carries no identity at all.
+ *
+ * The transport refuses such a body at the door, so this is unreachable
+ * through the real one — and it is here anyway, because the engine must not
+ * rest a data-loss guarantee on a particular transport having remembered.
+ * Without it, a never-synced device (`null`) meeting an identity-less head
+ * (`null`) would compare the two, find them equal, and report 'up to date'
+ * over a book it has never seen: the C18 wipe reconstructed out of two
+ * absences. Comparing "I do not know" with "I do not know" must never come out
+ * as agreement.
+ */
+const NO_IDENTITY_MESSAGE =
+  'The sync file in Dropbox does not say which snapshot it is, so this device cannot tell ' +
+  'whether its own book grew out of it. Nothing on this device was changed, and nothing ' +
+  'was uploaded. It was not written by this app — replace it from a backup, or delete it ' +
+  'and start a new sync file.';
+
+// ===========================================================================
+// WHAT THIS DEVICE DESCENDS FROM — and why it is a branded value (D1)
+// ===========================================================================
+
+/**
+ * The brand. Its only purpose is to make one kind of mistake unrepresentable:
+ * naming a snapshot id that came off a HEAD READ as the thing this device's
+ * book descends from, or as the parent of a push.
+ *
+ * That mistake is D1. `resolveConflict`'s keep-local branch used to declare
+ * `ctx.head.snapshotId` — an id read from the file's own claim about itself,
+ * never checked against any body this device had seen — as the parent of the
+ * snapshot it then uploaded, and wrote that id into `parentSnapshotId` AND
+ * into `ancestry`. Every other device treats an ancestry entry as proof of
+ * descent, so a third device that genuinely descended from that id would find
+ * itself named in a chain it was not in, fast-forward, and be silently wiped.
+ *
+ * A comment saying "don't do that" is what the previous three rounds had. This
+ * is a type: `meta.snapshotId` is a plain string, and a plain string cannot be
+ * passed anywhere that wants a `Descent` or a `PushParent`.
+ *
+ * WHAT IT DOES NOT BUY, said plainly: the symbol is module-scoped, so a branch
+ * inside this file could still forge one by naming it. What that costs is the
+ * thing that matters — forging is a deliberate, visible act with this comment
+ * attached, rather than the one-token slip (`meta.snapshotId` where
+ * `pulledSnapshotId` belonged) that D1 actually was.
+ */
+const OUR_OWN_RECORD = Symbol('recorded by this device, never read off a head');
 
 /**
  * Which snapshot this device's book descends from — the input the whole
- * decision table is built on.
- *
- * Three sources, in order:
- *  * an explicit `opts.lastPulledSnapshotId` always wins (tests, and any
- *    caller that tracks ancestry itself);
- *  * otherwise the persisted `syncLastPulledSnapshotId`, which every push and
- *    pull now records;
- *  * and if that is null on a device that HAS synced, `undefined` — meaning
- *    "this device does not know its ancestry", which sends the decision to the
- *    revision-number fallback.
- *
- * That last case is the migration, and it is deliberate. A device upgraded
- * mid-lineage has a pulled revision but no id; treating its null as "descends
- * from nothing" would make every remote look unrelated and turn every sync
- * into a conflict, on a device whose book is in fact perfectly in step. The
- * fallback is what it used the day before, it is self-healing (the first push
- * or pull records an id and ancestry takes over from then on), and it is not
- * the old unsound table any more — the transport refuses a write whose parent
- * is no longer the head. `null` is only trusted from a device that has never
- * agreed with any file at all, where it is simply true.
+ * decision table is built on. Produced ONLY by `ancestryOf`, from what this
+ * device recorded after seeing a body (a push it wrote, or a pull it applied).
  */
+interface Descent {
+  readonly [OUR_OWN_RECORD]: true;
+  /** `null` ⇒ this device has never agreed with any remote file. */
+  readonly snapshotId: string | null;
+}
+
 /**
- * What we know sits BEHIND `headId` in its lineage — this device's own record,
- * and only when the head really is the snapshot it descends from. Claiming a
- * chain for some other head would put ids into a snapshot's ancestry that are
- * not its ancestors, and the whole mechanism rests on that never happening.
+ * Two sources, in order: an explicit `opts.lastPulledSnapshotId` (tests, and
+ * any caller that tracks ancestry itself), otherwise the persisted
+ * `syncLastPulledSnapshotId`.
+ *
+ * THERE IS NO LONGER A THIRD. A device that had a pulled revision but no id
+ * used to produce `undefined`, meaning "ancestry unknown", which sent the
+ * decision to a revision-NUMBER fallback table. That table was the Drive
+ * migration path — real devices had synced under a build that predated
+ * ancestry, and treating their null as "descends from nothing" would have
+ * greeted a perfectly in-step device with a conflict every time.
+ *
+ * It is gone, and it is gone rather than fixed because THE STATE IT SERVED
+ * CANNOT ARISE HERE. No device has ever synced to Dropbox; the transport
+ * refuses a body with no identity in both directions; and every path that
+ * records an id records it together with the revision beside it. What the
+ * table cost while it sat there: it hardcoded `descendsFrom: null` on its pull
+ * even for a device holding an id (D4), and it told a clean device at a
+ * matching revision number that it was up to date over a book it had never
+ * seen (D2). A device that somehow does arrive with a revision and no id now
+ * gets what "cannot prove" has always meant everywhere else in this file — it
+ * is asked, not overruled.
  */
-function chainBehind(headId: string | null, settings: Settings): readonly string[] {
-  return headId !== null && settings.syncLastPulledSnapshotId === headId
+function ancestryOf(opts: SyncOptions, settings: Settings): Descent {
+  const snapshotId =
+    opts.lastPulledSnapshotId !== undefined
+      ? opts.lastPulledSnapshotId
+      : settings.syncLastPulledSnapshotId;
+  return { [OUR_OWN_RECORD]: true, snapshotId };
+}
+
+/**
+ * What we know sits BEHIND the snapshot this device descends from — this
+ * device's own record, and only when the recorded chain really is that
+ * snapshot's. Claiming a chain for some other snapshot would put ids into a
+ * push's ancestry that are not its ancestors, and the whole mechanism rests on
+ * that never happening.
+ */
+function chainBehind(descent: Descent, settings: Settings): readonly string[] {
+  return descent.snapshotId !== null && settings.syncLastPulledSnapshotId === descent.snapshotId
     ? settings.syncAncestry
     : [];
 }
 
-/** The head, as the cheap read described it, in the shape a write expects. */
-function headStamp(meta: SyncRemoteMeta): SyncStamp {
+// ===========================================================================
+// WHERE A PUSH'S PARENT MAY COME FROM — the write-side half of the gate (D1)
+// ===========================================================================
+//
+// `pushLocal` does not take a parent id. It takes one of these, and there are
+// exactly three, each of which names a snapshot THIS DEVICE HAS SEEN THE BODY
+// OF (or asserts that there is no file at all). A branch that wants to name
+// something else has nothing to construct.
+//
+// The rule in one line: a parentSnapshotId is a claim every other device
+// trusts, so it may only ever be an id we could ourselves testify about.
+
+type PushParent =
+  /**
+   * There is no file. The ONLY value that permits a create — the transport
+   * turns it into an `add`, which Dropbox refuses if a file has appeared in
+   * the meantime, so a race to seed loses cleanly instead of creating a
+   * second file beside the first.
+   */
+  | { kind: 'no-file' }
+  /**
+   * The snapshot this device's book descends from: written by our own push, or
+   * downloaded and applied by our own pull. Branded, so it cannot be a head
+   * field (see `Descent`).
+   */
+  | { kind: 'our-own-lineage'; snapshotId: string; older: readonly string[] }
+  /**
+   * A snapshot body this device is holding in memory right now — downloaded,
+   * validated, described to the user, and written to a safety file before
+   * anything was overwritten. This is what keep-local uses, and it is D1's
+   * actual fix: the id it names is one we have read the contents of, not one
+   * the file merely claimed about itself.
+   */
+  | { kind: 'a-body-we-hold'; snap: IdentifiedSnapshot };
+
+const NO_FILE_YET: PushParent = { kind: 'no-file' };
+
+/**
+ * Push on top of what this device descends from. The id comes from the branded
+ * `Descent` and from nowhere else, which is the point: it can only be what
+ * this device recorded after seeing a body, never something read off a head.
+ * (`settings` is only where the chain BEHIND that id is read from.)
+ *
+ * `null` when this device descends from nothing. Deliberately not silently
+ * turned into `NO_FILE_YET`: "I have no lineage" and "there is no file" are
+ * different facts, and quietly converting the first into the second is how a
+ * device starts a second lineage beside a file that already exists (C13).
+ */
+function ourOwnLineage(descent: Descent, settings: Settings): PushParent | null {
+  if (descent.snapshotId === null) return null;
   return {
-    snapshotId: meta.snapshotId,
-    revision: meta.revision,
-    savedAt: meta.savedAt,
-    deviceId: meta.deviceId ?? null,
+    kind: 'our-own-lineage',
+    snapshotId: descent.snapshotId,
+    older: chainBehind(descent, settings),
   };
 }
 
-/**
- * The head still CLAIMS to be the snapshot this device left there — its
- * snapshotId is the one we descend from. Is the claim TRUE?
- *
- * It is a real question, and the answer used to be assumed. Google Drive
- * MERGES appProperties on files.update: a key the writer omits keeps its
- * previous value. A device running a build from before ancestry existed writes
- * no snapshotId at all, so its upload leaves OUR id on a file whose contents
- * are now ITS book — and an identity-only check reads that as "still mine",
- * reports 'up-to-date' over a stranger's book and lets the next push destroy
- * it (C18). Only fields a foreign writer ACTIVELY WRITES can testify that it
- * wrote, and a legacy writer always writes `revision`, `savedAt` and its own
- * `deviceId`. So the whole stamp is compared, not the id.
- *
- *   'agrees'   every field this device recorded still matches.
- *   'diverged' one of them does not ⇒ somebody else wrote the file while our
- *              id merged through. NEVER 'up-to-date', never a push.
- *   'unproven' this device recorded an id but no savedAt — it last synced
- *              under a build that did not know to record one, or the caller
- *              named an id this device holds no stamp for. Nothing may be
- *              written on that basis; the caller confirms against the file
- *              BODY, which no appProperties merge can forge, and records the
- *              whole stamp so it is paid for exactly once.
- *
- * A recorded deviceId is compared only when the head reports one: a transport
- * written before that field existed simply does not answer, and "no evidence"
- * must not be read as "evidence of no". Nothing rests on it alone — savedAt
- * and revision are compared exactly beside it.
- */
-type HeadVerdict = 'agrees' | 'diverged' | 'unproven';
+/** Push on top of a body we have downloaded and are holding. */
+function aBodyWeHold(snap: IdentifiedSnapshot): PushParent {
+  return { kind: 'a-body-we-hold', snap };
+}
 
-function headStillOurs(
-  meta: SyncRemoteMeta,
-  settings: Settings,
-  pulledSnapshotId: string,
-): HeadVerdict {
-  // The recorded revision/savedAt/deviceId describe settings.syncLastPulledSnapshotId
-  // and nothing else, so a caller that supplied its own lastPulledSnapshotId
-  // (the app never does; tests driving two books in one process do) has named
-  // a snapshot this device holds no stamp for. That is 'unproven', not
-  // 'agrees': the same rule as everywhere else here — where it cannot prove,
-  // it checks, and where it cannot check, it asks.
-  if (settings.syncLastPulledSnapshotId !== pulledSnapshotId) return 'unproven';
-  if (settings.syncLastPulledSavedAt === null) return 'unproven';
-  if (meta.revision !== settings.syncLastPulledRevision) return 'diverged';
-  if (meta.savedAt !== settings.syncLastPulledSavedAt) return 'diverged';
-  const recordedDeviceId = settings.syncLastPulledDeviceId;
-  if (
-    recordedDeviceId !== null &&
-    typeof meta.deviceId === 'string' &&
-    meta.deviceId !== recordedDeviceId
-  ) {
-    return 'diverged';
+/** The id and chain a push should carry, for each kind of parent. */
+function parentage(p: PushParent): { id: string | null; older: readonly string[] } {
+  switch (p.kind) {
+    case 'no-file':
+      return { id: null, older: [] };
+    case 'our-own-lineage':
+      return { id: p.snapshotId, older: p.older };
+    case 'a-body-we-hold':
+      return { id: p.snap.snapshotId, older: p.snap.ancestry ?? [] };
   }
-  return 'agrees';
 }
 
-/**
- * Settle an 'unproven' head against the one witness a merge cannot forge: the
- * file's own CONTENTS. appProperties merge; a file's body does not. If the
- * body carries the snapshotId we descend from then the head really is our
- * snapshot, whatever its properties have accumulated.
- *
- * It costs one download, ONCE PER DEVICE EVER — the stamp is recorded on the
- * way past, and every sync after this one is answered by the few hundred bytes
- * of the head read again. That price is why the alternatives were rejected:
- * trusting an unproven head for one more sync is the C18 wipe with a smaller
- * window, and refusing it outright would greet every already-synced device
- * with a conflict dialog about a file it is perfectly in step with.
- */
-type HeadProof =
-  | { kind: 'agrees'; settings: Settings }
-  | { kind: 'diverged' }
-  | { kind: 'failed'; outcome: SyncOutcome };
-
-async function proveHeadFromBody(
-  transport: SyncTransport,
-  pulledSnapshotId: string,
-): Promise<HeadProof> {
-  const got = await fetchRemote(transport);
-  if (!got.ok) return { kind: 'failed', outcome: got.outcome };
-  const body = got.snap;
-  if ((body.snapshotId ?? null) !== pulledSnapshotId) return { kind: 'diverged' };
-  // Proven. Record the whole stamp from the BODY rather than from the head
-  // read: the two agree for any real writer (content and appProperties are
-  // written in one request), and where they could not, the body is the half
-  // nobody else's write can have touched.
-  const settings = await updateSettings({
-    syncLastPulledSnapshotId: pulledSnapshotId,
-    syncLastPulledRevision: body.revision,
-    syncLastPulledSavedAt: body.savedAt,
-    syncLastPulledDeviceId: body.deviceId,
-  });
-  return { kind: 'agrees', settings };
-}
-
-function ancestryOf(opts: SyncOptions, settings: Settings): string | null | undefined {
-  if (opts.lastPulledSnapshotId !== undefined) return opts.lastPulledSnapshotId;
-  if (settings.syncLastPulledSnapshotId !== null) return settings.syncLastPulledSnapshotId;
-  return settings.syncLastPulledRevision === 0 ? null : undefined;
-}
 
 /**
  * One sync. Reads the remote head, works out how it is RELATED to the snapshot
@@ -869,7 +956,8 @@ function ancestryOf(opts: SyncOptions, settings: Settings): string | null | unde
  *   offline                                       ⇒ 'offline'
  *   no file, and this device never had one        ⇒ push as revision 1
  *   no file, but this device HAD one              ⇒ refuse and ask (C13)
- *   the file is in Drive's bin                    ⇒ refuse and ask (C13)
+ *   the file has been deleted in Dropbox          ⇒ refuse and ask (C13)
+ *   the file carries no identity                  ⇒ refuse and ask
  *   remote IS what we descend from                ⇒ dirty ? push : 'up-to-date'
  *   remote is a child of what we descend from     ⇒ clean ? pull : 'conflict'
  *   remote names us further back in its chain     ⇒ clean ? pull : 'conflict'
@@ -906,8 +994,8 @@ export async function syncNow(
   // this device without first checking it still stands here.
   const guard = captureLocalState(settings, dirty);
   const pulledRevision = settings.syncLastPulledRevision;
-  const pulledSnapshotId = ancestryOf(opts, settings);
-  const tracksAncestry = pulledSnapshotId !== undefined;
+  const descent = ancestryOf(opts, settings);
+  const pulledSnapshotId = descent.snapshotId;
 
   let meta: Awaited<ReturnType<SyncTransport['readRemoteMeta']>>;
   try {
@@ -916,7 +1004,7 @@ export async function syncNow(
     return outcomeFromError(e, 'Could not read the sync file');
   }
 
-  // ---- there is no file in Drive -----------------------------------------
+  // ---- there is no file at all -------------------------------------------
   //
   // Two completely different situations wear the same face, and the old code
   // treated both as "seed it": a device that has never synced (correct), and a
@@ -930,11 +1018,11 @@ export async function syncNow(
   // devices that already have history) cannot make a device look brand new.
   if (meta === null) {
     lastKnownRemoteRevision = null;
-    const everAgreed = (tracksAncestry && pulledSnapshotId !== null) || pulledRevision > 0;
+    const everAgreed = hasAgreedWithARemote(pulledSnapshotId, pulledRevision);
     if (!everAgreed || opts.resolve === 'reseed-remote') {
-      // `null` says "there is no file": the transport refuses to create one if
-      // anything has appeared in the meantime.
-      return pushLocal(transport, 1, null, [], null);
+      // "There is no file": the transport turns this into a create and Dropbox
+      // refuses it if one has appeared in the meantime.
+      return pushLocal(transport, 1, NO_FILE_YET);
     }
     return { kind: 'error', message: LOST_REMOTE_MESSAGE };
   }
@@ -959,276 +1047,204 @@ export async function syncNow(
   }
   lastKnownRemoteRevision = remoteRevision;
 
+  // The head must SAY WHICH SNAPSHOT IT IS. Everything below compares this
+  // device's id against the head's, and comparing two absences would come out
+  // as agreement — see NO_IDENTITY_MESSAGE. The transport refuses such a body
+  // at the door; this is here so the guarantee does not depend on that.
+  const headSnapshotId = meta.snapshotId;
+  if (headSnapshotId === null) return { kind: 'error', message: NO_IDENTITY_MESSAGE };
+
   // `downloaded` is the snapshot a refused adoption already has in hand (see
   // the adoption gate): passing it on means the refusal costs no second
   // multi-megabyte download of the very file we just fetched.
-  const conflict = (downloaded?: SyncSnapshot) =>
+  const conflict = (downloaded?: IdentifiedSnapshot) =>
     resolveConflict(transport, opts, guard, {
       remoteRevision,
       pulledRevision,
       localDeviceName: deviceName,
       downloaded: downloaded ?? null,
-      // The head as the cheap read described it. A resolution that overwrites
-      // it must name THIS id as its parent and refuse if any of it has moved
-      // — see the keep-local push at the end of resolveConflict.
-      head: headStamp(meta),
       // The one case that may turn out not to be a conflict after all: a CLEAN
       // device whose id the remote names further back in its chain. Anything
       // else — dirty, or no id of our own — is passed through as null, and
       // resolveConflict then does exactly what it always did.
-      fastForwardFrom: !dirty && typeof pulledSnapshotId === 'string' ? pulledSnapshotId : null,
+      fastForwardFrom: !dirty ? pulledSnapshotId : null,
     });
 
   // ---- the decision, by ANCESTRY -----------------------------------------
   //
-  // Available when the caller threads the id AND the remote file is new enough
-  // to carry one. This is the real test: not "is that number the number I
-  // remember" but "is that file the one my book grew out of".
-  if (tracksAncestry && meta.snapshotId !== null) {
-    // The remote CLAIMS to be the snapshot we descend from — and a claim is
-    // all it is. Drive MERGES appProperties, so a writer that sends no
-    // snapshotId of its own leaves ours sitting on top of ITS book; comparing
-    // the id and nothing else reported 'up-to-date' over a stranger's data and
-    // then destroyed it on the next push (C18). The whole stamp has to agree,
-    // and where this device cannot prove it from the cheap read, the file's
-    // body settles it before anything is written.
-    if (meta.snapshotId === pulledSnapshotId) {
-      let agreed = settings;
-      let verdict = headStillOurs(meta, settings, pulledSnapshotId);
-      if (verdict === 'unproven') {
-        const proof = await proveHeadFromBody(transport, pulledSnapshotId);
-        if (proof.kind === 'failed') return proof.outcome;
-        verdict = proof.kind === 'agrees' ? 'agrees' : 'diverged';
-        if (proof.kind === 'agrees') agreed = proof.settings;
-      }
-      if (verdict === 'diverged') return conflict();
-      if (!dirty) return upToDate(meta, agreed);
-      return pushLocal(
-        transport,
-        remoteRevision + 1,
-        meta.snapshotId,
-        chainBehind(meta.snapshotId, agreed),
-        headStamp(meta),
-      );
-    }
-    // The remote CLAIMS to be a CHILD of the snapshot we descend from:
-    // someone pushed once, on top of exactly what we have. Clean ⇒ a
-    // fast-forward — but only once the BODY says so too.
-    //
-    // `parentSnapshotId` merges through Drive exactly as `snapshotId` does
-    // (C19): the legacy build writes neither, so a head can go on swearing "I
-    // am the child of your snapshot" over a book that descends from nothing,
-    // and this branch used to adopt that as a clean fast-forward. The proof
-    // costs nothing, because a pull downloads the body anyway.
-    if (meta.parentSnapshotId === pulledSnapshotId) {
-      if (dirty) return conflict();
-      return pullRemote(
-        transport,
-        guard,
-        { kind: 'head-said-so', head: headStamp(meta), descendsFrom: pulledSnapshotId },
-        conflict,
-      );
-    }
-    // A device that has never agreed with ANY snapshot descends from nothing,
-    // so there is no ancestry for the remote to violate — it is simply new
-    // here. This is the feature's whole purpose (open the app on a second
-    // device and get the book), and without this branch it would meet an
-    // established lineage, fail both tests above and be told it had a
-    // conflict. `dirty` is what protects it: a never-synced device counts as
-    // dirty unless its book is PRISTINE (see hasLocalChanges), so a browser
-    // with anything of the user's in it still gets asked. The revision guard
-    // is deliberate too — a device that HAS synced but arrives with no id (a
-    // half-migrated one) must not fall in here and be handed a free pull.
-    if (pulledSnapshotId === null && pulledRevision === 0) {
-      if (dirty) return conflict();
-      return pullRemote(
-        transport,
-        guard,
-        {
-          kind: 'nothing-of-ours-at-risk',
-          because:
-            'this device is PRISTINE — it descends from no snapshot and holds ' +
-            'no book of its own (hasLocalChanges counts anything of the ' +
-            "user's as dirty), so no proof about the file could protect " +
-            'anything. Demanding one would greet a brand-new browser with a ' +
-            'conflict dialog about a book it cannot lose, which is the one ' +
-            'thing this branch exists to prevent.',
-        },
-        conflict,
-      );
-    }
-    // Everything else is DIVERGENCE — until proved otherwise, and — this is
-    // the whole point — it is a conflict even when this device is perfectly
-    // clean. A clean device whose last agreed snapshot is nowhere in the
-    // remote's history is holding rows that exist nowhere else: pulling would
-    // delete them with no backup and no question asked, which is exactly the
-    // wipe this rewrite exists to stop.
-    //
-    // "Until proved otherwise" is the one thing the head read cannot settle. A
-    // device TWO OR MORE pushes behind also lands here — the head names only
-    // its parent — and that is not divergence at all, it is the commonest
-    // thing two devices do. So `conflict()` looks one step further before it
-    // asks: the snapshot BODY carries a bounded chain of its ancestors
-    // (SyncSnapshot.ancestry), and a clean device that finds its own id in
-    // that chain fast-forwards instead. The check lives there, not here,
-    // because the body has to be downloaded either way and downloading a
-    // multi-megabyte file twice to answer one question would be absurd.
-    return conflict();
+  // The only test there is now: not "is that number the number I remember" but
+  // "is that file the one my book grew out of". There is no second table to
+  // fall through to — see `ancestryOf`.
+
+  // The head IS the snapshot we descend from.
+  //
+  // On Drive this was a CLAIM and not a fact: appProperties merged, so a
+  // writer that sent no snapshotId of its own left ours sitting on top of ITS
+  // book, and an id-only check reported 'up-to-date' over a stranger's data
+  // and then destroyed it on the next push (C18). Answering it took a recorded
+  // stamp, a verdict of agrees/diverged/unproven, and a download to settle the
+  // unproven case.
+  //
+  // ALL OF THAT IS GONE, because the question changed shape. The head's
+  // identity is derived from the file's own body (SyncRemoteMeta), which is
+  // replaced wholesale by whoever writes it, so it cannot be a leftover of
+  // ours. Equal ids mean the same bytes. There is nothing left to prove and
+  // nothing to record: `up-to-date` writes NOTHING AT ALL, which is D2 closed
+  // by deletion rather than by a fourth guard.
+  if (headSnapshotId === pulledSnapshotId) {
+    if (!dirty) return { kind: 'up-to-date', snapshotId: headSnapshotId };
+    // The parent named here is OUR OWN RECORD of what we descend from, not
+    // `headSnapshotId` — the two are equal on this branch, and it is the
+    // PROVENANCE that matters (D1). The transport turns it into the rev of the
+    // file it observed carrying that id, and Dropbox rejects the write if the
+    // file has moved since.
+    const parent = ourOwnLineage(descent, settings);
+    // Unreachable: the head reported an id (checked above) and this branch is
+    // only entered when ours is that same id, so it is not null. Handled
+    // rather than asserted because the alternative — falling through to a
+    // create — is the one mistake this whole file exists to prevent.
+    if (parent === null) return { kind: 'error', message: NO_IDENTITY_MESSAGE };
+    return pushLocal(transport, remoteRevision + 1, parent);
   }
 
-  // ---- the decision, by REVISION NUMBER (fallback) ------------------------
+  // The head CLAIMS to be a CHILD of the snapshot we descend from: someone
+  // pushed once, on top of exactly what we have. Clean ⇒ a fast-forward — but
+  // only once the BODY says so too, which is checked at the adoption gate.
   //
-  // Used when the caller does not track ancestry yet, or when the file in
-  // Drive was written before ancestry existed. This is the old, unsound table,
-  // and it is only defensible now because the ground under it changed:
-  // writeRemote refuses any write whose parent is no longer the head and
-  // verifies afterwards that our snapshot is what landed, so two devices can
-  // no longer both commit "revision N" with different books — the loser is
-  // told, rather than silently winning. Within one file, revisions are once
-  // again a real sequence. What this fallback still cannot see is a file that
-  // was REPLACED (numbering restarts at 1); the two refusals above catch the
-  // ways that happens.
-  if (remoteRevision === pulledRevision) {
-    if (!dirty) return upToDate(meta, settings);
-    return pushLocal(
-      transport,
-      remoteRevision + 1,
-      meta.snapshotId,
-      chainBehind(meta.snapshotId, settings),
-      headStamp(meta),
-    );
-  }
-  if (!dirty && remoteRevision > pulledRevision) {
-    // Even here, where there is no ancestry to check, the body must still be
-    // the snapshot the properties describe. That much is checkable without an
-    // id of our own, and it is exactly what a merged property gets wrong: a
-    // file whose properties still name a snapshot somebody else's write
-    // replaced. `descendsFrom: null` because this device genuinely descends
-    // from nothing it could be named in — that is what put it on this table.
+  // The proof is no longer about merged properties (C19); it is about TIME.
+  // The head was read one round trip ago and the body arrives on the next, so
+  // another device can write in between — and then the bytes being applied are
+  // not the ones this decision was taken about. The gate catches exactly that,
+  // and it costs nothing, because a pull downloads the body anyway.
+  if (pulledSnapshotId !== null && meta.parentSnapshotId === pulledSnapshotId) {
+    if (dirty) return conflict();
     return pullRemote(
       transport,
       guard,
-      { kind: 'head-said-so', head: headStamp(meta), descendsFrom: null },
+      { kind: 'head-said-so', headSnapshotId, descendsFrom: pulledSnapshotId },
       conflict,
     );
   }
 
-  // Either both sides moved, or the remote went BACKWARDS (someone restored an
-  // older file into Drive, or a device re-seeded it). A backwards remote with a
-  // clean local looks harmless, but applying it would roll this device back to
-  // data it has already moved past — the same silent loss, so it asks too.
+  // A device that has never agreed with ANY snapshot descends from nothing, so
+  // there is no ancestry for the remote to violate — it is simply new here.
+  // This is the feature's whole purpose (open the app on a second device and
+  // get the book), and without this branch it would meet an established
+  // lineage, fail both tests above and be told it had a conflict. `dirty` is
+  // what protects it: a never-synced device counts as dirty unless its book is
+  // PRISTINE (see hasLocalChanges), so a browser with anything of the user's
+  // in it still gets asked. The revision guard is deliberate too — a device
+  // that HAS synced but arrives with no id must not fall in here and be handed
+  // a free pull.
+  if (pulledSnapshotId === null && pulledRevision === 0) {
+    if (dirty) return conflict();
+    return pullRemote(
+      transport,
+      guard,
+      {
+        kind: 'nothing-of-ours-at-risk',
+        because:
+          'this device is PRISTINE — it descends from no snapshot and holds ' +
+          'no book of its own (hasLocalChanges counts anything of the ' +
+          "user's as dirty), so no proof about the file could protect " +
+          'anything. Demanding one would greet a brand-new browser with a ' +
+          'conflict dialog about a book it cannot lose, which is the one ' +
+          'thing this branch exists to prevent.',
+      },
+      conflict,
+    );
+  }
+
+  // Everything else is DIVERGENCE — until proved otherwise, and — this is the
+  // whole point — it is a conflict even when this device is perfectly clean. A
+  // clean device whose last agreed snapshot is nowhere in the remote's history
+  // is holding rows that exist nowhere else: pulling would delete them with no
+  // backup and no question asked, which is exactly the wipe this rewrite
+  // exists to stop. It is also where a device that arrived with a revision and
+  // no id lands, and being asked is the right answer for it too.
+  //
+  // "Until proved otherwise" is the one thing the head read cannot settle. A
+  // device TWO OR MORE pushes behind also lands here — the head names only its
+  // parent — and that is not divergence at all, it is the commonest thing two
+  // devices do. So `conflict()` looks one step further before it asks: the
+  // snapshot BODY carries a bounded chain of its ancestors
+  // (SyncSnapshot.ancestry), and a clean device that finds its own id in that
+  // chain fast-forwards instead. The check lives there, not here, because the
+  // body has to be downloaded either way and downloading a multi-megabyte file
+  // twice to answer one question would be absurd.
   return conflict();
 }
 
 /**
  * Write this device's book as the new head.
  *
- * @param parentSnapshotId the head this push descends from — the id read at
- * the top of this sync, or the one the user chose to overwrite. `null` means
- * "there is no file" and is the ONLY value that permits a create. The
- * transport enforces it: if the head has moved since we read it, the write is
- * refused rather than landing on top of a snapshot nobody here has seen.
- * @param olderAncestors what that parent in turn descends from, so the chain
- * survives this push (see SyncSnapshot.ancestry).
- * @param expectHead the WHOLE stamp of the head this decision was taken
- * against, or `null` for "there is no file". The transport refuses unless the
- * head still matches it field for field — the parent id alone is not enough,
- * because a legacy writer's upload leaves that id in place while replacing the
- * contents (C18).
+ * @param parent WHERE the parentSnapshotId comes from — one of the three
+ * sources in `PushParent`, never a bare id. Each of them names a snapshot this
+ * device has actually seen the body of, or asserts that there is no file. That
+ * is D1's fix and it is a type rather than a rule: the keep-local resolution
+ * used to name the id the HEAD reported, which no device here had checked
+ * against any body, and mint it into `parentSnapshotId` AND `ancestry` for
+ * every other device to trust.
+ *
+ * The transport turns whatever id this resolves to into the Dropbox `rev` of a
+ * file it has observed carrying it, and Dropbox enforces that rev atomically
+ * with the bytes. If the head has moved since, the write is refused rather
+ * than landing on top of a snapshot nobody here has seen.
+ *
+ * NOTE what is no longer passed: `expectHead`. On Drive the whole recorded
+ * stamp had to travel with a write, because the identity in the head could be
+ * a leftover of ours that a legacy writer's upload had merged back on top of
+ * its own book (C18). Dropbox derives the head's identity from the same body
+ * as everything else in the stamp, so a stamp could only ever disagree by
+ * disagreeing about the identity first — which the transport checks anyway,
+ * before Dropbox checks the rev. The parameter is still accepted there; this
+ * engine has nothing honest to put in it.
  */
 async function pushLocal(
   transport: SyncTransport,
   revision: number,
-  parentSnapshotId: string | null,
-  olderAncestors: readonly string[],
-  expectHead: SyncStamp | null,
+  parent: PushParent,
 ): Promise<SyncOutcome> {
+  const { id: parentSnapshotId, older: olderAncestors } = parentage(parent);
   // Capture the change counter BEFORE reading the book. Anything written after
   // this point is not in the snapshot and leaves the device dirty, so the next
   // sync pushes again — a redundant push, never a lost change.
   const localRevisionAtSnapshot = (await getSettings()).syncLocalRevision;
-  let snap: SyncSnapshot;
+  let snap: IdentifiedSnapshot;
   try {
     snap = await localSnapshot(revision, parentSnapshotId, olderAncestors);
   } catch (e) {
     return { kind: 'error', message: `Could not read this device's data: ${messageOf(e)}` };
   }
   try {
-    await transport.writeRemote(snap, expectHead);
+    await transport.writeRemote(snap);
   } catch (e) {
     // Settings are untouched, so the next attempt makes exactly this decision
     // again — and, crucially, this device does NOT record that it agrees with
     // a remote it may not have written. A refused precondition arrives here
     // like any other failure, which is the whole point: the alternative is
     // "pushed" over data we never saw.
-    return outcomeFromError(e, 'Could not upload to Google Drive');
+    return outcomeFromError(e, 'Could not upload to Dropbox');
   }
   lastKnownRemoteRevision = revision;
   await updateSettings({
     syncLastPulledRevision: revision,
-    // The id of the file that is in Drive NOW, verified by writeRemote's
-    // read-back. Recording it is what makes the next sync able to ask "is that
-    // file the one my book grew out of?" rather than comparing numbers.
-    syncLastPulledSnapshotId: snap.snapshotId ?? null,
-    // …and the REST of the stamp we just left on that file. The id alone
-    // cannot be checked on the way back in: Drive merges appProperties, so a
-    // writer that omits the id leaves ours on top of its own book. These two
-    // are fields any writer — including a build from before ancestry — writes
-    // for itself, so a disagreement in either proves somebody else wrote
-    // (C18). Cleared together with the id, so "there is a stamp" and "there is
-    // an id" can never disagree.
-    syncLastPulledSavedAt: snap.snapshotId ? snap.savedAt : null,
-    syncLastPulledDeviceId: snap.snapshotId ? snap.deviceId : null,
+    // The id of the file that is in Dropbox NOW. We wrote this body, so it is
+    // an id whose contents this device can testify about — which is exactly
+    // what makes it legitimate for the NEXT push to name as its parent.
+    syncLastPulledSnapshotId: snap.snapshotId,
     // The chain we just wrote is the one our next push must hand on.
     syncAncestry: snap.ancestry ?? [],
     syncSyncedLocalRevision: localRevisionAtSnapshot,
     syncLastSyncedAt: nowISO(),
   });
-  return { kind: 'pushed', revision, snapshotId: snap.snapshotId ?? null };
-}
-
-/**
- * Nothing to do — and, on the way past, adopt the head's identity if this
- * device did not have one.
- *
- * That happens exactly once per device: an upgraded device whose ancestry is
- * unknown (see `ancestryOf`) has just been told by the revision table that it
- * agrees with this file, so recording which file that was costs one narrow
- * settings write and moves it onto ancestry for good. It is skipped when the
- * id is already ours, so a repeated "up to date" writes nothing at all.
- */
-async function upToDate(meta: SyncRemoteMeta, settings: Settings): Promise<SyncOutcome> {
-  const patch: Partial<Omit<Settings, 'id'>> = {};
-  if (meta.snapshotId !== null) {
-    if (settings.syncLastPulledSnapshotId !== meta.snapshotId) {
-      patch.syncLastPulledSnapshotId = meta.snapshotId;
-      // No chain to go with it — the head read does not carry one and this
-      // call downloads nothing. An empty chain proves nothing, which is the
-      // safe direction, and the next push or pull fills it in.
-      patch.syncAncestry = [];
-    }
-    // The rest of the stamp of the head we have just agreed with, recorded
-    // even when the id itself is unchanged: a device upgraded mid-lineage
-    // holds an id and no stamp, and this is the cheapest place it can gain
-    // one. Only ever recorded ALONGSIDE an id, so the two cannot disagree.
-    if (settings.syncLastPulledRevision !== meta.revision) {
-      patch.syncLastPulledRevision = meta.revision;
-    }
-    if (settings.syncLastPulledSavedAt !== meta.savedAt) {
-      patch.syncLastPulledSavedAt = meta.savedAt;
-    }
-    const deviceId = meta.deviceId ?? null;
-    if (settings.syncLastPulledDeviceId !== deviceId) patch.syncLastPulledDeviceId = deviceId;
-  }
-  // A repeated "up to date" writes nothing at all.
-  if (Object.keys(patch).length > 0) await updateSettings(patch);
-  return { kind: 'up-to-date', snapshotId: meta.snapshotId };
+  return { kind: 'pushed', revision, snapshotId: snap.snapshotId };
 }
 
 /** Fetch + validate the remote snapshot, or an outcome explaining why not. */
 async function fetchRemote(
   transport: SyncTransport,
-): Promise<{ ok: true; snap: SyncSnapshot } | { ok: false; outcome: SyncOutcome }> {
+): Promise<{ ok: true; snap: IdentifiedSnapshot } | { ok: false; outcome: SyncOutcome }> {
   let raw: SyncSnapshot | null;
   try {
     raw = await transport.readRemote();
@@ -1259,7 +1275,7 @@ async function fetchRemote(
 }
 
 // ===========================================================================
-// THE ADOPTION GATE — the body, never the properties (C18/C19)
+// THE ADOPTION GATE — the body, and nothing but the body (C18/C19)
 // ===========================================================================
 //
 // WHY THIS IS ONE GATE AND NOT A CHECK PER BRANCH. C18 was a branch that
@@ -1268,26 +1284,27 @@ async function fetchRemote(
 // off the same head read, kept the identical wipe alive (C19): a CLEAN device
 // one push behind had its whole book replaced by a legacy device's, with no
 // conflict, no prompt and no safety file. The defect was never in either
-// branch. It was in letting a branch decide this at all. So there is now one
+// branch. It was in letting a branch decide this at all. So there is one
 // place where a downloaded snapshot becomes this device's book, it demands a
 // proof, and only `proveAdoption` can mint one: a new branch cannot forget the
 // check, because it has nothing to pass.
 //
-// WHY appProperties CAN NEVER BE THE PROOF. Google Drive MERGES appProperties
-// on files.update: a key the writer omits KEEPS ITS PREVIOUS VALUE. A device
-// on a build from before ancestry existed (git 87a808c) writes
-// `app, revision, savedAt, deviceId, deviceName, schemaVersion` — NEITHER
-// identity key — so its upload leaves BOTH of ours on a file whose contents
-// are now its book. The head then swears "I am your snapshot" AND "I am the
-// child of your snapshot" over a body that descends from nothing. Every field
-// of the cheap head read is in that position; none of them can testify about
-// the bytes beside them.
+// THE GATE SURVIVES THE MOVE TO DROPBOX, AND IT SHOULD. What it was defending
+// against on Drive is gone — appProperties merged, so the head's identity
+// could be a leftover of ours sitting on somebody else's book, and no field of
+// a head read could testify about the bytes beside it. Identity now travels in
+// the body and cannot be inherited, so that particular lie is unavailable.
 //
-// WHAT CAN. The file's own CONTENTS. Content and appProperties travel in ONE
-// multipart/related request, and only the properties merge, so a body carries
-// exactly what its writer put there. And it is FREE here: every path that
-// reaches this gate has downloaded the snapshot already, because it cannot
-// apply what it has not fetched.
+// But the gate was never really about appProperties. It is about the fact that
+// A HEAD READ AND A BODY DOWNLOAD ARE TWO DIFFERENT MOMENTS. The engine
+// decides what to do from a head, then spends a multi-megabyte download
+// getting the bytes, and another device can write in between; the bytes that
+// arrive are then not the ones the decision was about. Cheap, exact, and
+// checkable only against the body — which every path that reaches here has
+// already fetched, because it cannot apply what it has not downloaded.
+//
+// It is also what caught C19, and keeping a guard that has caught a real wipe
+// is cheaper than re-deriving the argument for removing it.
 
 /**
  * WHY a downloaded snapshot is allowed to become this device's book. Every
@@ -1295,20 +1312,26 @@ async function fetchRemote(
  */
 type AdoptionWarrant =
   /**
-   * The cheap head read is what justified the download. The body must BE the
-   * snapshot the head claimed to be, and — when this device descends from an
-   * id of its own — must NAME that id in its own chain. Both halves are read
-   * off the body; the head's claim is only the thing being checked.
+   * The head read is what justified the download. The body must BE the
+   * snapshot the head said it was — otherwise the file moved between the two
+   * requests — and must NAME the id this device descends from in its own
+   * chain. Both halves are read off the body; the head's claim is only the
+   * thing being checked.
+   *
+   * `descendsFrom` is NOT NULLABLE, and that is D4 closed by construction.
+   * The revision-number fallback used to pull with `descendsFrom: null` — "do
+   * not check descent" — on a device that was holding an id perfectly capable
+   * of being checked. With no null to pass, no branch can ask for a pull that
+   * skips the descent check while claiming a lineage; a device that descends
+   * from nothing has to say so with the warrant below, in writing.
    */
-  | { kind: 'head-said-so'; head: SyncStamp; descendsFrom: string | null }
+  | { kind: 'head-said-so'; headSnapshotId: string; descendsFrom: string }
   /**
    * The body's OWN chain justifies it: it names the snapshot this device
    * descends from, so applying it takes nothing away from a clean device. The
    * head is deliberately NOT compared here — this warrant is used inside
    * `resolveConflict`, reached precisely because the head could not be
    * trusted, and descent proved from the body is the stronger fact anyway.
-   * Rejected: comparing the head as well, which would make the C18 conflict
-   * unresolvable (there the head's id is ours, merged, and the body's is not).
    */
   | { kind: 'body-names-us'; descendsFrom: string }
   /**
@@ -1340,40 +1363,37 @@ type Adoption = { ok: true; proof: AdoptionProof } | { ok: false; why: string };
  * handle — while every warrant that makes a claim about the body does.
  */
 function proveAdoption(
-  snap: SyncSnapshot,
+  snap: IdentifiedSnapshot,
   warrant: { kind: 'nothing-of-ours-at-risk'; because: string },
 ): { ok: true; proof: AdoptionProof };
-function proveAdoption(snap: SyncSnapshot, warrant: AdoptionWarrant): Adoption;
-function proveAdoption(snap: SyncSnapshot, warrant: AdoptionWarrant): Adoption {
+function proveAdoption(snap: IdentifiedSnapshot, warrant: AdoptionWarrant): Adoption;
+function proveAdoption(snap: IdentifiedSnapshot, warrant: AdoptionWarrant): Adoption {
   if (warrant.kind === 'nothing-of-ours-at-risk') return { ok: true, proof: PROVED };
 
   if (warrant.kind === 'head-said-so') {
-    // The file's properties said which snapshot this is. Its contents have to
-    // say the same thing, or the properties are somebody else's leftovers.
-    const bodyId = snap.snapshotId ?? null;
-    if (bodyId !== warrant.head.snapshotId) {
+    // The head said which snapshot this is. The bytes that arrived have to say
+    // the same thing, or the file moved between the head read and the
+    // download and this decision is about a file that no longer exists.
+    if (snap.snapshotId !== warrant.headSnapshotId) {
       return {
         ok: false,
         why:
-          `the file's contents are not the snapshot its properties claim ` +
-          `(properties say ${warrant.head.snapshotId ?? 'no identity'}, contents say ${bodyId ?? 'no identity'})`,
+          `the file that was downloaded is not the one the head named ` +
+          `(the head said ${warrant.headSnapshotId}, the file says ${snap.snapshotId})`,
       };
     }
   }
 
-  // …and, when the adoption rests on descent, the body has to name us. Only
-  // the body can: snapshot ids are random uid()s, so a writer that never saw
-  // ours cannot name it, and a writer that omits the field leaves OUR id in
-  // the head's properties without ever having written it.
+  // …and the body has to NAME US. Only the body can: snapshot ids are random
+  // uid()s, so a writer that never saw ours cannot name one, which is why a
+  // chain can only ever GRANT descent and never deny it.
   const from = warrant.descendsFrom;
-  if (from !== null) {
-    const names = (snap.parentSnapshotId ?? null) === from || (snap.ancestry ?? []).includes(from);
-    if (!names) {
-      return {
-        ok: false,
-        why: `the file's contents do not descend from ${from}, the snapshot this device's book grew out of`,
-      };
-    }
+  const names = (snap.parentSnapshotId ?? null) === from || (snap.ancestry ?? []).includes(from);
+  if (!names) {
+    return {
+      ok: false,
+      why: `the file's contents do not descend from ${from}, the snapshot this device's book grew out of`,
+    };
   }
   return { ok: true, proof: PROVED };
 }
@@ -1388,15 +1408,14 @@ async function pullRemote(
   transport: SyncTransport,
   guard: LocalStateAtDecision,
   warrant: AdoptionWarrant,
-  refuse: (downloaded: SyncSnapshot) => Promise<SyncOutcome>,
+  refuse: (downloaded: IdentifiedSnapshot) => Promise<SyncOutcome>,
 ): Promise<SyncOutcome> {
   const got = await fetchRemote(transport);
   if (!got.ok) return got.outcome;
   const proved = proveAdoption(got.snap, warrant);
   // NOTHING is recorded on the way out. In particular this device keeps the id
-  // it descends from: writing `syncLastPulledSnapshotId: null` here would drop
-  // it onto the revision-number fallback, where the very next dirty sync would
-  // push over the book it just refused to adopt.
+  // it descends from: overwriting `syncLastPulledSnapshotId` here would leave
+  // it claiming descent from a file it has just refused to adopt.
   if (!proved.ok) return refuse(got.snap);
   return applyPulled(got.snap, guard, proved.proof);
 }
@@ -1420,7 +1439,7 @@ const LOCAL_WRITE_DURING_SYNC_MESSAGE =
  * ADOPTION GATE above for why the check has to be against the body.
  */
 async function applyPulled(
-  snap: SyncSnapshot,
+  snap: IdentifiedSnapshot,
   guard: LocalStateAtDecision,
   _proof: AdoptionProof,
 ): Promise<SyncOutcome> {
@@ -1448,13 +1467,10 @@ async function applyPulled(
   lastKnownRemoteRevision = snap.revision;
   await updateSettings({
     syncLastPulledRevision: snap.revision,
-    syncLastPulledSnapshotId: snap.snapshotId ?? null,
-    // The rest of the stamp that snapshot left on the file, so the next cheap
-    // head read can tell "still the snapshot I pulled" from "somebody wrote
-    // and my id merged through" (C18). Null together with the id: a file
-    // written before ancestry existed has no identity to stamp.
-    syncLastPulledSavedAt: snap.snapshotId ? snap.savedAt : null,
-    syncLastPulledDeviceId: snap.snapshotId ? snap.deviceId : null,
+    // We have just read this body and written it into every table, so it is an
+    // id this device can testify about — which is what makes it legitimate for
+    // the next push to name as its parent (see PushParent).
+    syncLastPulledSnapshotId: snap.snapshotId,
     // Everything that snapshot descends from is now behind us too.
     syncAncestry: (snap.ancestry ?? []).slice(0, SYNC_ANCESTRY_DEPTH),
     // The counter as it stood when the decision was made, NOT as it stands
@@ -1469,9 +1485,8 @@ async function applyPulled(
     kind: 'pulled',
     revision: snap.revision,
     counts: snapshotCounts(snap.tables),
-    // This book now descends from exactly that snapshot (null only for a file
-    // written before ancestry existed — see SyncSnapshot.snapshotId).
-    snapshotId: snap.snapshotId ?? null,
+    // This book now descends from exactly that snapshot.
+    snapshotId: snap.snapshotId,
   };
 }
 
@@ -1483,9 +1498,15 @@ async function resolveConflict(
     remoteRevision: number;
     pulledRevision: number;
     localDeviceName: string;
-    /** The head as the cheap read described it, at the moment of the decision. */
-    head: SyncStamp;
-    /** The id this device holds, if a fast-forward is still possible. */
+    /**
+     * The id this device holds, if a fast-forward is still possible — non-null
+     * only for a device with nothing unsent.
+     *
+     * The head is deliberately NOT passed in any more. A resolution that
+     * overwrites the remote must name a parent it has SEEN THE BODY OF, and
+     * the body is downloaded right here; there is nothing a head field could
+     * add except the opportunity to name it by mistake (D1).
+     */
     fastForwardFrom: string | null;
     /**
      * The snapshot the caller has ALREADY downloaded, when it got here by
@@ -1493,10 +1514,10 @@ async function resolveConflict(
      * seconds old — and re-fetching it would cost the owner a second ~3 MB
      * download to answer a question these bytes already answer.
      */
-    downloaded: SyncSnapshot | null;
+    downloaded: IdentifiedSnapshot | null;
   },
 ): Promise<SyncOutcome> {
-  let remoteSnap: SyncSnapshot;
+  let remoteSnap: IdentifiedSnapshot;
   if (ctx.downloaded !== null) {
     remoteSnap = ctx.downloaded;
   } else {
@@ -1571,7 +1592,7 @@ async function resolveConflict(
         losing,
         'local',
         ctx.pulledRevision,
-        `This device's copy of the book, replaced by revision ${ctx.remoteRevision} from Google Drive.`,
+        `This device's copy of the book, replaced by revision ${ctx.remoteRevision} from Dropbox.`,
         opts.saveBackup,
       );
     } catch (e) {
@@ -1584,10 +1605,9 @@ async function resolveConflict(
     }
     // The owner was shown both sides and chose this one, and the book about to
     // be replaced has just been written to a file he can restore. There is
-    // nothing left for a proof to protect, and demanding one would make the
-    // answer "keep the copy in Drive" impossible to carry out in exactly the
-    // C18/C19 state it exists to settle — where the remote body is a legacy
-    // one that names nobody.
+    // nothing left for a proof to protect, and demanding one would make
+    // "keep the copy in Dropbox" impossible to carry out in exactly the state
+    // it exists to settle — two books that do not descend from each other.
     const proved = proveAdoption(remoteSnap, {
       kind: 'nothing-of-ours-at-risk',
       because:
@@ -1598,14 +1618,14 @@ async function resolveConflict(
   }
 
   // keep-local: the REMOTE snapshot loses and is about to be overwritten.
-  // Drive keeps its own file revisions, but "probably recoverable from someone
-  // else's service" is not the standard here.
+  // Dropbox keeps its own file revisions, but "probably recoverable from
+  // someone else's service" is not the standard here.
   try {
     await saveLosingSide(
       snapshotToBackupFile(remoteSnap),
       'remote',
       remoteSnap.revision,
-      `Revision ${remoteSnap.revision} from Google Drive (written by ${remoteSnap.deviceName}), ` +
+      `Revision ${remoteSnap.revision} from Dropbox (written by ${remoteSnap.deviceName}), ` +
         "replaced by this device's copy.",
       opts.saveBackup,
     );
@@ -1618,27 +1638,33 @@ async function resolveConflict(
     };
   }
   // Push above BOTH sides so the number never goes backwards for anyone, and
-  // declare the parent to be the snapshot the user just chose to discard —
-  // the one we downloaded, described and wrote to a safety file. This is the
-  // longest window in the whole feature (a 3 MB download plus a save dialog
-  // that can sit open for minutes), so it is also the one most likely to have
-  // a third write land inside it; the transport then refuses this push rather
-  // than flattening something nobody has seen.
+  // name as the parent THE BODY WE ARE HOLDING — the snapshot we downloaded,
+  // described to the owner, and wrote to a safety file before touching
+  // anything. This is the longest window in the whole feature (a 3 MB download
+  // plus a save dialog that can sit open for minutes), so it is also the one
+  // most likely to have a third write land inside it; the transport then
+  // refuses this push rather than flattening something nobody has seen.
   //
-  // The parent named here is the id THE FILE REPORTS (ctx.head), not the one
-  // inside the body we downloaded. They are the same for every write this app
-  // has ever made; they differ in exactly one case, and it is the one this
-  // resolution exists for — a device on a pre-ancestry build replaced the
-  // contents while Drive merged our old id back on top, so the body carries no
-  // identity at all. The file's own claim is what every device compares
-  // against, the transport's precondition included, so naming anything else
-  // would make this resolution impossible to complete rather than safer.
+  // ===== D1, AND WHY THIS ONE LINE IS THE WHOLE DEFECT ====================
+  //
+  // This used to name `ctx.head.snapshotId` — the id THE FILE REPORTED ABOUT
+  // ITSELF at the top of the sync, which no device here had ever checked
+  // against any body. On Drive that id could be a leftover of our own write
+  // that appProperties had merged back on top of somebody else's book, and
+  // naming it here minted it into `parentSnapshotId` AND into `ancestry`,
+  // where every other device treats an ancestry entry as PROOF OF DESCENT. A
+  // third device that genuinely descended from that id would find itself named
+  // in a chain it was not in, fast-forward, and be silently wiped — a
+  // conflict RESOLUTION destroying an uninvolved device's rows.
+  //
+  // The fix is not "compare more fields". It is that a parent may only ever be
+  // an id this device has seen the body of, which is what `aBodyWeHold` says
+  // and what `PushParent` makes the only thing sayable. The chain handed on is
+  // that body's own ancestry, from the same bytes, so the two cannot disagree.
   return pushLocal(
     transport,
     Math.max(ctx.remoteRevision, ctx.pulledRevision) + 1,
-    ctx.head.snapshotId,
-    remoteSnap.ancestry ?? [],
-    ctx.head,
+    aBodyWeHold(remoteSnap),
   );
 }
 

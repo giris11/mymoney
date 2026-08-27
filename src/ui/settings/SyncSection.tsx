@@ -1,22 +1,29 @@
-// Sync (SPEC §8.3 "optional Google Drive backup sync", pulled forward as D42).
+// Sync (SPEC §8.3 "optional cloud backup sync", pulled forward as D42; moved
+// from Google Drive to Dropbox in D44).
 //
 // This is the first screen in the app that can destroy real data, so it is
 // written to one rule: WHEN IN DOUBT, REFUSE AND ASK. Concretely —
 //
 //  * Nothing here touches the network until the user has read what this does
-//    and pressed Connect. With no client id there is no transport at all.
+//    and pressed Connect. Opening the screen makes no request at all.
 //  * Every outcome is reported by direction ("sent", "fetched", "nothing
 //    happened and here is why"), never as a green tick that means "finished".
 //  * A conflict is never resolved by this screen. syncNow() reports one, the
 //    user decides in SyncConflictDialog, and only then is syncNow() called
 //    again carrying that decision.
-//  * Disconnecting stops syncing and never deletes anything in Drive; the
+//  * Disconnecting stops syncing and never deletes anything in Dropbox; the
 //    screen says so, and says how to delete the file if that is what is meant.
 //  * NOTHING ON THIS SCREEN SYNCS BY ITSELF. There is no timer, no
 //    visibilitychange handler, no background sync — syncNow() is called from
 //    the "Sync now" button and from the conflict dialog's answer, and nowhere
 //    else. The "Sync automatically" control says so rather than implying a
 //    protection that does not exist (C15).
+//
+// WHAT THE MOVE TO DROPBOX CHANGED HERE, beyond the nouns: setting this device
+// up no longer requires the owner to create a cloud project and paste a
+// credential. Dropbox's app key is public by design, so the app ships its own
+// and the setup card is a single Connect button; the key field is an OPTIONAL
+// override, kept behind a disclosure so it cannot read as a required step.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getSettings, updateSettings } from '../../db/db';
 import { useLive } from '../../db/useLive';
@@ -29,15 +36,15 @@ import { cn } from '../../lib/util';
 import { SettingsPage } from './shared';
 import {
   connectErrorMessage,
-  driveTransport,
-  DRIVE_SCOPE,
+  dropboxTransport,
+  DROPBOX_SCOPES,
   isReconnectNeeded,
 } from './syncAccess';
 import { SYNC_HELD, SYNC_HELD_REASON } from '../../sync/held';
-import DriveSetupSteps from './DriveSetupSteps';
+import DropboxSetupSteps from './DropboxSetupSteps';
 import SyncConflictDialog, { type ConflictChoice } from './SyncConflictDialog';
 import {
-  clientIdError,
+  appKeyError,
   describeOutcome,
   deviceNameError,
   deviceNameSuggestion,
@@ -56,14 +63,14 @@ import {
 type Busy = null | 'connecting' | 'syncing' | 'disconnecting';
 
 /**
- * What Drive currently holds — the whole head, not a cut-down copy of it.
+ * What Dropbox currently holds — the whole head, not a cut-down copy of it.
  *
  * `undefined` = not looked since this screen opened, `null` = looked, there is
  * no file yet. The distinction matters: the screen must not claim the two sides
  * match when it has not checked. It carries `snapshotId`/`parentSnapshotId`
  * because IDENTITY, not the revision number, is what decides whether the two
- * copies really are the same one (C17), and `trashed` because a file in Drive's
- * bin is not a working off-site copy.
+ * copies really are the same one (C17), and `trashed` because a deleted file is
+ * not a working off-site copy.
  */
 type RemoteProbe = undefined | null | SyncRemoteMeta;
 
@@ -74,10 +81,59 @@ const TONE_BORDER: Record<OutcomeReport['tone'], string> = {
   error: 'border-danger',
 };
 
+/**
+ * Sync is held (src/sync/held.ts). Show why, and offer nothing that could
+ * reach Dropbox.
+ *
+ * THIS IS A SEPARATE COMPONENT, AND THAT IS THE WHOLE POINT. The held card
+ * used to be an early `return` part-way down the live component, below its
+ * hooks — one of which is `useMemo(() => dropboxTransport(), [])`. But
+ * `dropboxTransport()` THROWS while the hold is on (it is the hold's second
+ * gate), and a `useMemo` factory runs during render, before any `return` under
+ * it is reached. So the held card was unreachable: opening Settings → Sync
+ * threw during render, and with no error boundary in this app that unmounts
+ * the whole root — a blank screen, on a hash route, so a reload lands on the
+ * same URL and blanks it again.
+ *
+ * Splitting it in two makes the hold structural instead of positional: the
+ * live component never MOUNTS while held, so no hook of its runs, no transport
+ * is constructed, and no effect probes the remote. A future edit cannot
+ * reintroduce the bug by adding a hook above the early return, because there
+ * is no longer an early return to sit below.
+ */
+function SyncHeldCard() {
+  return (
+    <SettingsPage
+      title="Sync"
+      description="Syncing between your devices through a file in your own Dropbox. Currently switched off."
+    >
+      <Card>
+        <h2 className="text-sm font-semibold text-text">Sync is switched off in this build</h2>
+        <p className="mt-2 text-sm text-muted">{SYNC_HELD_REASON}</p>
+        <p className="mt-2 text-sm text-muted">
+          To move data between devices meanwhile, use{' '}
+          <strong className="text-text">Settings → Backup</strong>: export a backup file on one
+          device and restore it on the other. That path is well tested and does not touch the
+          network.
+        </p>
+      </Card>
+    </SettingsPage>
+  );
+}
+
 export default function SyncSection() {
+  // Rendered ABOVE every other card and returning before the live component
+  // exists at all, rather than disabling individual buttons, because a
+  // disabled button still invites the question "what if I press it" — and
+  // because one forgotten control on a screen like this is a lost transaction.
+  if (SYNC_HELD) return <SyncHeldCard />;
+  return <SyncSectionLive />;
+}
+
+function SyncSectionLive() {
   const { toast } = useToast();
   const settings = useLive(() => getSettings(), []);
-  const transport = useMemo(() => driveTransport(), []);
+  const transport = useMemo(() => dropboxTransport(), []);
 
   const [state, setState] = useState<SyncState | null>(null);
   const [probe, setProbe] = useState<RemoteProbe>(undefined);
@@ -88,16 +144,16 @@ export default function SyncSection() {
   // way back into it.
   const [conflict, setConflict] = useState<{ local: SyncSummary; remote: SyncSummary } | null>(null);
   const [conflictOpen, setConflictOpen] = useState(false);
-  const [clientIdText, setClientIdText] = useState('');
-  const [clientIdErr, setClientIdErr] = useState<string | null>(null);
+  const [appKeyText, setAppKeyText] = useState('');
+  const [appKeyErr, setAppKeyErr] = useState<string | null>(null);
   const [nameText, setNameText] = useState('');
   const [nameErr, setNameErr] = useState<string | null>(null);
   const [disconnectOpen, setDisconnectOpen] = useState(false);
   const [reseedOpen, setReseedOpen] = useState(false);
-  const [showClientIdField, setShowClientIdField] = useState(false);
-  // Google says the standing grant is gone. transport.isConnected() cannot see
-  // this — it answers synchronously from a stored flag and a client id, which
-  // is right (it must not claim "not set up" merely because no token is in
+  const [showAppKeyField, setShowAppKeyField] = useState(false);
+  // Dropbox says the standing grant is gone. transport.isConnected() cannot see
+  // this — it answers synchronously from the stored refresh token, which is
+  // right (it must not claim "not set up" merely because no access token is in
   // hand) but means only an actual request can discover a revoked grant.
   const [signInLapsed, setSignInLapsed] = useState(false);
   const seeded = useRef(false);
@@ -109,14 +165,14 @@ export default function SyncSection() {
   }, [transport]);
 
   /**
-   * Read the file's metadata (a few hundred bytes — never the rows). Only ever
-   * when already connected, so opening this screen on an unconfigured device
-   * makes no request at all.
+   * Read the file's head (its identity and revision — never the rows). Only
+   * ever when already connected, so opening this screen on an unconfigured
+   * device makes no request at all.
    *
    * TWO KINDS OF FAILURE, and they must not be merged. Offline, a timeout, a
-   * slow Drive: the screen has simply not checked, which it already says
-   * honestly. But a refused grant means this device cannot reach Drive at all
-   * — and swallowing that would leave a green "Connected to Google Drive" tick
+   * slow Dropbox: the screen has simply not checked, which it already says
+   * honestly. But a refused grant means this device cannot reach Dropbox at
+   * all — and swallowing that would leave a green "Connected to Dropbox" tick
    * over a connection that does not exist, which is the screen claiming an
    * off-site copy it has no way to write.
    */
@@ -139,7 +195,7 @@ export default function SyncSection() {
   useEffect(() => {
     if (!settings || seeded.current) return;
     seeded.current = true;
-    setClientIdText(settings.syncClientId ?? '');
+    setAppKeyText(settings.syncClientId ?? '');
     setNameText(settings.syncDeviceName || deviceNameSuggestion(navigator.userAgent));
   }, [settings]);
 
@@ -168,9 +224,9 @@ export default function SyncSection() {
       // is the same fact probeRemote catches, arriving by the other door.
       if (outcome.kind === 'not-connected') setSignInLapsed(true);
       await refreshState();
-      // Re-read the head after anything that actually REACHED Drive — a
+      // Re-read the head after anything that actually REACHED Dropbox — a
       // failure most of all. The old code refreshed only after a push or a
-      // pull, so after "the sync file is no longer in your Drive" the card
+      // pull, so after "the sync file is no longer in your Dropbox" the card
       // above went on describing a file that is not there, contradicting the
       // report three lines below it. Offline and not-connected are skipped
       // because there is nothing to read and the attempt would only downgrade
@@ -183,20 +239,24 @@ export default function SyncSection() {
   // ------------------------------------------------------------ actions
 
   const connect = async () => {
-    const err = clientIdError(clientIdText);
-    setClientIdErr(err);
+    // A BLANK FIELD IS THE NORMAL CASE and is not an error: it means "use the
+    // app key built into this build". Only a value the owner actually typed is
+    // validated, and only then can this refuse to go on.
+    const typed = appKeyText.trim();
+    const err = typed ? appKeyError(typed) : null;
+    setAppKeyErr(err);
     if (err) return;
     setBusy('connecting');
     try {
-      // Stored BEFORE connecting: the transport reads the client id back out
-      // of settings when it asks Google for a token.
+      // Stored BEFORE connecting: the transport reads the app key back out of
+      // settings when it asks Dropbox for a token.
       const name = nameText.trim() || deviceNameSuggestion(navigator.userAgent);
-      await updateSettings({ syncClientId: clientIdText.trim(), syncDeviceName: name });
+      await updateSettings({ syncClientId: typed, syncDeviceName: name });
       await transport.connect();
-      toast('Connected to Google Drive', 'success');
+      toast('Connected to Dropbox', 'success');
       setReport(null);
       setSignInLapsed(false);
-      setShowClientIdField(false);
+      setShowAppKeyField(false);
       await refreshState();
       await probeRemote();
     } catch (e) {
@@ -246,7 +306,7 @@ export default function SyncSection() {
       // The device really is signed out now, and that is not a lapse — the
       // reconnect card would be shouting about a thing the user just chose.
       setSignInLapsed(false);
-      toast('Disconnected. The file in your Drive was not deleted.', 'info');
+      toast('Disconnected. The file in your Dropbox was not deleted.', 'info');
     } catch (e) {
       toast(connectErrorMessage(e), 'error');
     } finally {
@@ -272,88 +332,57 @@ export default function SyncSection() {
     hasLocalChanges: state?.hasLocalChanges ?? false,
     lastPulledRevision: state?.lastPulledRevision ?? 0,
     remoteRevision: probe === undefined ? undefined : probe === null ? null : probe.revision,
-    // Identity, which is what "the same copy" actually means. `undefined` while
-    // settings are still loading, and undefined is the cautious answer: it
-    // sends every sentence to the revision fallback, none of which claims the
-    // two sides are the same copy.
+    // Identity, which is what "the same copy" actually means, and the only
+    // thing the card's sentence turns on. `undefined` while settings are still
+    // loading, and undefined is its own answer there — "not checked" — rather
+    // than a guess in either direction.
     lastPulledSnapshotId: settings?.syncLastPulledSnapshotId,
     localAncestry: settings?.syncAncestry,
+    // Both come out of the FILE'S BODY (readRemoteMeta derives them from the
+    // bytes it downloaded), so they describe the file that is actually there.
+    // On Drive they could be leftovers of our own write that appProperties had
+    // merged back on top of somebody else's book, which is why the card used
+    // to need a whole stamp beside them; on Dropbox a writer replaces the body
+    // whole, so the id cannot be inherited and the stamp is gone (C18/C19/D45).
     remoteSnapshotId: probe?.snapshotId ?? null,
     remoteParentSnapshotId: probe?.parentSnapshotId ?? null,
-    // The rest of the head's stamp, and the stamp this device recorded for the
-    // snapshot it descends from. Without these the card can only compare ids,
-    // and an id can be a leftover of our own write that Drive merged back on
-    // top of somebody else's book — the state the engine calls a conflict
-    // while the card said "the same copy" (C18/C20).
-    remoteSavedAt: probe?.savedAt ?? null,
-    remoteDeviceId: probe?.deviceId ?? null,
-    lastPulledSavedAt: settings?.syncLastPulledSavedAt,
-    lastPulledDeviceId: settings?.syncLastPulledDeviceId,
     remoteTrashed: probe?.trashed === true,
     everSynced,
   };
 
-  const stage = setupStage({
-    connected,
-    hasClientId: (settings?.syncClientId ?? '') !== '',
-    everSynced,
-  });
+  const hasAppKey = (settings?.syncClientId ?? '') !== '';
+  const stage = setupStage({ connected, hasAppKey, everSynced });
 
   // One field, two cards. Written once so the setup card and the sign-in-again
   // card cannot drift into giving different advice about the same input — and
-  // in particular so the "never paste a client secret" hint is on both.
-  const clientIdField = (
+  // in particular so the "never paste the app secret" warning is on both.
+  const appKeyField = (
     <Field
-      label="Google OAuth client ID"
-      error={clientIdErr}
-      hint="Ends in .apps.googleusercontent.com. This is not a secret — never paste a client secret anywhere."
+      label="Dropbox app key (optional)"
+      error={appKeyErr}
+      hint="Leave blank to use the app key built into MyMoney. Dropbox shows an App secret right beside the App key and the two look identical — never paste a secret here; this app has no use for one."
     >
       {(id) => (
         <Input
           id={id}
-          value={clientIdText}
+          value={appKeyText}
           spellCheck={false}
           autoComplete="off"
           autoCapitalize="none"
-          placeholder="000000000000-xxxxxxxx.apps.googleusercontent.com"
+          placeholder="Leave blank unless you have your own Dropbox app"
           onChange={(e) => {
-            setClientIdText(e.target.value);
-            if (clientIdErr) setClientIdErr(null);
+            setAppKeyText(e.target.value);
+            if (appKeyErr) setAppKeyErr(null);
           }}
         />
       )}
     </Field>
   );
 
-  // Sync is held (src/sync/held.ts). Show why, and offer nothing that could
-  // reach Drive. Rendered ABOVE every other card and returning early, rather
-  // than disabling individual buttons, because a disabled button still invites
-  // the question "what if I press it" — and because one forgotten control on a
-  // screen like this is a lost transaction.
-  if (SYNC_HELD) {
-    return (
-      <SettingsPage
-        title="Sync"
-        description="Syncing between your devices through a file in your own Google Drive. Currently switched off."
-      >
-        <Card>
-          <h2 className="text-sm font-semibold text-text">Sync is switched off in this build</h2>
-          <p className="mt-2 text-sm text-muted">{SYNC_HELD_REASON}</p>
-          <p className="mt-2 text-sm text-muted">
-            To move data between devices meanwhile, use{' '}
-            <strong className="text-text">Settings → Backup</strong>: export a backup file on one
-            device and restore it on the other. That path is well tested and does not touch the
-            network.
-          </p>
-        </Card>
-      </SettingsPage>
-    );
-  }
-
   return (
     <SettingsPage
       title="Sync"
-      description="Keep this device in step with your others through a single file in your own Google Drive. Optional, off until you set it up, and never required for the app to work."
+      description="Keep this device in step with your others through a single file in your own Dropbox. Optional, off until you set it up, and never required for the app to work."
     >
       {/* ------------------------------------------------ what this does */}
       <Card>
@@ -361,26 +390,35 @@ export default function SyncSection() {
         <ul className="mt-2 flex flex-col gap-2 text-sm text-muted">
           <li>
             <strong className="text-text">A copy of your whole database is uploaded</strong> — every
-            account, transaction, budget, payee, tag, rate and setting — as one file.
+            account, transaction, budget, payee, tag, rate and setting — as one file called{' '}
+            <code className="text-xs">mymoney-sync.json</code>.
           </li>
           <li>
-            <strong className="text-text">It goes to your own Google Drive</strong>, into a single
-            file this app creates there. This app has no server: nothing is sent to us, and nobody
-            else can see it. What you can see in your Drive is all there is.
+            <strong className="text-text">It goes into a folder of its own in your Dropbox</strong>,
+            which Dropbox creates for this app under <em>Apps</em>. This app has no server: nothing
+            is sent to us, and nobody else can see it. What you can see in that folder is all there
+            is.
           </li>
           <li>
-            <strong className="text-text">The app asks for the narrowest access Google offers</strong>{' '}
-            — <code className="break-all text-xs">{DRIVE_SCOPE}</code>, which means files this app itself
-            created, and nothing else in your Drive.
+            <strong className="text-text">The app cannot see the rest of your Dropbox.</strong> It is
+            registered for App&nbsp;folder access, so the permission it holds reaches that one
+            folder and nothing else — your other files are invisible to it, and it cannot even tell
+            they exist.
           </li>
           <li>
-            <strong className="text-text">Nothing leaves this device until you say so.</strong> With
-            no client ID set up, the app makes no request to Google at all.
+            <strong className="text-text">It asks for four permissions and no more</strong> —{' '}
+            <code className="break-all text-xs">{DROPBOX_SCOPES.join(', ')}</code>. Sign-in is
+            refused if it comes back with anything narrower, and the app never requests permission
+            to share, to write file metadata, or to read your contacts.
+          </li>
+          <li>
+            <strong className="text-text">Nothing leaves this device until you say so.</strong>{' '}
+            Until you press Connect, the app makes no request to Dropbox at all.
           </li>
           <li>
             <strong className="text-text">You can stop at any time.</strong> Disconnecting ends the
-            syncing; the file stays in your Drive until you delete it yourself, which you can do
-            from Drive like any other file.
+            syncing; the file stays in your Dropbox until you delete it yourself, which you can do
+            like any other file.
           </li>
         </ul>
       </Card>
@@ -390,13 +428,12 @@ export default function SyncSection() {
         <Card>
           <h2 className="text-sm font-semibold text-text">Set up this device</h2>
           <p className="mt-1 text-sm text-muted">
-            This app ships no Google credentials of its own — a web app cannot keep a secret safe,
-            so there is nothing of ours in the middle. You create a client ID in your own Google
-            account and paste it here, once per device.
+            There is nothing to fill in. Press Connect and Dropbox will ask you, in its own window,
+            whether to let MyMoney use a folder of its own. This app ships no secret of any kind — a
+            web app cannot keep one — so it never asks you for a password, and Dropbox never gives
+            it one.
           </p>
           <div className="mt-3 flex flex-col gap-3">
-            {clientIdField}
-            <DriveSetupSteps />
             <div>
               <Button
                 variant="primary"
@@ -404,29 +441,44 @@ export default function SyncSection() {
                 aria-busy={busy === 'connecting'}
                 onClick={() => void connect()}
               >
-                {busy === 'connecting' ? 'Waiting for Google…' : 'Connect to Google Drive'}
+                {busy === 'connecting' ? 'Waiting for Dropbox…' : 'Connect to Dropbox'}
               </Button>
             </div>
             <p className="text-xs text-muted">
-              Connecting opens Google’s own sign-in window. Nothing is uploaded by connecting —
+              Connecting opens Dropbox’s own sign-in window. Nothing is uploaded by connecting —
               the first upload happens when you press Sync now.
             </p>
+            {/* The key field lives INSIDE the optional disclosure, not above
+                the button. Under Drive it was mandatory and sat at the top of
+                this card; leaving it there would tell the owner he has a step
+                to complete that he does not. */}
+            <details className="group rounded-lg border border-border bg-surface2/50">
+              <summary className="cursor-pointer list-none px-3 py-2 text-sm font-medium text-text [&::-webkit-details-marker]:hidden">
+                Advanced: use my own Dropbox app key
+              </summary>
+              <div className="border-t border-border px-3 py-3">
+                {appKeyField}
+                <div className="mt-3">
+                  <DropboxSetupSteps />
+                </div>
+              </div>
+            </details>
           </div>
         </Card>
       )}
 
       {/* --------------------------------------------- signed out, set up */}
       {/* This card exists because "set up" and "signed in" are different facts
-          (C11). The access token is deliberately never stored, so an ordinary
-          page reload leaves a fully configured device holding no token; showing
-          it "Set up this device" told the owner his iMac — client ID stored,
-          5,127 transactions already in Drive — was a blank slate, and hid the
-          one button that would have fixed it. */}
+          (C11). A grant can be revoked at dropbox.com, or expire, and the
+          device is then fully configured and holding no way in; showing it
+          "Set up this device" told the owner his iMac — 5,127 transactions
+          already synced — was a blank slate, and hid the one button that would
+          have fixed it. */}
       {stage === 'needs-sign-in' && (
         <Card className="border-warn">
           <h2 className="flex items-center gap-1.5 text-sm font-semibold text-text">
             <IconAlert size={16} className="text-warn" />
-            Sign in to Google again
+            Sign in to Dropbox again
           </h2>
           <p className="mt-2 text-sm text-text">
             {signInAgainWords({ everSynced, hasLocalChanges: state?.hasLocalChanges ?? false })}
@@ -441,20 +493,20 @@ export default function SyncSection() {
               aria-busy={busy === 'connecting'}
               onClick={() => void connect()}
             >
-              {busy === 'connecting' ? 'Waiting for Google…' : 'Sign in to Google Drive'}
+              {busy === 'connecting' ? 'Waiting for Dropbox…' : 'Sign in to Dropbox'}
             </Button>
             <Button
               size="sm"
               variant="ghost"
               disabled={busy !== null}
-              onClick={() => setShowClientIdField((v) => !v)}
+              onClick={() => setShowAppKeyField((v) => !v)}
             >
-              {showClientIdField ? 'Keep the stored client ID' : 'Use a different client ID'}
+              {showAppKeyField ? 'Hide the app key' : 'Change the app key'}
             </Button>
           </div>
-          {showClientIdField && <div className="mt-3">{clientIdField}</div>}
+          {showAppKeyField && <div className="mt-3">{appKeyField}</div>}
           <p className="mt-2 text-xs text-muted">
-            Signing in opens Google’s own window. Nothing is uploaded or fetched by signing in —
+            Signing in opens Dropbox’s own window. Nothing is uploaded or fetched by signing in —
             that happens when you press Sync now.
           </p>
         </Card>
@@ -465,7 +517,7 @@ export default function SyncSection() {
         <Card>
           <h2 className="flex items-center gap-1.5 text-sm font-semibold text-text">
             <IconCheck size={16} className="text-pos" />
-            Connected to Google Drive
+            Connected to Dropbox
           </h2>
           <p className="mt-2 text-sm text-text">{revisionWords(facts)}</p>
           <p className="mt-1 text-sm text-muted">
@@ -474,29 +526,30 @@ export default function SyncSection() {
           {probe && (
             <p className="mt-1 text-sm text-muted">
               {/* The name is whatever was typed on the OTHER device, and it
-                  arrives inside a file that can be edited in Drive by hand.
+                  arrives inside a file that can be edited by hand in Dropbox.
                   React escapes it; safeDeviceName stops it impersonating this
                   sentence with newlines, bidi overrides or sheer length. */}
-              The file in Drive was last written by{' '}
+              The file in Dropbox was last written by{' '}
               <strong className="text-text">{safeDeviceName(probe.deviceName, 'an unnamed device')}</strong>{' '}
               {whenPhrase(probe.savedAt)}.
             </p>
           )}
-          {settings?.syncClientId && (
+          {hasAppKey && (
             <p className="mt-2 break-all text-xs text-faint">
-              Using client ID <code>{settings.syncClientId}</code>. To change it, disconnect first.
+              Using your own Dropbox app key <code>{settings?.syncClientId}</code>. To change it,
+              disconnect first.
             </p>
           )}
           {/* Two different numbering spaces, so both are named. "Version 214 on
-              this device" is a count of local change batches; the Drive one is
-              the file's revision. Neither is evidence the copies are the same —
-              the sentence at the top of this card is (C17). */}
+              this device" is a count of local change batches; the Dropbox one
+              is the file's own revision. Neither is evidence the copies are the
+              same — the sentence at the top of this card is (C17). */}
           <p className="mt-2 text-xs text-faint tnum">
             {formatCount(state?.localRevision ?? 0)} change
             {(state?.localRevision ?? 0) === 1 ? '' : 's'} recorded on this device
-            {probe ? `; the file in Drive is at version ${formatCount(probe.revision)}` : ''}
-            {probe?.trashed ? ' and is in the bin' : ''}
-            {probe === null ? '; no file in Drive yet' : ''}.
+            {probe ? `; the file in Dropbox is at version ${formatCount(probe.revision)}` : ''}
+            {probe?.trashed ? ' and has been deleted' : ''}
+            {probe === null ? '; no file in Dropbox yet' : ''}.
           </p>
         </Card>
       )}
@@ -546,7 +599,7 @@ export default function SyncSection() {
           {!connected && (
             <span className="text-sm text-muted">
               {stage === 'needs-sign-in'
-                ? 'Sign in to Google above before syncing.'
+                ? 'Sign in to Dropbox above before syncing.'
                 : 'Set this device up above before syncing.'}
             </span>
           )}
@@ -572,7 +625,7 @@ export default function SyncSection() {
           <Checkbox label="Sync automatically" checked={false} disabled onChange={() => {}} />
           <p className="mt-1 text-xs text-muted">
             <strong className="text-text">Not yet — use “Sync now”.</strong> This app never syncs on
-            its own: nothing is sent to Drive or taken from it except when you press the button
+            its own: nothing is sent to Dropbox or taken from it except when you press the button
             above. Until that changes, treat the last sync time as exactly what it says.
           </p>
         </div>
@@ -597,14 +650,14 @@ export default function SyncSection() {
             <p className="mt-1 text-muted">{report.detail}</p>
             {/* A permanent failure must not sit under a screen whose only
                 other suggestion is to press the button again. Nothing here
-                will clear on its own — a full Drive, a deleted file, a file in
-                the bin — and the off-site copy has stopped advancing until the
-                owner acts (C14). */}
+                will clear on its own — a full Dropbox, a deleted file, a file
+                this app did not write — and the off-site copy has stopped
+                advancing until the owner acts (C14). */}
             {report.needsYou && (
               <p className="mt-2 text-xs text-warn">
-                Waiting will not clear this, and until it is cleared nothing new is reaching Drive.
-                In the meantime this device is the only copy — Settings → Backup &amp; storage
-                exports one you can keep elsewhere.
+                Waiting will not clear this, and until it is cleared nothing new is reaching
+                Dropbox. In the meantime this device is the only copy — Settings → Backup &amp;
+                storage exports one you can keep elsewhere.
               </p>
             )}
             {conflict && !conflictOpen && (
@@ -633,9 +686,9 @@ export default function SyncSection() {
 
       {/* -------------------------------------------------- disconnect */}
       {/* Shown for a device that is signed OUT as well as one signed in: a
-          device whose grant lapsed still has a stored client ID and a stored
-          "linked" flag, and hiding this card was what left the owner unable to
-          stop syncing from the app once the token went (C11). */}
+          device whose grant lapsed still has a stored "linked" state, and
+          hiding this card was what left the owner unable to stop syncing from
+          the app once the token went (C11). */}
       {stage !== 'not-set-up' && (
         <Card>
           <h2 className="flex items-center gap-1.5 text-sm font-semibold text-text">
@@ -644,21 +697,26 @@ export default function SyncSection() {
           </h2>
           <ul className="mt-2 flex flex-col gap-1.5 text-sm text-muted">
             <li>
-              <strong className="text-text">It stops this device syncing</strong> and withdraws the
-              app’s access to your Drive.
+              <strong className="text-text">It stops this device syncing</strong>, tells Dropbox to
+              cancel the permission, and forgets the sign-in kept on this device.
             </li>
             <li>
-              <strong className="text-text">It does not delete the file in your Drive</strong>, and
+              <strong className="text-text">It does not delete the file in your Dropbox</strong>, and
               it does not touch anything on this device. Your other devices carry on as they were.
             </li>
             <li>
-              To remove the file as well, open Drive and delete{' '}
-              <code className="text-xs">mymoney-sync.json</code> yourself — then empty Drive’s bin.
+              To remove the file as well, open the app’s folder in Dropbox (under{' '}
+              <em>Apps</em>), delete <code className="text-xs">mymoney-sync.json</code> yourself,
+              then delete it permanently from your deleted files.
+            </li>
+            <li>
+              You can also revoke the permission from Dropbox’s own side, on every device at once,
+              at <code className="break-all text-xs">dropbox.com/account/connected_apps</code>.
             </li>
           </ul>
           <div className="mt-3">
             <Button disabled={busy !== null} onClick={() => setDisconnectOpen(true)}>
-              Disconnect from Google Drive
+              Disconnect from Dropbox
             </Button>
           </div>
         </Card>
@@ -666,7 +724,7 @@ export default function SyncSection() {
 
       <ConfirmDialog
         open={disconnectOpen}
-        title="Disconnect from Google Drive"
+        title="Disconnect from Dropbox"
         confirmLabel="Disconnect"
         message={
           <>
@@ -675,8 +733,8 @@ export default function SyncSection() {
               again. Nothing on this device is deleted or changed.
             </p>
             <p className="mt-2">
-              The file <code className="text-xs">mymoney-sync.json</code> stays in your Drive. To
-              remove it, delete it in Drive yourself.
+              The file <code className="text-xs">mymoney-sync.json</code> stays in your Dropbox. To
+              remove it, delete it there yourself.
             </p>
           </>
         }
@@ -693,7 +751,7 @@ export default function SyncSection() {
           <>
             <p>
               This uploads <strong>this device’s copy</strong> as a brand-new
-              <code className="text-xs"> mymoney-sync.json</code> in your Drive. Nothing on this
+              <code className="text-xs"> mymoney-sync.json</code> in your Dropbox. Nothing on this
               device is changed or deleted.
             </p>
             <p className="mt-2">

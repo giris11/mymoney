@@ -1,10 +1,32 @@
-// Wording for the sync screens (SPEC §8.3 Drive sync, D42).
+// Wording for the sync screens (SPEC §8.3 cloud sync, D42/D44/D45).
 //
 // Every sentence the sync UI shows about *what is about to happen to the data*
 // is built here, as pure functions, so it can be tested. The rule the whole
 // feature is written to: when in doubt, refuse and ask — so these helpers
 // never round, never soften and never invent a winner. If something is
 // unknown it says so.
+//
+// SYNC RUNS ON DROPBOX NOW (D44), and this file changed more than its nouns.
+//
+// The Drive build needed a whole apparatus here — `headStamp()`, an
+// agrees/diverged/unproven verdict, four extra facts — for one reason: Drive
+// MERGED appProperties, so the snapshot id on a file could be a leftover of
+// OUR earlier write sitting on top of somebody else's book. An id could not be
+// believed, so the card compared the fields a writer cannot avoid writing.
+//
+// On Dropbox identity lives INSIDE THE FILE BODY, which is replaced wholesale
+// by whoever writes it, and `readRemoteMeta()` derives it from those same
+// bytes. A foreign writer therefore cannot leave our id behind. Equal ids mean
+// the same file, so the stamp apparatus is deleted rather than guarded — and
+// with it the revision-number fallback table, which claimed things
+// ("the next sync checks", "Dropbox has changes this device has not taken")
+// that the engine, since D45, will not do: there is no fallback there any
+// more, and everything without a shared identity is a conflict.
+//
+// THE RULE THAT DID NOT CHANGE, and the reason this file exists: the screen
+// and the engine must never be able to disagree about what is about to happen
+// to the data. `remoteRelation` mirrors syncNow's decision table branch for
+// branch, in the engine's own order, using the engine's own names.
 import dayjs from 'dayjs';
 import type { SyncOutcome } from '../../sync/types';
 
@@ -57,7 +79,7 @@ export function whenPhrase(iso: string, nowMs: number = Date.now()): string {
  * The longest a device name is ever shown at. `deviceNameError` holds THIS
  * device to the same bound; a name that arrives inside a snapshot has been
  * through no such check, because it was typed on another device (possibly an
- * older build) and the file itself can be hand-edited in Drive.
+ * older build) and the file itself can be edited by hand in Dropbox.
  */
 export const DEVICE_NAME_DISPLAY_MAX = 40;
 
@@ -155,7 +177,7 @@ const TABLE_LABELS: Record<string, [one: string, many: string]> = {
  *
  * Sanitised on the way through, because this branch only ever runs on a name
  * that is NOT one of ours: the counts in a conflict come from the keys of the
- * remote snapshot's `tables`, which is whatever is in the file in Drive. A key
+ * remote snapshot's `tables`, which is whatever is in the file in Dropbox. A key
  * of "transactions — already saved" would otherwise be printed as a row label
  * in the comparison table, in the app's own voice.
  */
@@ -294,15 +316,15 @@ export interface OutcomeReport {
   /** One sentence saying what actually happened to the data. */
   detail: string;
   /**
-   * Waiting cannot clear this. Only the owner can — by freeing space in Drive,
-   * restoring a file, or choosing something. The screen must not offer "try
-   * again" as though time were the answer.
+   * Waiting cannot clear this. Only the owner can — by freeing space in
+   * Dropbox, restoring a file, or choosing something. The screen must not offer
+   * "try again" as though time were the answer.
    */
   needsYou?: boolean;
   /**
    * The one action the app can offer for this failure, when there is one.
    * 'reseed-remote' = "start a new sync file from this device", the answer to a
-   * sync file that has been deleted from Drive (SyncOptions.resolve).
+   * sync file that has been deleted from Dropbox (SyncOptions.resolve).
    */
   offer?: 'reseed-remote';
 }
@@ -326,32 +348,55 @@ export interface OutcomeReport {
  * rather than quietly in front of the owner.
  */
 function classifyFailure(message: string): OutcomeReport | null {
-  // A FULL DRIVE IS NOT RATE LIMITING (C14). It will never clear on its own,
+  // A FULL ACCOUNT IS NOT RATE LIMITING (C14). It will never clear on its own,
   // every push from now on fails, and the off-site copy has silently stopped
   // advancing — so it gets its own headline and no "try again shortly".
-  if (/your google drive is full/i.test(message)) {
+  // Produced by transport.ts's `insufficient_space` arm; the test below drives
+  // the real transport into a 409 to prove this string is the real one.
+  if (/your dropbox is full/i.test(message)) {
     return {
       tone: 'error',
-      headline: 'Your Google Drive is full',
+      headline: 'Your Dropbox is full',
       detail: message,
       needsYou: true,
     };
   }
   // There is no off-site copy at all any more. The engine refuses to start a
   // second file on its own, so this is a question only the owner can answer.
-  if (/no longer in your google drive/i.test(message)) {
+  //
+  // MATCHED NARROWLY, on syncEngine's LOST_REMOTE_MESSAGE and not merely on
+  // "no longer in Dropbox": the transport says something very similar when an
+  // upload's precondition has gone stale ("The sync file this upload was based
+  // on is no longer in Dropbox"), and THAT one must not carry the re-seed
+  // offer — the file is usually still there, and starting a second one would
+  // be the exact mistake the offer exists to make deliberate.
+  if (/sync file this device was using is no longer/i.test(message)) {
     return {
       tone: 'error',
-      headline: 'The sync file is gone from Drive',
+      headline: 'The sync file is gone from Dropbox',
       detail: message,
       needsYou: true,
       offer: 'reseed-remote',
     };
   }
-  if (/drive['’]s bin/i.test(message)) {
+  // Deleted, not gone: Dropbox keeps it, and one click restores it. No offer,
+  // because the only right answer is the owner's own — restore it, or empty
+  // the deleted files if he meant to start again.
+  if (/deleted from dropbox/i.test(message)) {
     return {
       tone: 'error',
-      headline: 'The sync file is in Drive’s bin',
+      headline: 'The sync file has been deleted in Dropbox',
+      detail: message,
+      needsYou: true,
+    };
+  }
+  // The file is not one this app wrote (syncEngine's NO_IDENTITY_MESSAGE). The
+  // engine refuses to compare against it at all, and no amount of syncing will
+  // change that, so it is the owner's to resolve.
+  if (/does not say which snapshot it is/i.test(message)) {
+    return {
+      tone: 'error',
+      headline: 'The file in Dropbox is not this app’s sync file',
       detail: message,
       needsYou: true,
     };
@@ -380,19 +425,19 @@ export function describeOutcome(outcome: SyncOutcome): OutcomeReport {
       return {
         tone: 'info',
         headline: 'Already up to date',
-        detail: 'This device and the copy in Drive already match. Nothing was sent or fetched.',
+        detail: 'This device and the copy in Dropbox are the same copy. Nothing was sent or fetched.',
       };
     case 'pushed':
       return {
         tone: 'success',
-        headline: 'Sent to Google Drive',
-        detail: `This device's copy is now the one in Drive (version ${outcome.revision}). Your other devices will pick it up the next time they sync.`,
+        headline: 'Sent to Dropbox',
+        detail: `This device's copy is now the one in Dropbox (version ${outcome.revision}). Your other devices will pick it up the next time they sync.`,
       };
     case 'pulled':
       return {
         tone: 'success',
-        headline: 'Updated from Google Drive',
-        detail: `This device now holds the copy from Drive (version ${outcome.revision}): ${summariseCounts(outcome.counts, 4)}.`,
+        headline: 'Updated from Dropbox',
+        detail: `This device now holds the copy from Dropbox (version ${outcome.revision}): ${summariseCounts(outcome.counts, 4)}.`,
       };
     case 'conflict':
       return {
@@ -404,18 +449,18 @@ export function describeOutcome(outcome: SyncOutcome): OutcomeReport {
       return {
         tone: 'info',
         headline: 'No connection',
-        detail: 'Google Drive could not be reached, so nothing was sent or fetched. Everything on this device is untouched — try again when you are back online.',
+        detail: 'Dropbox could not be reached, so nothing was sent or fetched. Everything on this device is untouched — try again when you are back online.',
       };
     case 'not-connected':
       return {
         tone: 'warn',
-        // NOT "not set up" (C11): this device IS set up — it has a client ID,
-        // a name, and in all likelihood a book in Drive. What it has lost is
-        // the sign-in, and the two need different words because they need
+        // NOT "not set up" (C11): this device IS set up — it has a name, a
+        // history, and in all likelihood a book in Dropbox. What it has lost
+        // is the sign-in, and the two need different words because they need
         // different actions.
         headline: 'Needs a fresh sign-in',
         detail:
-          'This device is still set up for sync, but it is not signed in to Google right now, so nothing could be sent or fetched. Sign in again to resume; your data has not been touched.',
+          'This device is still set up for sync, but it is not signed in to Dropbox right now, so nothing could be sent or fetched. Sign in again to resume; your data has not been touched.',
         needsYou: true,
       };
     case 'error':
@@ -445,257 +490,190 @@ export function toastKind(tone: OutcomeTone): 'success' | 'error' | 'info' {
  * has one definition, `syncLocalRevision !== syncSyncedLocalRevision`, and
  * comparing the two revision numbers by hand anywhere else would eventually
  * disagree with it.
+ *
+ * FOUR FIELDS WERE DELETED HERE (D45): `remoteSavedAt`, `remoteDeviceId`,
+ * `lastPulledSavedAt`, `lastPulledDeviceId`. They existed to prove that the id
+ * on the remote head had not merged through from an older write of ours, which
+ * was a real question on Drive and is not one on Dropbox — see the header. The
+ * last two named settings fields the engine has since retired, so keeping them
+ * would have meant the card asking for a stamp nothing records and reporting
+ * every head as unproven, including ones the engine is certain of.
  */
 export interface SyncFacts {
   connected: boolean;
   hasLocalChanges: boolean;
   lastPulledRevision: number;
   /**
-   * The revision sitting in Drive: a number if known, `null` if there is no
+   * The revision sitting in Dropbox: a number if known, `null` if there is no
    * file there yet, `undefined` if this device has not looked since it opened.
    * The third case is a real state and gets its own sentence — claiming the
    * two sides "match" without having checked would be a guess.
+   *
+   * It is NOT what decides any sentence below. It is carried because the
+   * screen shows it as small print, and because "gone backwards" is a useful
+   * extra fact to add to a divergence the ids have already established.
    */
   remoteRevision?: number | null;
   /**
-   * IDENTITY — the thing the revision number was wrongly asked to be (C17).
+   * IDENTITY — the thing the revision number was wrongly asked to be (C17),
+   * and the only thing any sentence below turns on.
    *
    * `settings.syncLastPulledSnapshotId` exactly as stored: the id of the remote
    * snapshot this device's book grew out of, or `null` if it has never agreed
    * with any file. `undefined` means the screen has not read settings yet,
-   * which is the safe direction: every branch then falls back to revision
-   * numbers, and none of those claims the two sides are the same copy.
+   * which is its own answer ("not checked") rather than a guess.
    */
   lastPulledSnapshotId?: string | null;
   /** `settings.syncAncestry`: what sits BEHIND lastPulledSnapshotId. */
   localAncestry?: readonly string[];
-  /** The head's own id, from readRemoteMeta. `null` on a pre-ancestry file. */
-  remoteSnapshotId?: string | null;
-  /** What the head descends from, from readRemoteMeta. */
-  remoteParentSnapshotId?: string | null;
   /**
-   * THE REST OF THE HEAD'S STAMP — and the reason the two ids above are not
-   * enough to claim anything (C18/C19).
-   *
-   * Google Drive MERGES appProperties on files.update: a key the writer omits
-   * keeps its previous value. A device on a build from before ancestry existed
-   * writes neither `snapshotId` nor `parentSnapshotId`, so BOTH of ours can
-   * still be sitting on a file whose contents somebody else replaced. The
-   * fields such a writer does write — `savedAt`, its own `deviceId`, the
-   * revision — are the only ones that can testify that it wrote at all, which
-   * is why the engine compares the whole stamp (syncEngine's `headStillOurs`)
-   * and why this screen has to compare the same one. `undefined` means "not
-   * read", which is treated as no evidence, never as agreement.
+   * The head's own id, from readRemoteMeta — derived from the file's BODY, so
+   * it describes the bytes that are actually there. `null` means the file does
+   * not say what it is, which the engine refuses to work with at all.
    */
-  remoteSavedAt?: string | null;
-  remoteDeviceId?: string | null;
-  /** `settings.syncLastPulledSavedAt` / `…DeviceId`: the stamp we recorded for
-   *  `lastPulledSnapshotId`. `null` on a device that last synced under a build
-   *  that did not record one — it has an id and no proof, exactly the state
-   *  the engine calls 'unproven'. */
-  lastPulledSavedAt?: string | null;
-  lastPulledDeviceId?: string | null;
-  /** The file exists but is in Drive's bin — never the same as "no file". */
+  remoteSnapshotId?: string | null;
+  /** What the head descends from, from the same body. */
+  remoteParentSnapshotId?: string | null;
+  /** The file exists but has been deleted — never the same as "no file". */
   remoteTrashed?: boolean;
   /**
-   * Has this device ever agreed with a file in Drive? It decides whether "no
-   * file in Drive" is the first sync (harmless) or a file that has been
-   * DELETED — where the off-site copy is gone and the engine refuses to start
-   * a new one on its own. Defaults to `lastPulledRevision > 0`.
+   * Has this device ever agreed with a file in Dropbox? It decides whether "no
+   * file" is the first sync (harmless) or a file that has been DELETED — where
+   * the off-site copy is gone and the engine refuses to start a new one on its
+   * own. Defaults to `lastPulledRevision > 0`.
    */
   everSynced?: boolean;
 }
 
 /**
- * How the copy in Drive is RELATED to this device's book.
+ * How the copy in Dropbox is RELATED to this device's book.
  *
- * Mirrors syncNow's decision table one branch at a time, deliberately: the
- * screen and the engine must never be able to disagree about what is about to
- * happen to the data. The names are the engine's own.
+ * One branch per branch of syncNow's decision table, in the same order, with
+ * the engine's own names — so that the screen and the engine cannot disagree
+ * about what is about to happen to the data. Where the engine's answer depends
+ * on `dirty`, the relation does not: `revisionWords` splits it, because both
+ * halves describe the same relationship.
  */
 export type RemoteRelation =
   | 'not-connected'
+  /** Nothing has been read yet — the remote, or this device's own settings. */
   | 'unchecked'
-  /** No file in Drive at all. */
+  /** No file at all. */
   | 'no-file'
-  /** The file exists, in the bin. */
+  /** The file exists, deleted, restorable. */
   | 'trashed'
-  /** The head IS the snapshot this book grew out of, stamp and all. */
+  /**
+   * The file does not say which snapshot it is. The engine refuses outright
+   * (NO_IDENTITY_MESSAGE) rather than compare two absences and read them as
+   * agreement, and the card must not soften that into a state sync can fix.
+   */
+  | 'remote-has-no-identity'
+  /**
+   * The head IS the snapshot this book grew out of. On Dropbox this is a fact
+   * and not a claim: the id comes from the body, which whoever wrote it
+   * replaced whole, so it cannot be a leftover of ours (the C18/C19 shape, now
+   * structurally impossible — see the file header).
+   */
   | 'same-snapshot'
-  /**
-   * The head still NAMES that snapshot, but this device holds no stamp to
-   * check the name against, so from here it is a claim and not a fact. The
-   * engine settles it by reading the file's body; this screen cannot, and must
-   * not borrow the answer it has not got.
-   */
-  | 'same-snapshot-unproven'
-  /**
-   * The head CLAIMS to be a child of ours. `parentSnapshotId` merges through
-   * Drive exactly as `snapshotId` does, and no field of the head can tell a
-   * real child from a leftover, so this is where the screen stops claiming and
-   * says what the next sync will do about it (C19).
-   */
-  | 'remote-claims-descent'
-  /** We descend from nothing, so the file is simply all new here. */
+  /** The head's parent IS our snapshot: one push has happened on top of us. */
+  | 'remote-is-our-child'
+  /** We descend from nothing and hold nothing, so the file is simply new here. */
   | 'remote-descends'
-  /** The head is one of OUR ancestors: Drive has been rolled back. */
+  /** The head is one of OUR ancestors: the remote has been rolled back. */
   | 'remote-rolled-back'
-  /** Shared history cannot be shown from the head alone. */
-  | 'diverged'
-  /** Identity unavailable; the numbers are equal, which proves nothing. */
-  | 'revision-equal'
-  | 'revision-ahead'
-  | 'revision-behind';
+  /**
+   * This device has synced before but records no id, so it cannot say what it
+   * descends from. The engine has no fallback for this and asks; so does this.
+   */
+  | 'we-have-no-identity'
+  /** No shared identity. A conflict, unless the body's chain says otherwise. */
+  | 'diverged';
 
 /**
- * Which snapshot id this device descends from, applying the SAME migration
- * rule as syncEngine's `ancestryOf`: a stored id is the truth; `null` is only
- * believed on a device that has never pulled anything; on a device that HAS
- * synced but carries no id (upgraded mid-lineage) the answer is "unknown",
- * which sends the sentence to the revision-number fallback — the same place
- * the engine sends the decision.
- */
-function pulledSnapshotId(f: SyncFacts): string | null | undefined {
-  if (f.lastPulledSnapshotId === undefined) return undefined;
-  if (f.lastPulledSnapshotId !== null) return f.lastPulledSnapshotId;
-  return f.lastPulledRevision === 0 ? null : undefined;
-}
-
-/**
- * Is the head still the snapshot this device left there — or is our id merely
- * sitting on it, merged through somebody else's write?
+ * syncNow's decision table, one branch at a time and in its order.
  *
- * The same three answers as syncEngine's `headStillOurs`, computed from the
- * same four fields, deliberately: the screen and the engine must never be able
- * to disagree about what is about to happen to the data, and the only way to
- * guarantee that is to ask the identical question of the identical facts.
+ *   not connected                              ⇒ 'not-connected'
+ *   nothing read yet                           ⇒ 'unchecked'
+ *   file deleted in Dropbox                    ⇒ 'trashed'      (refuse, ask)
+ *   no file at all                             ⇒ 'no-file'      (seed / refuse)
+ *   the file carries no identity               ⇒ refuse and ask
+ *   we carry no identity but have synced       ⇒ refuse and ask
+ *   remote IS what we descend from             ⇒ dirty ? push : up-to-date
+ *   remote is a child of what we descend from  ⇒ clean ? pull : conflict
+ *   we descend from nothing and hold nothing   ⇒ clean ? pull : conflict
+ *   anything else                              ⇒ conflict
  *
- * Two differences from the engine, both in the cautious direction. A field
- * this screen has not READ (`undefined`) is 'unproven', never a mismatch — the
- * card renders before the probe answers, and an alarming sentence that
- * un-alarms itself a moment later is its own kind of lie. And where the engine
- * settles 'unproven' by downloading the file body, this screen cannot: it
- * reads no rows, by design (the owner's snapshot is ~3 MB), so it says the
- * name is unproven and leaves the proving to the sync.
+ * THE REVISION NUMBER APPEARS NOWHERE IN IT, which is the point. The engine's
+ * own fallback table is gone (D45), so a card that still reasoned from numbers
+ * would promise pulls the engine will not do and reassure where it will stop.
  */
-function headStamp(f: SyncFacts): 'agrees' | 'diverged' | 'unproven' {
-  const recordedSavedAt = f.lastPulledSavedAt;
-  if (recordedSavedAt === undefined || recordedSavedAt === null) return 'unproven';
-  if (f.remoteSavedAt === undefined || f.remoteSavedAt === null) return 'unproven';
-  if (f.remoteRevision !== f.lastPulledRevision) return 'diverged';
-  if (f.remoteSavedAt !== recordedSavedAt) return 'diverged';
-  // deviceId ABSTAINS when either side is silent — "no evidence" must not be
-  // read as "evidence of no", and nothing rests on it alone.
-  const recordedDeviceId = f.lastPulledDeviceId;
-  if (
-    recordedDeviceId !== undefined &&
-    recordedDeviceId !== null &&
-    typeof f.remoteDeviceId === 'string' &&
-    f.remoteDeviceId !== recordedDeviceId
-  ) {
-    return 'diverged';
-  }
-  return 'agrees';
-}
-
 export function remoteRelation(f: SyncFacts): RemoteRelation {
   if (!f.connected) return 'not-connected';
   if (f.remoteRevision === undefined) return 'unchecked';
-  // Before the null check on purpose: a binned file EXISTS. Reading it as "no
+  // Before the null check on purpose: a deleted file EXISTS. Reading it as "no
   // file yet" is the mistake that started a second lineage at revision 1.
   if (f.remoteTrashed) return 'trashed';
   if (f.remoteRevision === null) return 'no-file';
 
-  const mine = pulledSnapshotId(f);
   const theirs = f.remoteSnapshotId ?? null;
-  if (mine !== undefined && theirs !== null) {
-    // THE SAME QUESTION THE ENGINE ASKS, AND FOR THE SAME REASON. `theirs ===
-    // mine` used to end it here. It cannot: Drive merges appProperties, so our
-    // own id can be sitting on a file another device replaced, and the engine
-    // now calls precisely that state a conflict. Claiming "the same copy" over
-    // it would put the reassuring sentence on the one screen state that most
-    // needs the owner's attention (C18/C20).
-    if (theirs === mine) {
-      switch (headStamp(f)) {
-        case 'agrees':
-          return 'same-snapshot';
-        case 'diverged':
-          // Somebody else wrote this file while our id merged through. The
-          // engine raises a conflict; 'diverged' is the sentence that says so.
-          return 'diverged';
-        case 'unproven':
-          return 'same-snapshot-unproven';
-      }
-    }
-    if ((f.remoteParentSnapshotId ?? null) === mine) return 'remote-claims-descent';
-    // A device that has never agreed with anything descends from nothing, so
-    // there is no ancestry for the remote to violate: the file is simply new
-    // here, and a clean device takes it — with no proof asked for and none
-    // possible, because nothing it holds can be lost.
-    if (mine === null) return 'remote-descends';
-    // The head is something this device has already moved PAST — the file in
-    // Drive was restored to an older version, or replaced. Visible only
-    // because this device keeps its own chain.
-    //
-    // `theirs` could itself be a leftover here, so the REASON given may be the
-    // wrong one; the ACTION promised is not, and that is what this sentence is
-    // judged on. The engine sends every shape that reaches this line to the
-    // same place — stop and ask — so the screen cannot contradict it.
-    if ((f.localAncestry ?? []).includes(theirs)) return 'remote-rolled-back';
-    // Everything else: this may still turn out to be a fast-forward (the head
-    // names only its parent, so a device two pushes behind lands here too),
-    // but the head read alone cannot show it. The engine settles it by reading
-    // the snapshot's own chain; this sentence must not pre-judge either way.
-    return 'diverged';
-  }
+  if (theirs === null) return 'remote-has-no-identity';
 
-  // ---- the fallback, when identity is missing on one side or the other -----
-  //
-  // THIS IS WHERE C17 LIVED. `remoteRevision > lastPulledRevision` was the only
-  // test, so a remote BELOW the local pointer — a re-created file counting from
-  // 1 again — fell past every branch into "This device and the copy in Drive
-  // match." It matched nothing: the engine sends exactly that state to a
-  // conflict. Both directions now have a branch, and equality no longer claims
-  // sameness, because two equal numbers never proved it.
-  if (f.remoteRevision === f.lastPulledRevision) return 'revision-equal';
-  return f.remoteRevision > f.lastPulledRevision ? 'revision-ahead' : 'revision-behind';
+  // Our own side, and "not read yet" is not the same as "nothing". The card
+  // renders before the settings row resolves, and an alarming sentence that
+  // un-alarms itself a moment later is its own kind of lie.
+  if (f.lastPulledSnapshotId === undefined) return 'unchecked';
+  const mine = f.lastPulledSnapshotId;
+  // A stored `null` is only believed on a device that has never pulled
+  // anything. A device that HAS synced and carries no id cannot say what it
+  // descends from — and the engine, which has nothing to fall back on either,
+  // asks. (The same rule as syncEngine's `ancestryOf`.)
+  if (mine === null && f.lastPulledRevision > 0) return 'we-have-no-identity';
+
+  if (theirs === mine) return 'same-snapshot';
+  if (mine !== null && (f.remoteParentSnapshotId ?? null) === mine) return 'remote-is-our-child';
+  // A device that has never agreed with anything descends from nothing, so
+  // there is no ancestry for the remote to violate: the file is simply new
+  // here, and a clean device takes it — with no proof asked for and none
+  // possible, because nothing it holds can be lost.
+  if (mine === null) return 'remote-descends';
+  // The head is something this device has already moved PAST — the file was
+  // restored to an older version, or replaced. Visible only because this
+  // device keeps its own chain. The engine sends it to the same place as
+  // everything below: stop and ask.
+  if ((f.localAncestry ?? []).includes(theirs)) return 'remote-rolled-back';
+  // Everything else. It may still turn out to be a fast-forward (the head
+  // names only its parent, so a device two pushes behind lands here too), but
+  // the head read alone cannot show it: the engine settles that by reading the
+  // snapshot's own chain, and this sentence must not pre-judge either way.
+  return 'diverged';
 }
 
-const UNSENT = 'This device has changes that have not been sent to Drive yet.';
+const UNSENT = 'This device has changes that have not been sent to Dropbox yet.';
 const BOTH_MOVED =
-  'Both this device and the copy in Drive have changed since they last matched. The next sync will stop and ask you which to keep.';
+  'Both this device and the copy in Dropbox have changed since they last matched. The next sync will stop and ask you which to keep.';
 /** Used only where the engine takes the file with no proof asked for, because
  *  this device holds nothing that taking it could lose. */
-const REMOTE_AHEAD = 'Drive has newer changes that this device has not taken yet.';
-/**
- * …and everywhere else, where "newer changes" is what the file SAYS about
- * itself. A head can claim to be the child of this book's snapshot while its
- * contents descend from nothing at all: Drive merges file properties, so the
- * claim can be a leftover of our own earlier write (C19). The next sync reads
- * the contents before it takes them, and this sentence promises exactly that
- * and nothing more.
- */
-const REMOTE_AHEAD_UNCONFIRMED =
-  'Drive has changes this device has not taken yet. The next sync reads the file itself to check they really grew out of this book before taking them — if they did not, it stops and asks; nothing here is replaced without that.';
+const REMOTE_AHEAD =
+  'There is a copy in Dropbox and nothing of your own on this device yet, so the next sync will take it.';
 
 /**
  * The local/remote relationship in plain words. Revision numbers are shown
  * separately as small print — this is the sentence that has to be right.
  *
  * "The same copy" is claimed in exactly one branch, and there it means the head
- * in Drive IS the snapshot this book came from. Nothing here infers sameness
- * from a number.
+ * in Dropbox IS the snapshot this book came from, as the file's own body says.
+ * Nothing here infers sameness from a number.
  */
 export function revisionWords(f: SyncFacts): string {
   const everSynced = f.everSynced ?? f.lastPulledRevision > 0;
   switch (remoteRelation(f)) {
     case 'not-connected':
-      return 'Not connected to Google Drive.';
+      return 'Not connected to Dropbox.';
 
     case 'unchecked':
       return f.hasLocalChanges
         ? UNSENT
-        : 'Everything on this device has been sent to Drive. Sync to check whether another device has added anything since.';
+        : 'Everything on this device has been sent to Dropbox. Sync to check whether another device has added anything since.';
 
     case 'no-file':
       // Two very different situations wear the same face, and only one is
@@ -704,49 +682,57 @@ export function revisionWords(f: SyncFacts): string {
       // not the first sync, and the engine refuses to upload — it will not
       // start a second lineage on its own.
       return everSynced
-        ? 'The sync file this device was using is no longer in your Drive, so there is no off-site copy of this book any more. Nothing here has been touched. Restore it from Drive’s bin, or start a new sync file from this device.'
-        : 'There is nothing in Drive yet. The first sync will upload this device’s copy.';
+        ? 'The sync file this device was using is no longer in your Dropbox, so there is no off-site copy of this book any more. Nothing here has been touched. Restore it from Dropbox’s deleted files, or start a new sync file from this device.'
+        : 'There is nothing in Dropbox yet. The first sync will upload this device’s copy.';
 
     case 'trashed':
-      return 'The sync file is in Google Drive’s bin. Nothing is reaching Drive while it sits there — this device will neither write over it nor start a second file beside it. Restore it in Drive, or empty the bin if you meant to start again.';
+      return 'The sync file has been deleted in Dropbox. Nothing is reaching Dropbox while it sits there — this device will neither write over it nor start a second file beside it. Restore it in Dropbox, or delete it permanently if you meant to start again.';
+
+    case 'remote-has-no-identity':
+      // Comparing "I do not know" with "I do not know" must never come out as
+      // agreement, so the engine refuses this file rather than reasoning about
+      // it. No sync will clear it; the sentence says so instead of implying
+      // that pressing the button again might.
+      return 'The file in Dropbox does not say which snapshot it is, so this device cannot tell whether its own book grew out of it. It was not written by this app. Syncing will refuse to touch it — nothing here will be replaced. Replace it from a backup, or delete it and start a new sync file.';
 
     case 'same-snapshot':
       return f.hasLocalChanges
         ? UNSENT
-        : 'This device and the copy in Drive are the same copy — the file in Drive is the exact snapshot this book came from, and nothing has changed here since.';
+        : 'This device and the copy in Dropbox are the same copy — the file in Dropbox is the exact snapshot this book came from, and nothing has changed here since.';
 
-    case 'same-snapshot-unproven':
+    case 'remote-is-our-child':
+      // The head's parent id came out of the file's own body, so "it grew out
+      // of this copy" is a fact about the bytes that are there now. What the
+      // card still cannot promise is that they will still be there a round
+      // trip later, which is exactly what the engine's adoption gate checks —
+      // so the sentence names that check rather than omitting it.
       return f.hasLocalChanges
-        ? UNSENT
-        : 'The file in Drive still names the snapshot this book came from — but a name in a file’s properties is not proof it was left by this device, because another device’s write can leave it behind. The next sync reads the file itself before it agrees; nothing here is replaced without that.';
-
-    case 'remote-claims-descent':
-      return f.hasLocalChanges ? BOTH_MOVED : REMOTE_AHEAD_UNCONFIRMED;
+        ? BOTH_MOVED
+        : 'Dropbox has newer changes, and the file says they grew out of this device’s copy, so the next sync will take them. It reads the file again as it applies it: if another device writes in between, it stops and asks instead of replacing anything.';
 
     case 'remote-descends':
-      return f.hasLocalChanges ? BOTH_MOVED : REMOTE_AHEAD;
+      return f.hasLocalChanges
+        ? 'There is a copy in Dropbox, and this device has data of its own that has never been sent. The next sync will stop and show you both rather than replacing either.'
+        : REMOTE_AHEAD;
 
     case 'remote-rolled-back':
-      return 'The copy in Drive is one this device has already moved past — it has been rolled back to an older version, or replaced. The next sync will stop and ask; nothing is replaced without you choosing.';
+      return 'The copy in Dropbox is one this device has already moved past — it has been rolled back to an older version, or replaced. The next sync will stop and ask; nothing is replaced without you choosing.';
 
-    case 'diverged':
-      return 'The copy in Drive is not the one this device last matched. The next sync compares them in full and stops to ask if they really have parted — nothing is replaced without you choosing.';
+    case 'we-have-no-identity':
+      return 'This device has synced before but does not record which copy it grew out of, so it cannot tell whether the file in Dropbox is that copy. The next sync will stop and ask; nothing is replaced without you choosing.';
 
-    case 'revision-equal':
-      return f.hasLocalChanges
-        ? UNSENT
-        : 'This device has sent everything it holds, and Drive is at the same version number — which is not proof it is the same copy. The next sync checks.';
-
-    case 'revision-ahead':
-      // The numbers say Drive is ahead and nothing here says whose book it is
-      // — the same unconfirmed claim as above, from the weaker side. The
-      // engine's fallback pull now checks the file's contents against what its
-      // properties advertise before applying it, so this promise is the
-      // engine's own.
-      return f.hasLocalChanges ? BOTH_MOVED : REMOTE_AHEAD_UNCONFIRMED;
-
-    case 'revision-behind':
-      return `The copy in Drive has gone backwards: it is at version ${formatCount(f.remoteRevision as number)}, below the version ${formatCount(f.lastPulledRevision)} this device last took, so it is not the same copy. It has been replaced, or restored from an older one. The next sync will stop and ask; nothing is replaced without you choosing.`;
+    case 'diverged': {
+      const base =
+        'The copy in Dropbox is not the one this device last matched. The next sync compares them in full and stops to ask if they really have parted — nothing is replaced without you choosing.';
+      // The C17 fact, kept as an ADDITION to a verdict the ids have already
+      // reached rather than as a verdict of its own: a remote below our own
+      // pointer has been replaced or restored, and saying so is more use to
+      // the owner than the bare divergence.
+      if (typeof f.remoteRevision === 'number' && f.remoteRevision < f.lastPulledRevision) {
+        return `${base} It has also gone backwards: it is at version ${formatCount(f.remoteRevision)}, below the version ${formatCount(f.lastPulledRevision)} this device last took.`;
+      }
+      return base;
+    }
   }
 }
 
@@ -761,37 +747,45 @@ export function lastSyncedWords(iso: string | null, nowMs: number = Date.now()):
 /**
  * The three states this screen can be in — and they ARE three, not two (C11).
  *
- * "Connected" used to mean "holds a live Google access token". The token is
- * memory-only by design, so every page reload and every hour in an open tab
- * turned a fully configured device — client ID stored, name stored, 5,127
- * transactions already in Drive — into the "Set up this device" screen, with
- * "Sync now" disabled and no way back except an account-chooser popup.
+ * "Connected" used to mean "holds a live access token". Under Drive the token
+ * was memory-only by necessity, so every page reload turned a fully configured
+ * device — 5,127 transactions already synced — into the "Set up this device"
+ * screen, with "Sync now" disabled and no way back except a consent popup.
+ * Dropbox's refresh token makes `connected` durable, but the distinction is
+ * kept: a revoked or expired grant lands in exactly the old state, and the
+ * remedy for it is still not the setup form.
  *
- * Being signed in and being set up are different facts with different remedies,
- * so they get different words:
- *
- *   'not-set-up'     nothing has ever been configured here. Show the client ID
- *                    form and explain what sync does.
- *   'needs-sign-in'  configured, and not signed in to Google right now. The
- *                    data is untouched and possibly unsent; one button fixes it.
+ *   'not-set-up'     nothing has ever been configured here. Explain what sync
+ *                    does and offer Connect.
+ *   'needs-sign-in'  configured, and not signed in right now. The data is
+ *                    untouched and possibly unsent; one button fixes it.
  *   'ready'          signed in. Sync may proceed.
  */
 export type SetupStage = 'not-set-up' | 'needs-sign-in' | 'ready';
 
 export function setupStage(f: {
-  /** transport.isConnected(): a stored client ID and a standing Google grant. */
+  /** transport.isConnected(): this device holds a standing Dropbox grant. */
   connected: boolean;
-  /** A client ID is stored in settings. */
-  hasClientId: boolean;
-  /** This device has agreed with a file in Drive at least once. */
+  /**
+   * An app key of the owner's own is stored in settings.
+   *
+   * ON DROPBOX THIS IS NORMALLY FALSE AND THAT IS FINE. The app ships a public
+   * app key of its own (a browser app cannot keep a secret, so there is no
+   * secret to ship), and pasting one is an optional override for an owner who
+   * wants the app pointed at a Dropbox app of their own. Under Drive it was
+   * mandatory, and it was the ONLY evidence a device had ever been set up —
+   * which is why `everSynced` is here too.
+   */
+  hasAppKey: boolean;
+  /** This device has agreed with a file in Dropbox at least once. */
   everSynced: boolean;
 }): SetupStage {
   if (f.connected) return 'ready';
-  // Either one is proof this device was set up. `everSynced` is included so a
-  // device that somehow lost its client ID — cleared storage, a half-finished
-  // restore — is still not told it is a new device, because it is not: its book
-  // may hold rows that only exist here.
-  return f.hasClientId || f.everSynced ? 'needs-sign-in' : 'not-set-up';
+  // Either one is proof this device was set up. `everSynced` carries almost
+  // all of the weight now: a device whose grant has lapsed has no app key of
+  // its own to remember it by, and telling a device with a book in Dropbox
+  // that it is new is the C11 mistake wearing different clothes.
+  return f.hasAppKey || f.everSynced ? 'needs-sign-in' : 'not-set-up';
 }
 
 /**
@@ -804,10 +798,10 @@ export function signInAgainWords(f: {
   hasLocalChanges: boolean;
 }): string {
   const head = f.everSynced
-    ? 'This device is set up for sync and has synced with Drive before. It is not signed in to Google right now, so nothing can be sent or fetched.'
-    : 'This device has a Google client ID stored but has never synced. Sign in to Google to finish setting it up.';
+    ? 'This device is set up for sync and has synced with Dropbox before. It is not signed in to Dropbox right now, so nothing can be sent or fetched.'
+    : 'This device is set up for sync but has never synced. Sign in to Dropbox to finish setting it up.';
   const tail = f.hasLocalChanges
-    ? ' Nothing here has been touched — but there are changes on this device that have not reached Drive, so this is the only copy of them until you sign in and sync.'
+    ? ' Nothing here has been touched — but there are changes on this device that have not reached Dropbox, so this is the only copy of them until you sign in and sync.'
     : ' Nothing here has been touched.';
   return head + tail;
 }
@@ -815,22 +809,37 @@ export function signInAgainWords(f: {
 // ----------------------------------------------------------- setup checks
 
 /**
- * Validate a pasted Google OAuth client ID. The important case is the last
- * one: a browser app cannot keep a secret, this app never asks for one, and a
- * secret pasted into a text field would end up in the browser's storage for no
- * benefit at all. So refuse it loudly rather than storing it.
+ * The one thing the owner can paste on this screen, and the one thing he must
+ * not: A DROPBOX APP KEY AND A DROPBOX APP SECRET ARE THE SAME SHAPE.
+ *
+ * Both are fifteen lowercase alphanumeric characters, and the Dropbox console
+ * prints them one above the other under "App key" and "App secret". There is
+ * no pattern that tells them apart, so unlike the Google client ID this
+ * replaced — which ended in a recognisable suffix, and whose secret began with
+ * a recognisable "GOCSPX-" — VALIDATION CANNOT CATCH THIS MISTAKE. Only the
+ * label on the field can, which is why the warning is on the field itself and
+ * in the setup steps rather than being left to this function.
+ *
+ * What is checked here is only what can be: emptiness, whitespace (half a
+ * paste), characters no key contains, and the word "secret" itself for the
+ * case where the whole labelled line was copied.
+ *
+ * Nothing here is mandatory any more. The app has a public app key of its own,
+ * so a blank field is the normal, correct state — this runs only when the
+ * owner has chosen to override it, and `SyncSection` does not call it at all
+ * when the field is left empty.
  */
-export function clientIdError(raw: string): string | null {
+export function appKeyError(raw: string): string | null {
   const text = raw.trim();
-  if (!text) return 'Paste the client ID from your Google Cloud project.';
-  if (/^GOCSPX-/i.test(text) || /secret/i.test(text)) {
-    return 'That looks like a client SECRET. Never paste a secret here — this app does not use one and a web app cannot keep one safe. Copy the client ID instead.';
+  if (!text) return 'Paste the app key from your Dropbox app, or leave this blank to use the built-in one.';
+  if (/secret/i.test(text)) {
+    return 'That looks like the app SECRET. Never paste a secret here — this app does not use one and a web app cannot keep one safe. Copy the value labelled “App key” instead.';
   }
-  if (/\s/.test(text)) return 'That contains a space, so part of it is probably missing. Copy the whole client ID.';
-  if (!text.endsWith('.apps.googleusercontent.com')) {
-    return 'A Google client ID ends with .apps.googleusercontent.com — copy the whole thing.';
+  if (/\s/.test(text)) return 'That contains a space, so part of it is probably missing. Copy the whole app key.';
+  if (!/^[a-z0-9]+$/i.test(text)) {
+    return 'A Dropbox app key is letters and numbers only — copy just the key, with nothing around it.';
   }
-  if (text.length <= '.apps.googleusercontent.com'.length) return 'That client ID looks incomplete.';
+  if (text.length < 10) return 'That app key looks incomplete — copy the whole thing.';
   return null;
 }
 

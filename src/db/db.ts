@@ -110,6 +110,12 @@ export type TableName = (typeof ALL_TABLES)[number];
 // say the same thing at runtime. A silently unclassified key would default to
 // travelling (mergeSettingsRow pins only the device-local list) while never
 // marking the device dirty — i.e. straight back to the C3/C7 defect.
+//
+// THERE IS A THIRD LIST, AND IT IS NOT AN ESCAPE HATCH. RETIRED_SETTING_KEYS
+// names fields that no longer hold anything — declared only so that code we do
+// not own keeps compiling — and its element type admits ONLY keys typed
+// `?: undefined`. A field that can hold a value cannot be parked there; it has
+// to be device-local or book-level like everything else.
 
 /**
  * Settings keys that belong to THIS DEVICE: never sent, never taken from a
@@ -128,11 +134,43 @@ export const DEVICE_LOCAL_SETTING_KEYS = [
   'syncLastPulledRevision',
   'syncLastPulledSnapshotId',
   'syncAncestry',
+  // Retired (see RETIRED_SETTING_KEYS). Still listed here, and deliberately:
+  // pinDeviceLocalSettings only overwrites what this list names, so leaving
+  // them out would let a pulled snapshot's settings row carry a value for a
+  // key nothing in this build validates — the C3/C7 shape, on a dead field.
   'syncLastPulledSavedAt',
   'syncLastPulledDeviceId',
   'syncLocalRevision',
   'syncSyncedLocalRevision',
 ] as const satisfies readonly (keyof Settings)[];
+
+/**
+ * Keys of `Settings` that can hold NOTHING — declared `?: undefined`.
+ *
+ * The mapped type is the guard: `-?` strips the optionality so a genuinely
+ * optional field with a real type (`excludeFromNetWorth?: boolean`) does not
+ * qualify, and only a field whose every possible value is `undefined` matches.
+ * So this list cannot become the place unclassified fields go to be forgotten.
+ */
+type RetiredSettingKey = {
+  [K in keyof Settings]-?: [Settings[K]] extends [undefined] ? K : never;
+}[keyof Settings];
+
+/**
+ * Fields that USED to be state and are now tombstones: the engine neither
+ * reads nor writes them, defaultSettings() does not supply them, and the type
+ * makes it impossible to start again by accident.
+ *
+ * They are still declared on `Settings` only because the Sync screen names
+ * them and that screen is not this workstream's to change. When it stops
+ * naming them, delete the fields, this list, and the entries above.
+ */
+export const RETIRED_SETTING_KEYS = [
+  // The Drive-era "whole stamp" (C18). See Settings.syncLastPulledSavedAt for
+  // what it was compensating for and why Dropbox does not need it.
+  'syncLastPulledSavedAt',
+  'syncLastPulledDeviceId',
+] as const satisfies readonly RetiredSettingKey[];
 
 /**
  * Settings keys that belong to THE BOOK: they travel in a snapshot, so
@@ -155,6 +193,7 @@ export const BOOK_LEVEL_SETTING_KEYS = [
   'lastFxSyncSource',
 ] as const satisfies readonly (keyof Settings)[];
 
+export type RetiredSettingKeyName = (typeof RETIRED_SETTING_KEYS)[number];
 export type DeviceLocalSettingKey = (typeof DEVICE_LOCAL_SETTING_KEYS)[number];
 export type BookLevelSettingKey = (typeof BOOK_LEVEL_SETTING_KEYS)[number];
 
@@ -186,10 +225,14 @@ export function defaultSettings(): Settings {
     autoFxEnabled: true,
     lastFxSyncAt: null,
     lastFxSyncSource: null,
-    // Drive sync (D42). Off, unconnected and unidentified until the user asks
-    // for it; syncDeviceId stays '' until something mints one, because this
-    // function is called on EVERY getSettings() and must return the same value
-    // every time (a uid() here would invent a new device on each read).
+    // Cloud sync (D42/D45). Off, unconnected and unidentified until the user
+    // asks for it; syncDeviceId stays '' until something mints one, because
+    // this function is called on EVERY getSettings() and must return the same
+    // value every time (a uid() here would invent a new device on each read).
+    //
+    // RETIRED_SETTING_KEYS are absent on purpose: a field that can only ever
+    // be `undefined` has no default to supply, and a row that simply lacks the
+    // key is the clearest possible statement that nothing is stored there.
     syncEnabled: false,
     syncDeviceId: '',
     syncDeviceName: '',
@@ -201,11 +244,6 @@ export function defaultSettings(): Settings {
     // another empty string, which would read as two devices agreeing.
     syncLastPulledSnapshotId: null,
     syncAncestry: [],
-    // The rest of the stamp of that snapshot. `null` here is the MIGRATION
-    // state — "no build has recorded this yet" — and the engine reads it as
-    // "unproven", never as agreement. See Settings.syncLastPulledSavedAt.
-    syncLastPulledSavedAt: null,
-    syncLastPulledDeviceId: null,
     syncLocalRevision: 0,
     syncSyncedLocalRevision: 0,
   };

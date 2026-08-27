@@ -45,7 +45,10 @@
     </p>
 
     <h2>Network requests the app makes</h2>
-    <p>MyMoney makes no network requests at all except the following two, both optional:</p>
+    <p>
+      MyMoney makes no network requests at all except the following two, both optional and
+      both off until you switch them on:
+    </p>
     <ul>
       <li>
         <strong>Exchange rates.</strong> When live rates are switched on, the app
@@ -57,13 +60,51 @@
         requests whatsoever.
       </li>
       <li>
-        <strong>Google Drive sync.</strong> When you connect Drive sync, the app stores a
-        copy of your database as a single file in <em>your own</em> Google Drive, so that
-        your other devices can read it. It uses the
-        <code>drive.file</code> permission, which allows an app to see and modify only the
-        files it has itself created — it cannot see, list or open anything else in your
-        Drive. The file is in your Drive, under your control, and can be deleted by you at
-        any time. The developer has no access to it.
+        <strong>Dropbox sync.</strong> When you connect sync, the app stores a copy of your
+        database as a single file — <code>mymoney-sync.json</code> — in <em>your own</em>
+        Dropbox, so that your other devices can read it. What that involves, precisely:
+        <ul>
+          <li>
+            <strong>It goes into a folder of its own.</strong> The app is registered with
+            Dropbox for <em>App folder</em> access, so Dropbox creates one folder for it
+            under <code>Apps/</code> and the permission the app holds reaches that folder
+            and nothing else. The rest of your Dropbox is not merely off-limits to it: the
+            app cannot list it, search it, or tell what is in it.
+          </li>
+          <li>
+            <strong>It asks for four permissions and no more:</strong>
+            <code>account_info.read</code> (which Dropbox requires of every app),
+            <code>files.metadata.read</code>, <code>files.content.read</code> and
+            <code>files.content.write</code>. Sign-in is refused if it comes back with
+            anything wider. Permission to share files, to write file metadata, or to read
+            your contacts is deliberately never requested.
+          </li>
+          <li>
+            <strong>What leaves the device is the file, and nothing else.</strong> That
+            file contains your accounts, transactions, categories, budgets, payees, tags,
+            exchange rates and settings — the same content as a backup export — together
+            with the name you gave the device and the time it was saved, so that another
+            device can tell the two copies apart. It goes to Dropbox and nowhere else. No
+            analytics, no error reports, no copy to the developer, who has no server to
+            receive one and no access to your Dropbox.
+          </li>
+          <li>
+            <strong>Signing in.</strong> The app signs in through Dropbox's own window
+            using PKCE, and holds no password and no secret of any kind. The sign-in token
+            Dropbox returns is stored in this browser on this device only.
+          </li>
+          <li>
+            <strong>The file is yours.</strong> It stays in your Dropbox, under your
+            control, and you can delete it at any time. The app never deletes it, not even
+            when you disconnect.
+          </li>
+          <li>
+            <strong>Switched off in this build.</strong> Sync is currently disabled in the
+            app itself, pending a review, and the Sync screen says so and offers no
+            controls. Nothing has ever been sent to Dropbox. The description above is of
+            what happens once it is switched back on.
+          </li>
+        </ul>
       </li>
     </ul>
 
@@ -75,13 +116,21 @@
       <li>No account, email address or password is collected, because there is no login.</li>
     </ul>
 
-    <h2>Revoking Drive access</h2>
+    <h2>Revoking access to your Dropbox</h2>
     <p>
-      You can disconnect sync inside the app at any time. To revoke the permission at the
-      Google end, visit
-      <a href="https://myaccount.google.com/permissions">myaccount.google.com/permissions</a>
-      and remove MyMoney. Disconnecting does not delete the sync file from your Drive —
-      you can delete that yourself from Drive if you want it gone.
+      You can disconnect sync inside the app at any time, under Settings &rarr; Sync. That
+      tells Dropbox to cancel the permission and forgets the sign-in stored on that device.
+    </p>
+    <p>
+      To revoke it from Dropbox's own side — everywhere, on every device, immediately —
+      visit
+      <a href="https://www.dropbox.com/account/connected_apps">dropbox.com/account/connected_apps</a>,
+      find MyMoney, and disconnect it.
+    </p>
+    <p>
+      Neither of those deletes the sync file. To remove the data as well, delete
+      <code>mymoney-sync.json</code> from the app's folder in your Dropbox, then delete it
+      permanently from your Dropbox deleted files.
     </p>
 
     <h2>Contact</h2>
