@@ -7,14 +7,23 @@
 /**
  * The whole book, as one file. Identical in content to a backup (same tables,
  * same rows, same integer minor units — nothing is transformed, rounded or
- * re-interpreted on the way through) plus the four fields sync needs to reason
- * about ordering and provenance.
+ * re-interpreted on the way through) plus the fields sync needs to reason
+ * about IDENTITY, ANCESTRY, ordering and provenance.
  */
 export interface SyncSnapshot {
   app: 'MyMoney';
   /** Schema the rows conform to. A snapshot from a NEWER build is refused. */
   schemaVersion: number;
-  /** Monotonic remote version. Every accepted push is exactly previous + 1. */
+  /**
+   * Remote version, for DISPLAY AND ORDERING ONLY.
+   *
+   * It used to be the safety input too — "same number ⇒ same book, bigger
+   * number ⇒ descends from mine" — and it is neither. Two devices that both
+   * read revision N can both WRITE revision N (nothing made the second write
+   * fail), and a re-created file starts counting at 1 again, so a stale device
+   * can read equality where there is none. Identity now lives in snapshotId
+   * and ancestry in parentSnapshotId; this number is what the UI prints.
+   */
   revision: number;
   /** Which device wrote it (stable per browser profile). */
   deviceId: string;
@@ -22,8 +31,76 @@ export interface SyncSnapshot {
   deviceName: string;
   /** ISO timestamp of the write. */
   savedAt: string;
+  /**
+   * IMMUTABLE IDENTITY OF THIS WRITE — a fresh uid() for every single upload,
+   * never reused, never recomputed. Two writes are the same snapshot if and
+   * only if these match. This is the thing `revision` was being asked to be.
+   *
+   * OPTIONAL ON THE TYPE, REQUIRED ON THE WIRE. A file written by a build from
+   * before ancestry existed has none, and refusing to read it would strand a
+   * working sync file in the owner's Drive; so reading tolerates its absence
+   * (treated as "identity unknown") while `writeRemote` refuses to send a
+   * snapshot without one.
+   */
+  snapshotId?: string;
+  /**
+   * The snapshotId this write DESCENDS FROM: the exact remote head its author
+   * had in hand when it built this book. `null` means "first write of a
+   * lineage" — there was no file. Undefined means the file predates ancestry.
+   *
+   * This is the whole safety mechanism. A write is only allowed to land when
+   * the file it is replacing still has this id (see SyncTransport.writeRemote),
+   * so a lineage is a chain, not a set of coincidentally-numbered files.
+   */
+  parentSnapshotId?: string | null;
+  /**
+   * The snapshots this one DESCENDS FROM, newest first, not including itself:
+   * `[parentSnapshotId, grandparent, …]`, bounded to the most recent few.
+   *
+   * WHY A LIST AND NOT JUST THE PARENT. A head names only its parent, so a
+   * device that is TWO pushes behind cannot prove it is behind rather than
+   * diverged — and "cannot prove" has to mean "ask", because the alternative is
+   * the silent wipe this whole mechanism exists to stop. That made a conflict
+   * out of the commonest thing two devices do: the iMac syncs twice, then the
+   * phone syncs. With the chain in hand the phone finds its own id inside it
+   * and fast-forwards, and a conflict is once again reserved for lineages that
+   * really have parted.
+   *
+   * It can only ever GRANT descent, never deny it: ids are random uid()s, so a
+   * writer that never saw a snapshot cannot name it, and a chain that has run
+   * past its bound simply stops proving things (⇒ conflict ⇒ the user is
+   * asked). It is exactly as trustworthy as parentSnapshotId, which the same
+   * writer also supplies.
+   *
+   * Optional: a file written before ancestry existed carries neither.
+   */
+  ancestry?: string[];
   /** table name → rows, exactly as `exportBackup()` produces them. */
   tables: Record<string, unknown[]>;
+}
+
+/**
+ * The cheap head read: what is in Drive right now, without downloading rows.
+ *
+ * Named and exported (it used to be an inline object type) because the engine
+ * now reasons about three of its fields, and a shape that three modules agree
+ * on should be written down once.
+ */
+export interface SyncRemoteMeta {
+  revision: number;
+  savedAt: string;
+  deviceName: string;
+  /** Identity of the snapshot in Drive; null when the file predates ancestry. */
+  snapshotId: string | null;
+  /** What that snapshot descends from; null for a first write or a legacy file. */
+  parentSnapshotId: string | null;
+  /**
+   * The file is IN DRIVE'S BIN. It still exists, it is one click from being
+   * restored, and it must never be mistaken for "no file yet" — that mistake
+   * is how a device that had synced 47 times silently started a second file at
+   * revision 1 (C13). Absent/false means a normal, live file.
+   */
+  trashed?: boolean;
 }
 
 /** Everything the UI needs to describe where this device stands. */
@@ -59,10 +136,16 @@ export interface SyncSummary {
   counts: Record<string, number>;
 }
 
+/**
+ * Outcomes carry `snapshotId` — the id this device now descends from — so the
+ * caller can persist it (see SyncOptions.lastPulledSnapshotId). OPTIONAL on
+ * every variant, because syncFormat/SyncSection are built against the pinned
+ * shape and must keep compiling untouched.
+ */
 export type SyncOutcome =
-  | { kind: 'up-to-date' }
-  | { kind: 'pushed'; revision: number }
-  | { kind: 'pulled'; revision: number; counts: Record<string, number> }
+  | { kind: 'up-to-date'; snapshotId?: string | null }
+  | { kind: 'pushed'; revision: number; snapshotId?: string | null }
+  | { kind: 'pulled'; revision: number; counts: Record<string, number>; snapshotId?: string | null }
   /** Both sides moved. NOTHING was written. Ask, then call again with resolve. */
   | { kind: 'conflict'; local: SyncSummary; remote: SyncSummary }
   | { kind: 'offline' }
@@ -84,7 +167,15 @@ export interface SyncTransport {
   disconnect(): Promise<void>;
   /** The remote snapshot, or null when no file exists yet. */
   readRemote(): Promise<SyncSnapshot | null>;
+  /**
+   * Write `snap` as the new head, but ONLY if the file it replaces is still
+   * `snap.parentSnapshotId`. A transport MUST refuse (throw) when the head has
+   * moved, and MUST verify after the upload that what landed is
+   * `snap.snapshotId`. Returning normally is a promise that this exact
+   * snapshot is the file in Drive; anything less and the caller records an
+   * agreement that does not exist.
+   */
   writeRemote(snap: SyncSnapshot): Promise<void>;
-  /** Cheap head: revision/savedAt/deviceName without downloading the rows. */
-  readRemoteMeta(): Promise<{ revision: number; savedAt: string; deviceName: string } | null>;
+  /** Cheap head: identity/ancestry/revision without downloading the rows. */
+  readRemoteMeta(): Promise<SyncRemoteMeta | null>;
 }

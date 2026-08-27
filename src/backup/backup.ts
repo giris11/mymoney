@@ -10,18 +10,37 @@
 //  * restoring a backup with schemaVersion older than current applies the
 //    necessary upgrades (see upgradeBackupData); newer than current → refuse
 //    with a clear error;
+//  * restoreBackup pins the DEVICE-LOCAL half of the settings row back to
+//    this browser's own values (C8): a backup carries the settings row of the
+//    device that wrote it, and a restore that took it verbatim would hand this
+//    browser the other device's identity and sync bookkeeping;
 //  * downloadBackup hands the JSON file to the user by the most observable
 //    route the device offers (file picker > OS share sheet > <a download>) and
 //    reports which of them happened — it never stamps settings.lastBackupAt
-//    itself (D33);
+//    itself (D33). downloadBackupFile does the same for a file it is HANDED,
+//    which is how the sync engine's conflict copy travels the same road;
 //  * markBackupSaved is the only writer of settings.lastBackupAt: call it for
 //    an observed save, or when the user confirms the file landed;
+//  * the RECOVERY STORE (saveRecoverySnapshot and friends, bottom of the file)
+//    keeps the last few books this app was about to destroy in a small
+//    IndexedDB database of its own. It is the ONLY save here whose success can
+//    be observed rather than hoped for, which is why sync's conflict
+//    resolution is gated on it (C4);
 //  * nudge: due when the user's OWN transactions exist (sample rows don't
 //    count) and it is 7+ days since the last backup — or, with no backup ever,
 //    7+ days since the install (settings.createdAt). SPEC §8.1.9 says "no
 //    backup in 7+ days", not "no backup yet".
-import { ALL_TABLES, db, getSettings, SCHEMA_VERSION, updateSettings } from '../db/db';
-import { nowISO, todayISO } from '../lib/util';
+import Dexie, { type Table } from 'dexie';
+import {
+  ALL_TABLES,
+  db,
+  DEVICE_LOCAL_SETTING_KEYS,
+  getSettings,
+  SCHEMA_VERSION,
+  updateSettings,
+} from '../db/db';
+import type { Settings } from '../db/types';
+import { nowISO, todayISO, uid } from '../lib/util';
 
 export interface BackupFile {
   app: 'MyMoney';
@@ -156,9 +175,46 @@ function upgradeBackupData(file: BackupFile): Record<string, unknown[]> {
 }
 
 /**
+ * Take the BOOK from `incoming` and the DEVICE from `local` (C8).
+ *
+ * Every backup and every sync snapshot carries the whole settings row of the
+ * device that wrote it — theme, install date, and (since sync) the device id,
+ * name, OAuth client id and the bookkeeping that says which remote revision
+ * this browser agreed with. Writing that row verbatim into a second browser
+ * makes the two believe they are the same device: the conflict dialog then
+ * labels BOTH sides "iMac" at the exact moment the user has to choose which
+ * copy of the book to destroy, and the restored `syncLastPulledRevision`
+ * describes a file this device never read. DEVICE_LOCAL_SETTING_KEYS (db.ts)
+ * is the one list that says which half is which; both the sync apply path
+ * (mergeSettingsRow) and this restore path pin exactly it, because a conflict
+ * safety copy is restored through here.
+ *
+ * The book-level half — base currency, onboarded, saved CSV mappings, the FX
+ * switch — is taken from the file, because that is what restoring a backup
+ * MEANS.
+ */
+export function pinDeviceLocalSettings(local: Settings, incoming: unknown): Settings {
+  const from = isPlainObject(incoming) ? (incoming as Partial<Settings>) : {};
+  const merged = { ...local, ...from } as Settings & Record<string, unknown>;
+  for (const key of DEVICE_LOCAL_SETTING_KEYS) {
+    (merged as Record<string, unknown>)[key] = local[key];
+  }
+  merged.id = 'app';
+  merged.schemaVersion = SCHEMA_VERSION;
+  return merged;
+}
+
+/**
  * All-or-nothing restore: ONE rw transaction clears every table, then bulkAdds
  * every row from the file. Any failure (e.g. a duplicate primary key) aborts
  * the transaction and leaves the previous data completely untouched (D21).
+ *
+ * The settings row is the single exception to "the file, verbatim": it is read
+ * from THIS device before the clear and merged through pinDeviceLocalSettings,
+ * so a restore can never import another browser's identity. A file with no
+ * settings row at all still leaves this device with its own one rather than
+ * none — losing an identity is the same defect in the other direction, and a
+ * device with no row cannot even say when it was installed.
  */
 export async function restoreBackup(file: BackupFile): Promise<void> {
   // Defence in depth: never write from a file that would not validate,
@@ -167,6 +223,16 @@ export async function restoreBackup(file: BackupFile): Promise<void> {
   if (!checked.ok) throw new Error(checked.error);
   const tables = upgradeBackupData(checked.file);
   await db.transaction('rw', [...ALL_TABLES], async () => {
+    // BEFORE the clear, or there would be nothing left to pin from.
+    const local = await getSettings();
+    const incoming = tables.settings;
+    // Mapped one-for-one rather than collapsed to a single row: two settings
+    // rows in a file is corruption, and bulkAdd must still be the thing that
+    // catches it (validateBackup has already pinned every id to 'app').
+    tables.settings =
+      incoming.length === 0
+        ? [pinDeviceLocalSettings(local, undefined)]
+        : incoming.map((row) => pinDeviceLocalSettings(local, row));
     for (const name of ALL_TABLES) await db.table(name).clear();
     for (const name of ALL_TABLES) {
       const rows = tables[name];
@@ -219,12 +285,15 @@ async function saveViaFilePicker(
   json: string,
   fileName: string,
 ): Promise<BackupSaveResult | 'unsupported'> {
-  if (typeof window === 'undefined') return 'unsupported';
-  const picker = (window as unknown as SaveFilePickerWindow).showSaveFilePicker;
+  // `globalThis`, not `window`: in a browser they are the same object, and
+  // this way the ladder is usable from code that must stay importable without
+  // one. The sync engine kept its own weaker copy of this function for exactly
+  // that reason, and that copy is what silently destroyed books (C4).
+  const picker = (globalThis as unknown as SaveFilePickerWindow).showSaveFilePicker;
   if (typeof picker !== 'function') return 'unsupported';
   let handle;
   try {
-    handle = await picker.call(window, {
+    handle = await picker.call(globalThis, {
       suggestedName: fileName,
       types: [{ description: 'MyMoney backup', accept: { 'application/json': ['.json'] } }],
     });
@@ -299,13 +368,29 @@ async function saveViaShareSheet(
  * 'shared'/'delivered' file really landed.
  */
 export async function downloadBackup(): Promise<BackupSaveResult> {
+  return downloadBackupFile(await exportBackup(), `mymoney-backup-${todayISO()}.json`);
+}
+
+/**
+ * The same ladder for a file the caller already HAS — a conflict safety copy,
+ * or one read back out of the recovery store. Exported because the sync engine
+ * used to carry its own cut-down version of it, which skipped the share sheet
+ * (i.e. the only real signal an iPhone can give) and treated a failed write as
+ * a reason to fall through to the silent anchor rather than as a failure (C4).
+ * One ladder, one set of rungs, one meaning for each result.
+ */
+export async function downloadBackupFile(
+  file: BackupFile,
+  fileName: string,
+): Promise<BackupSaveResult> {
+  return deliverJson(serializeBackup(file), fileName);
+}
+
+async function deliverJson(json: string, fileName: string): Promise<BackupSaveResult> {
   if (typeof document === 'undefined' || typeof Blob === 'undefined') {
     // Guarded so importing (and calling by mistake) in Node tests is safe.
     throw new Error('downloadBackup requires a browser environment');
   }
-  const json = serializeBackup(await exportBackup());
-  const fileName = `mymoney-backup-${todayISO()}.json`;
-
   // Best available signal first: an observed write (Chromium desktop), then the
   // share sheet (phones/tablets — a real completion/cancel signal), then the
   // anchor, which tells us nothing and must be confirmed by the user.
@@ -396,3 +481,272 @@ export async function backupNudgeState(): Promise<BackupNudge> {
 }
 
 export const CURRENT_SCHEMA_VERSION = SCHEMA_VERSION;
+
+// ===========================================================================
+// The recovery store — the only save here whose success can be PROVED (C4)
+// ===========================================================================
+//
+// WHY IT EXISTS. Resolving a sync conflict destroys one of two copies of the
+// whole book, and the promise made to the user beforehand is that the losing
+// copy has been written somewhere they can get it back from. That promise used
+// to be kept by handing a file to the browser's downloader, which reports
+// NOTHING: a blocked download, a dismissed "where do you want to save this?"
+// prompt, or iOS opening the JSON in a preview tab instead of keeping it are
+// all indistinguishable, from inside the page, from a file safely on disk. On
+// every browser without showSaveFilePicker — i.e. every iPhone and iPad, the
+// exact second device this feature exists for — the book was then cleared on
+// the strength of that silence.
+//
+// So the save that GATES the destruction is now a write into IndexedDB on this
+// device: one transaction we wait for, then a read-back that proves the bytes
+// are there and are the bytes we meant. The file download still happens (the
+// owner should have a copy outside the app, and the ladder above can often
+// prove that one too) but it is no longer the only thing standing between a
+// mis-click and a book that exists nowhere.
+//
+// WHY A SEPARATE DEXIE DATABASE, NOT A TABLE IN `db`:
+//  * a recovery copy is a copy of the book, so it must never be part of the
+//    book. As a table in the main database it would be one careless addition
+//    to ALL_TABLES away from being exported inside every backup and uploaded
+//    inside every sync snapshot (each file then carrying its predecessors) —
+//    and, far worse, restoreBackup CLEARS every table in ALL_TABLES before it
+//    writes, so the safety net would be destroyed by the very restore it
+//    exists to feed. In its own database that mistake cannot be written;
+//  * it needs no schema version bump of the user's real database. This store is
+//    disposable by definition; the book is not.
+// The cost, and it is a real one: Settings → "Erase all data" clears
+// `db.tables` and would leave these copies behind. clearRecoveryStore() is
+// exported for that button to call.
+
+/**
+ * How many copies to keep.
+ *
+ * Each one is a whole book — a few megabytes for the owner's 5,127 rows — and
+ * they are kept only until the user is sure the resolution was the right one.
+ * Three covers "I got the last conflict wrong" plus two before it, which is
+ * more history than a conflict prompt that requires typing REPLACE is ever
+ * likely to produce, while bounding the store at roughly three books.
+ */
+export const RECOVERY_KEEP = 3;
+
+export type RecoveryReason = 'conflict-keep-local' | 'conflict-keep-remote';
+
+/** A book this app was about to destroy, kept where it can prove it is kept. */
+export interface RecoveryRecord {
+  id: string;
+  /**
+   * Monotonic within the store. Ordering by timestamp is not enough: two
+   * copies can be written inside the same millisecond, and then "delete the
+   * oldest" has no defined meaning — which is exactly the operation that must
+   * never pick the wrong one.
+   */
+  seq: number;
+  savedAt: string;
+  reason: RecoveryReason;
+  /** One line of plain truth about what this copy IS, written by the caller. */
+  label: string;
+  /** The name the matching download was offered under. */
+  fileName: string;
+  /** What became of that download — never a reason to keep or drop this copy. */
+  delivery: BackupSaveResult | 'not-offered';
+  /** Rows per table, so a list can describe a copy without loading it. */
+  counts: Record<string, number>;
+  /** Size of the stored JSON, in JS string units. */
+  bytes: number;
+  schemaVersion: number;
+}
+
+interface RecoveryBody {
+  id: string;
+  json: string;
+}
+
+class RecoveryDB extends Dexie {
+  records!: Table<RecoveryRecord, string>;
+  bodies!: Table<RecoveryBody, string>;
+
+  constructor() {
+    super('mymoney-recovery');
+    // Two stores rather than one row carrying its own JSON: listing three
+    // copies must not deserialize three whole books to draw three lines of
+    // text. They are written and deleted together, always.
+    this.version(1).stores({ records: 'id, seq', bodies: 'id' });
+  }
+}
+
+/** Exported so "erase all data" and the tests can reach it. */
+export const recoveryDb = new RecoveryDB();
+
+function tableRowCounts(file: BackupFile): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const name of ALL_TABLES) {
+    const rows = file.tables[name];
+    out[name] = Array.isArray(rows) ? rows.length : 0;
+  }
+  return out;
+}
+
+/** Body first: a metadata row with no body would list a copy nothing can restore. */
+async function writeRecoveryRecord(
+  record: RecoveryRecord,
+  json: string,
+): Promise<RecoveryRecord> {
+  return recoveryDb.transaction('rw', recoveryDb.records, recoveryDb.bodies, async () => {
+    const newest = await recoveryDb.records.orderBy('seq').last();
+    const stored: RecoveryRecord = { ...record, seq: (newest?.seq ?? 0) + 1 };
+    await recoveryDb.bodies.put({ id: stored.id, json });
+    await recoveryDb.records.put(stored);
+    return stored;
+  });
+}
+
+/**
+ * Drop the oldest copies until at most `keep` remain — never `protectedId`,
+ * which is the one the caller has just written and is about to rely on.
+ * Returns how many were freed.
+ */
+async function pruneRecoveryStore(keep: number, protectedId: string | null): Promise<number> {
+  return recoveryDb.transaction('rw', recoveryDb.records, recoveryDb.bodies, async () => {
+    const all = await recoveryDb.records.orderBy('seq').toArray(); // oldest first
+    const excess = all.length - Math.max(0, keep);
+    if (excess <= 0) return 0;
+    const doomed = all.filter((r) => r.id !== protectedId).slice(0, excess);
+    for (const r of doomed) {
+      await recoveryDb.records.delete(r.id);
+      await recoveryDb.bodies.delete(r.id);
+    }
+    return doomed.length;
+  });
+}
+
+/**
+ * Keep a copy of `file` on this device, and PROVE it is kept.
+ *
+ * Throws if it cannot — which is the entire contract. A caller that is about
+ * to destroy the book must treat a throw as "abandon everything, nothing is
+ * safe yet"; that is the one thing the anchor-download path it replaces could
+ * never say (C4).
+ *
+ * Three things happen in order, and the order is load-bearing:
+ *  1. the write, in one transaction over both stores;
+ *  2. a READ-BACK, in a fresh transaction, comparing the stored JSON with the
+ *     bytes we meant to store. A driver that accepted the write and kept
+ *     nothing, a quota failure that surfaced as a silent no-op, a body written
+ *     without its metadata row — all of them are indistinguishable from
+ *     success until something reads the data back, and this function's whole
+ *     reason to exist is that somebody does;
+ *  3. only then, pruning. Never before: giving up a real copy to make room for
+ *     a write that then fails would be paying for nothing. If the write DOES
+ *     fail we prune once and try again, because "the store is full" must not
+ *     be a permanent refusal to protect anything ever again.
+ */
+export async function saveRecoverySnapshot(
+  file: BackupFile,
+  meta: {
+    reason: RecoveryReason;
+    label: string;
+    fileName: string;
+    delivery?: BackupSaveResult;
+  },
+): Promise<RecoveryRecord> {
+  const checked = validateBackup(file);
+  if (!checked.ok) {
+    throw new Error(`refusing to keep an unusable recovery copy — ${checked.error}`);
+  }
+  const json = serializeBackup(checked.file);
+  const record: RecoveryRecord = {
+    id: uid(),
+    seq: 0, // assigned inside the write transaction
+    savedAt: nowISO(),
+    reason: meta.reason,
+    label: meta.label,
+    fileName: meta.fileName,
+    delivery: meta.delivery ?? 'not-offered',
+    counts: tableRowCounts(checked.file),
+    bytes: json.length,
+    schemaVersion: checked.file.schemaVersion,
+  };
+
+  let stored: RecoveryRecord;
+  try {
+    stored = await writeRecoveryRecord(record, json);
+  } catch (e) {
+    const freed = await pruneRecoveryStore(RECOVERY_KEEP - 1, record.id).catch(() => 0);
+    if (freed === 0) throw e; // nothing to give up: the original failure stands
+    stored = await writeRecoveryRecord(record, json);
+  }
+
+  const [row, body] = await Promise.all([
+    recoveryDb.records.get(stored.id),
+    recoveryDb.bodies.get(stored.id),
+  ]);
+  if (!row || !body || body.json !== json) {
+    throw new Error(
+      'the recovery copy could not be read back after saving it, so it cannot be relied on',
+    );
+  }
+  // Pruning is housekeeping, not safety: the copy is already proved. A failure
+  // here must not turn a successful save into a refusal.
+  await pruneRecoveryStore(RECOVERY_KEEP, stored.id).catch(() => 0);
+  return row;
+}
+
+/** Newest first — what a "Recover a replaced copy" list wants. */
+export async function listRecoveryRecords(): Promise<RecoveryRecord[]> {
+  return recoveryDb.records.orderBy('seq').reverse().toArray();
+}
+
+/** The stored book, parsed and fully validated — never a half-checked file. */
+export async function readRecoveryBackup(id: string): Promise<BackupFile> {
+  const body = await recoveryDb.bodies.get(id);
+  if (!body) throw new Error('That recovery copy is no longer on this device.');
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body.json);
+  } catch {
+    throw new Error('That recovery copy is unreadable — it is not valid JSON.');
+  }
+  const checked = validateBackup(parsed);
+  if (!checked.ok) throw new Error(checked.error);
+  return checked.file;
+}
+
+/**
+ * Put a kept copy back. Goes through the normal restore, so it is all-or-
+ * nothing and it pins this device's own settings (see pinDeviceLocalSettings):
+ * recovering from a conflict must not also hand this browser the identity of
+ * the device it was in conflict with (C8).
+ */
+export async function restoreRecoveryBackup(id: string): Promise<void> {
+  await restoreBackup(await readRecoveryBackup(id));
+}
+
+/** Hand a kept copy to the user as a file, by the same ladder as any backup. */
+export async function downloadRecoveryBackup(id: string): Promise<BackupSaveResult> {
+  const [record, body] = await Promise.all([
+    recoveryDb.records.get(id),
+    recoveryDb.bodies.get(id),
+  ]);
+  if (!record || !body) throw new Error('That recovery copy is no longer on this device.');
+  return deliverJson(body.json, record.fileName);
+}
+
+/** Forget one kept copy, on the user's say-so. Metadata and body together. */
+export async function deleteRecoveryRecord(id: string): Promise<void> {
+  await recoveryDb.transaction('rw', recoveryDb.records, recoveryDb.bodies, async () => {
+    await recoveryDb.records.delete(id);
+    await recoveryDb.bodies.delete(id);
+  });
+}
+
+/**
+ * Forget every kept copy. For "Erase all data", which clears the main database
+ * and would otherwise leave copies of the erased book on the device.
+ */
+export async function clearRecoveryStore(): Promise<void> {
+  await recoveryDb.transaction('rw', recoveryDb.records, recoveryDb.bodies, async () => {
+    await recoveryDb.records.clear();
+    await recoveryDb.bodies.clear();
+  });
+}
+

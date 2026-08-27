@@ -51,10 +51,12 @@ export const db = new MyMoneyDB();
 
 /**
  * The tables that hold the user's BOOK — everything a sync moves and
- * everything a local edit can touch. `settings` is deliberately absent: it is
- * part-book, part-device (see Settings in ./types), and writing to it must
- * never count as a local data change or the revision tracker below would bump
- * itself forever.
+ * everything a local edit can touch. `settings` is deliberately absent from
+ * the TRACKER's view of the world: it is part-book, part-device (see Settings
+ * in ./types), and the tracker records itself into that very row, so watching
+ * it here would bump the counter forever. The book-level half of the row is
+ * still a change worth pushing — `updateSettings` marks those itself, see
+ * BOOK_LEVEL_SETTING_KEYS below.
  */
 export const DATA_TABLES = [
   'accounts',
@@ -72,6 +74,99 @@ export type DataTableName = (typeof DATA_TABLES)[number];
 /** Table names in a stable order — used by backup export/restore. */
 export const ALL_TABLES = [...DATA_TABLES, 'settings'] as const;
 export type TableName = (typeof ALL_TABLES)[number];
+
+// ===========================================================================
+// The settings row is half book, half device — and the split is load-bearing
+// ===========================================================================
+//
+// `settings` is one row containing two completely different kinds of value,
+// and sync has to treat them as opposites:
+//
+//  * DEVICE-LOCAL keys describe THIS browser: its theme, its identity, its
+//    sync bookkeeping. They never travel — a pulled snapshot carries the other
+//    device's row, and taking its `syncLocalRevision` (or its device id) would
+//    make the next sync compare the wrong numbers, which is exactly how a
+//    silent overwrite happens. They must also never mark the device dirty, or
+//    recording a sync would itself be an unsynced change and the tracker would
+//    chase its own tail forever.
+//  * BOOK-LEVEL keys describe the USER'S BOOK: the currency every total is
+//    denominated in, whether the app may fetch rates, the saved CSV mappings.
+//    They DO travel inside a snapshot — so a change to one is a change to the
+//    book, and must mark the device dirty exactly like adding a transaction.
+//
+// Getting the second half wrong is C3/C7: `settings` is excluded from
+// DATA_TABLES above, so the dbcore tracker never sees it, so changing the
+// base currency left the device "clean". It was never pushed, and the next
+// pull — taken silently, because a clean device has nothing to lose — put the
+// old currency back. Every total in the app was then denominated in a currency
+// the user had explicitly changed away from, with no conflict, no prompt and
+// no safety file. `updateSettings` below closes that by bumping the counter
+// itself for book-level keys; the tracker still ignores the table, because a
+// bump IS a settings write and tracking it would loop.
+//
+// ONE LIST EACH, AND EVERY KEY IN EXACTLY ONE. The type assertion below turns
+// "somebody added a Settings field and classified it nowhere" into a compile
+// error, and a test in tests/sync-engine.test.ts walks defaultSettings() to
+// say the same thing at runtime. A silently unclassified key would default to
+// travelling (mergeSettingsRow pins only the device-local list) while never
+// marking the device dirty — i.e. straight back to the C3/C7 defect.
+
+/**
+ * Settings keys that belong to THIS DEVICE: never sent, never taken from a
+ * snapshot, never a reason to push.
+ */
+export const DEVICE_LOCAL_SETTING_KEYS = [
+  'theme', // a phone may want dark while the iMac is light
+  'lastBackupAt', // backup files are per-device
+  'createdAt', // when THIS browser first ran the app
+  'lastUsedAccountId', // a quick-add convenience, not a fact about the book
+  'syncEnabled',
+  'syncDeviceId',
+  'syncDeviceName',
+  'syncClientId',
+  'syncLastSyncedAt',
+  'syncLastPulledRevision',
+  'syncLastPulledSnapshotId',
+  'syncAncestry',
+  'syncLocalRevision',
+  'syncSyncedLocalRevision',
+] as const satisfies readonly (keyof Settings)[];
+
+/**
+ * Settings keys that belong to THE BOOK: they travel in a snapshot, so
+ * changing one leaves this device holding something the remote has not seen.
+ *
+ * `id` and `schemaVersion` are here because they are part of the row that
+ * travels, not because a user can change them: `updateSettings` cannot patch
+ * `id` at all, and both are stamped to constants by mergeSettingsRow /
+ * restoreBackup. They can therefore never trigger a bump in practice — they
+ * are listed so that the exhaustiveness check below is a real check.
+ */
+export const BOOK_LEVEL_SETTING_KEYS = [
+  'id',
+  'schemaVersion',
+  'baseCurrency', // every total and every report is denominated in it
+  'onboarded', // a fact about the book, not about the browser
+  'savedMappings', // CSV column mappings, keyed by file signature
+  'autoFxEnabled', // the switch that makes the app a zero-request island
+  'lastFxSyncAt',
+  'lastFxSyncSource',
+] as const satisfies readonly (keyof Settings)[];
+
+export type DeviceLocalSettingKey = (typeof DEVICE_LOCAL_SETTING_KEYS)[number];
+export type BookLevelSettingKey = (typeof BOOK_LEVEL_SETTING_KEYS)[number];
+
+/**
+ * Compile-time proof that the two lists cover `Settings` EXACTLY: nothing
+ * missing, nothing in both. `AssertNever` fails to accept anything else, and
+ * the error message names the offending key ("Type '"baseCurrency"' does not
+ * satisfy the constraint 'never'").
+ */
+type AssertNever<T extends never> = T;
+type _EverySettingIsClassified = AssertNever<
+  Exclude<keyof Settings, DeviceLocalSettingKey | BookLevelSettingKey>
+>;
+type _NoSettingIsBoth = AssertNever<Extract<DeviceLocalSettingKey, BookLevelSettingKey>>;
 
 export function defaultSettings(): Settings {
   return {
@@ -99,6 +194,11 @@ export function defaultSettings(): Settings {
     syncClientId: null,
     syncLastSyncedAt: null,
     syncLastPulledRevision: 0,
+    // Null, never '' — "this device descends from nothing" has to be
+    // distinguishable from an id, and an empty string compares equal to
+    // another empty string, which would read as two devices agreeing.
+    syncLastPulledSnapshotId: null,
+    syncAncestry: [],
     syncLocalRevision: 0,
     syncSyncedLocalRevision: 0,
   };
@@ -127,13 +227,63 @@ export async function getSettings(): Promise<Settings> {
  * unsynced edits look clean, which is how a pull silently overwrites them.
  * (Nesting is safe: every caller that already holds an rw transaction has
  * `settings` in its scope, or its existing `settings.put` would throw today.)
+ *
+ * A patch that changes a BOOK-LEVEL key marks the device as locally changed,
+ * because that value travels in a snapshot: without this, changing the base
+ * currency left the device clean, never pushed it, and let the next pull put
+ * the old currency back with no conflict and no safety file (C3/C7). The mark
+ * is raised AFTER the transaction commits, so a patch that aborts does not
+ * claim a change that never happened — and it goes through the same coalescing
+ * flag as every other write, so a burst of settings writes still costs one
+ * revision bump.
+ *
+ * The bump lives here rather than in the dbcore middleware below on purpose:
+ * the middleware skips `settings` entirely because writing the counter is
+ * itself a settings write, and tracking that would loop forever. Writers that
+ * bypass this function (restoreBackup's bulkAdd, the tracker's own flush)
+ * therefore never bump — which is right for both: a restore rewrites every
+ * data table too, and the flush IS the bump.
  */
 export async function updateSettings(patch: Partial<Omit<Settings, 'id'>>): Promise<Settings> {
-  return db.transaction('rw', db.settings, async () => {
-    const next = { ...(await getSettings()), ...patch };
-    await db.settings.put(next);
-    return next;
+  let changedTheBook = false;
+  const next = await db.transaction('rw', db.settings, async () => {
+    const prev = await getSettings();
+    const merged = { ...prev, ...patch };
+    changedTheBook = changesBookLevelSetting(prev, merged);
+    await db.settings.put(merged);
+    return merged;
   });
+  if (changedTheBook) markLocalChange();
+  return next;
+}
+
+/**
+ * Did this patch change something that travels?
+ *
+ * Compared by VALUE, not by "was the key present in the patch": several
+ * screens re-save the whole row, and a device that reported a change every
+ * time a component re-rendered would push constantly and, worse, teach the
+ * user that "unsynced changes" means nothing.
+ *
+ * The one object-valued key (savedMappings) cannot use Object.is — every read
+ * from IndexedDB is a fresh structured clone, so an unchanged row would
+ * compare unequal to itself. It is a small dictionary of CSV column indices,
+ * so JSON is both cheap and exact. Anything JSON cannot represent (there is
+ * nothing today) would compare unequal and cost a redundant push, which is the
+ * safe direction: over-reporting a change costs a push, under-reporting one
+ * costs the change.
+ */
+function changesBookLevelSetting(prev: Settings, next: Settings): boolean {
+  for (const key of BOOK_LEVEL_SETTING_KEYS) {
+    const a: unknown = prev[key];
+    const b: unknown = next[key];
+    if (Object.is(a, b)) continue;
+    if (typeof a === 'object' && a !== null && typeof b === 'object' && b !== null) {
+      if (JSON.stringify(a) === JSON.stringify(b)) continue;
+    }
+    return true;
+  }
+  return false;
 }
 
 // ===========================================================================
@@ -192,6 +342,19 @@ let flushTimer: ReturnType<typeof setTimeout> | null = null;
 let flushQueue: Promise<unknown> = Promise.resolve();
 let suppressDepth = 0;
 
+/**
+ * Monotonic count of writes this device has NOTICED, flushed or not.
+ *
+ * Not a second revision counter: it never goes to disk and it is not compared
+ * with anything remote. It exists so that a caller can say "clear the pending
+ * flag I saw, and only that one". `clearPendingLocalChange()` used to be
+ * unconditional, and the pull path called it after replacing the whole book —
+ * which threw away the flag for a transaction the user had typed DURING the
+ * download, leaving no evidence anywhere that the row had ever existed
+ * (C2/C5/C6). Comparing marks makes that impossible to write by accident.
+ */
+let localChangeMark = 0;
+
 function clearFlushTimer(): void {
   if (flushTimer !== null) {
     clearTimeout(flushTimer);
@@ -206,6 +369,7 @@ function clearFlushTimer(): void {
  */
 export function markLocalChange(): void {
   if (suppressDepth > 0) return;
+  localChangeMark++;
   pendingLocalChange = true;
   if (flushTimer !== null) return;
   flushTimer = setTimeout(() => {
@@ -271,13 +435,31 @@ export function flushLocalRevision(): Promise<void> {
 }
 
 /**
- * Forget a coalesced-but-unwritten change. Only correct where the local book
- * has just been REPLACED wholesale (applyRemote) and the pending flag refers
- * to data that no longer exists.
+ * Where this device's noticed-writes counter stands right now. Capture it
+ * before a long operation, hand it back to `clearPendingLocalChange` after.
  */
-export function clearPendingLocalChange(): void {
+export function localChangeMarkNow(): number {
+  return localChangeMark;
+}
+
+/**
+ * Forget a coalesced-but-unwritten change — but ONLY the one described by
+ * `mark`. Correct in exactly one place: the local book has just been REPLACED
+ * wholesale (applyRemote) and the pending flag refers to data that no longer
+ * exists.
+ *
+ * `mark` is required, and is checked rather than trusted. If any write has
+ * been noticed since it was taken, the flag belongs to data the caller has
+ * never seen — a row typed while a sync was downloading — and clearing it
+ * would erase the only evidence that the row existed. In that case nothing is
+ * cleared and `false` is returned: over-reporting a change costs a redundant
+ * push, under-reporting one costs the change itself.
+ */
+export function clearPendingLocalChange(mark: number): boolean {
+  if (mark !== localChangeMark) return false;
   pendingLocalChange = false;
   clearFlushTimer();
+  return true;
 }
 
 /** Test/diagnostic view of the un-flushed flag. */
@@ -290,10 +472,15 @@ export function hasPendingLocalChange(): boolean {
  * (applying a remote snapshot), which must not then look like local edits and
  * cause a phantom conflict on the next run.
  *
- * Module-global on purpose (Dexie gives no per-caller write context). The app
- * is single-user and blocks its UI during an apply, so the only writes in the
- * window are the apply's own; a concurrent write here would in any case be
- * overwritten by the apply it is racing.
+ * Module-global on purpose (Dexie gives no per-caller write context). What
+ * makes that safe is NOT that the app blocks its UI — it does not, and
+ * believing it did is how a transaction typed during a sync was destroyed and
+ * its pending flag dropped (C2/C5/C6). It is that the only caller wraps this
+ * around ONE rw transaction spanning every table: while that transaction is
+ * open, IndexedDB cannot start another write to those tables, so there is no
+ * concurrent write to mis-suppress. Anything typed during the seconds BEFORE
+ * the apply is a different problem, and one this flag cannot solve — the
+ * caller checks for it inside the same transaction and abandons the apply.
  */
 export async function withoutLocalChangeTracking<T>(fn: () => Promise<T>): Promise<T> {
   suppressDepth++;

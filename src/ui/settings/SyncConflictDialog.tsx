@@ -27,15 +27,23 @@ import {
   countRows,
   differenceHeadline,
   formatCount,
+  safeDeviceName,
   summariseCounts,
   whenPhrase,
 } from './syncFormat';
 
 export type ConflictChoice = 'keep-local' | 'keep-remote';
 
-/** Column heading for this device — its own name if it has one. */
+/**
+ * Column heading for this device — its own name if it has one.
+ *
+ * Sanitised even though this name was typed HERE: it is stored in a settings
+ * row that a restored backup or a pulled snapshot can write, so "typed here" is
+ * not a guarantee about its contents. Both sides of this dialog go through the
+ * same door.
+ */
 function localHeading(local: SyncSummary): string {
-  const name = local.deviceName.trim();
+  const name = safeDeviceName(local.deviceName, '');
   return name ? `This device (${name})` : 'This device';
 }
 
@@ -84,7 +92,13 @@ export default function SyncConflictDialog({
   const nowMs = Date.now();
   const rows = countRows(local.counts, remote.counts);
   const thisName = localHeading(local);
-  const otherName = remote.deviceName.trim() || 'the copy in Drive';
+  // The other device's name comes out of the file in Drive: typed on another
+  // device, possibly by an older build, and editable by hand in Drive. It
+  // appears in this dialog eleven times, inside sentences that tell the owner
+  // which copy of his finances is about to be destroyed — so it is bounded and
+  // stripped of anything that could forge a line break or reverse the text
+  // around it. (React escapes the value; this is about the app's own voice.)
+  const otherName = safeDeviceName(remote.deviceName, 'the copy in Drive');
 
   return (
     <>
@@ -178,10 +192,25 @@ export default function SyncConflictDialog({
             and think about which device you last used.
           </p>
 
+          {/* This paragraph is a promise about the data, so it describes what
+              the code now actually does rather than the shortest version of it.
+              Two saves happen, in this order, and both must succeed:
+              (1) a file, offered the best way this device allows — a "where do
+              you want it?" dialog on a desktop browser, the share sheet on a
+              phone, the downloads folder otherwise. Cancelling stops
+              everything, and nothing is replaced.
+              (2) a copy kept inside the app, which is written and then READ
+              BACK before anything is destroyed. That read-back is the actual
+              gate: a save that reports success and stored nothing used to be
+              indistinguishable from a save that worked. */}
           <div className="rounded-lg border border-border bg-surface2/50 p-3 text-sm text-text">
-            Whichever copy you do not keep is saved to a file on this device first — it downloads
-            as <code className="text-xs">mymoney-conflict-….json</code>, and it is a normal backup
-            file you can restore from. If that file cannot be written, nothing is replaced at all.
+            Whichever copy you do not keep is saved twice before anything is replaced: once as a
+            file — <code className="text-xs">mymoney-conflict-….json</code>, a normal backup file
+            you can restore from, which this device will either ask you where to put, offer to the
+            share sheet, or send to your downloads — and once inside the app, where it is written
+            and then read back to prove it is really there. You can get that one from{' '}
+            <strong>Settings → Backup &amp; storage</strong>, under “Replaced copies”.{' '}
+            <strong>If either save fails, or you cancel it, nothing is replaced at all.</strong>
           </div>
 
           <div className="grid gap-3 sm:grid-cols-2">
@@ -235,7 +264,9 @@ export default function SyncConflictDialog({
               replaced by this device’s copy.
             </p>
             <p className="mt-2">
-              Nothing on this device changes. A backup of the Drive copy is saved here first.
+              Nothing on this device changes. A copy of the Drive version is saved on this
+              device first — as a file, and inside the app — and if that cannot be done, nothing
+              is replaced.
             </p>
           </>
         }
@@ -263,7 +294,8 @@ export default function SyncConflictDialog({
             </p>
             <p className="mt-2">
               {differenceHeadline(rows, 'This device', otherName)} Those differences will not be in
-              the app afterwards; they will exist only in the backup file saved here first.
+              the app afterwards; they will exist only in the copies saved on this device first —
+              the file, and the one under Settings → Backup &amp; storage → “Replaced copies”.
             </p>
           </>
         }

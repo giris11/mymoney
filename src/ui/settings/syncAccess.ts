@@ -17,6 +17,20 @@ import type { SyncTransport } from '../../sync/types';
 
 export { DRIVE_SCOPE };
 
+/**
+ * Re-exported for the Sync screen, which has to tell TWO failures apart while
+ * probing the remote (C11):
+ *
+ *   * the grant has lapsed or been revoked at Google — the screen must stop
+ *     saying "Connected to Google Drive" and ask for a fresh sign-in;
+ *   * anything else (offline, a timeout, Drive being slow) — the screen has
+ *     simply not checked, which it already says honestly.
+ *
+ * Without the distinction a revoked grant renders as a green tick over the word
+ * "Connected", which is the screen claiming an off-site copy it cannot reach.
+ */
+export { isReconnectNeeded };
+
 let instance: SyncTransport | null = null;
 
 export function driveTransport(): SyncTransport {

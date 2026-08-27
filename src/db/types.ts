@@ -201,10 +201,13 @@ export interface Settings {
   // the settings store is declared `'id'`). SCHEMA_VERSION is unchanged.
   //
   // Which of these travel between devices and which stay put is decided ONCE,
-  // in DEVICE_LOCAL_SETTING_KEYS (src/sync/syncEngine.ts): everything named
-  // `sync*` here is device-local, because a pulled snapshot carries the OTHER
-  // device's settings row and must never be allowed to steal this device's
-  // identity, its OAuth client id, or its sync bookkeeping.
+  // in DEVICE_LOCAL_SETTING_KEYS (src/db/db.ts): everything named `sync*` here
+  // is device-local, because a pulled snapshot carries the OTHER device's
+  // settings row and must never be allowed to steal this device's identity,
+  // its OAuth client id, or its sync bookkeeping. Every OTHER key in this
+  // interface is book-level and is listed in BOOK_LEVEL_SETTING_KEYS beside
+  // it; a key in neither list is a compile error, because a setting nobody
+  // classified is a setting sync will silently get wrong (C3/C7).
 
   /** Master switch for AUTOMATIC syncing. A manual "Sync now" ignores it. */
   syncEnabled: boolean;
@@ -227,6 +230,52 @@ export interface Settings {
   syncLastSyncedAt: string | null;
   /** Revision number of the remote snapshot this device's data descends from. */
   syncLastPulledRevision: number;
+  /**
+   * IDENTITY of the remote snapshot this device's data descends from — the
+   * answer to "is the file in Drive the one my book grew out of?", which the
+   * revision NUMBER above cannot give (two devices can write the same number
+   * over different books, and a re-created file starts counting at 1 again;
+   * see SyncSnapshot.snapshotId). `null` means this device has never agreed
+   * with any remote file.
+   *
+   * Device-local, and emphatically so: it describes what THIS device last
+   * saw. A snapshot carries the writing device's settings row, so letting it
+   * travel would hand this device someone else's ancestry — after which the
+   * engine would compare our book against a file we have never seen and call
+   * it agreement. Listed in DEVICE_LOCAL_SETTING_KEYS with the rest.
+   *
+   * Like every field in this block it is supplied by defaultSettings() and is
+   * NOT indexed (the settings store is declared `'id'`, and this value is
+   * never queried by — only read with the row), so adding it needs no Dexie
+   * version block and SCHEMA_VERSION is unchanged: an older row gains it as
+   * `null` through the normalisation in getSettings().
+   *
+   * `null` on a device that has already synced (syncLastPulledRevision > 0)
+   * therefore means "written by a build from before ancestry", not "never
+   * synced" — the engine tells the two apart and falls back to the revision
+   * table for that device until its next push or pull records an id.
+   */
+  syncLastPulledSnapshotId: string | null;
+  /**
+   * The ids OLDER than syncLastPulledSnapshotId in the same lineage, newest
+   * first and not including it, bounded to the most recent few. Together the
+   * two make the chain this device's book sits on.
+   *
+   * It is carried so that a push can hand the chain on: a snapshot names the
+   * ancestors it descends from (SyncSnapshot.ancestry), and the pushing device
+   * is the only one that knows them — the cheap head read exposes a file's
+   * parent, never its grandparent. Without it, a device two pushes behind
+   * cannot be told apart from a device on a different lineage, and the
+   * commonest thing two devices do (one syncs twice, then the other) becomes a
+   * conflict.
+   *
+   * Device-local, like the id it extends, and for the same reason: it
+   * describes what THIS device has seen. Not indexed, supplied by
+   * defaultSettings(), so no Dexie migration — an older row gains it as `[]`.
+   * An empty array is always safe: it proves nothing, so the worst it can do
+   * is make the engine ask a question it could have answered itself.
+   */
+  syncAncestry: string[];
   /**
    * Monotonic counter of local CHANGE BATCHES. Bumped once per write
    * operation on a data table by the tracker in db.ts (coalesced — a

@@ -1,15 +1,36 @@
 // Backup export/restore tests (SPEC §8.1.9, §10: backup round-trip equality).
 import 'fake-indexeddb/auto';
-import { beforeEach, describe, expect, it } from 'vitest';
-import { ALL_TABLES, db, getSettings, SCHEMA_VERSION, updateSettings, defaultSettings } from '../src/db/db';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  ALL_TABLES,
+  BOOK_LEVEL_SETTING_KEYS,
+  DATA_TABLES,
+  DEVICE_LOCAL_SETTING_KEYS,
+  db,
+  getSettings,
+  SCHEMA_VERSION,
+  updateSettings,
+  defaultSettings,
+} from '../src/db/db';
 import {
   backupNudgeState,
+  clearRecoveryStore,
   CURRENT_SCHEMA_VERSION,
+  deleteRecoveryRecord,
   downloadBackup,
+  downloadBackupFile,
+  downloadRecoveryBackup,
   exportBackup,
+  listRecoveryRecords,
   markBackupSaved,
+  pinDeviceLocalSettings,
   PRETTY_PRINT_ROW_LIMIT,
+  readRecoveryBackup,
+  recoveryDb,
+  RECOVERY_KEEP,
   restoreBackup,
+  restoreRecoveryBackup,
+  saveRecoverySnapshot,
   serializeBackup,
   validateBackup,
   type BackupFile,
@@ -33,7 +54,12 @@ import type {
 const clearAll = async () => {
   await Promise.all(db.tables.map((t) => t.clear()));
 };
-beforeEach(clearAll);
+beforeEach(async () => {
+  await clearAll();
+  // A database of its own (see backup.ts), so clearing db.tables misses it.
+  await clearRecoveryStore();
+  vi.restoreAllMocks();
+});
 
 const DAY_MS = 86_400_000;
 const T0 = '2026-08-01T10:00:00.000Z';
@@ -302,6 +328,9 @@ describe('backup round trip', () => {
     await clearAll();
     expect(await db.transactions.count()).toBe(0);
     expect(await db.settings.count()).toBe(0);
+    // What this browser is, immediately before the restore. With no row of its
+    // own that is the factory default — and it is what the restore must keep.
+    const deviceBefore = await getSettings();
 
     await restoreBackup(validated);
 
@@ -314,7 +343,24 @@ describe('backup round trip', () => {
     expect(sortById(await db.budgets.toArray())).toEqual(sortById(seedBudgets));
     expect(sortById(await db.fxRates.toArray())).toEqual(sortById(seedFxRates));
     expect(sortById(await db.importBatches.toArray())).toEqual(sortById(seedBatches));
-    expect(sortById(await db.settings.toArray())).toEqual([seedSettings]);
+    // The settings row is the ONE exception to "the file, verbatim" (C8): the
+    // book-level half comes from the file, the device-local half stays this
+    // browser's. Here the browser was wiped first, so its half is the factory
+    // default: the file's 'dark' theme and its install date do not travel.
+    const restored = (await db.settings.toArray())[0]!;
+    for (const key of BOOK_LEVEL_SETTING_KEYS) {
+      expect({ [key]: restored[key] }).toEqual({ [key]: seedSettings[key] });
+    }
+    for (const key of DEVICE_LOCAL_SETTING_KEYS) {
+      // createdAt is the one device-local key a browser with no row of its own
+      // mints fresh on every read (db.ts defaultSettings), so it cannot be
+      // compared to a value read a moment earlier — only to what it must NOT
+      // be, which is the writing device's install date.
+      if (key === 'createdAt') continue;
+      expect({ [key]: restored[key] }).toEqual({ [key]: deviceBefore[key] });
+    }
+    expect(restored.createdAt).not.toBe(seedSettings.createdAt);
+    expect(Date.now() - Date.parse(restored.createdAt)).toBeLessThan(60_000);
   });
 
   it('serializeBackup is pretty-printed with 2-space indent', async () => {
@@ -368,7 +414,12 @@ describe('backup round trip', () => {
     for (const name of ALL_TABLES) expect(file.tables[name]).toEqual([]);
     await seedAll();
     await restoreBackup(file); // restoring an empty backup wipes everything
-    for (const t of db.tables) expect(await t.count()).toBe(0);
+    for (const name of DATA_TABLES) expect(await db.table(name).count()).toBe(0);
+    // …everything except who this device is. A file with no settings row is
+    // not a reason to forget the browser's own identity, install date and sync
+    // bookkeeping: losing those is the same defect as importing someone
+    // else's, pointed the other way (C8).
+    expect(await db.settings.toArray()).toEqual([seedSettings]);
   });
 });
 
@@ -526,6 +577,10 @@ async function withBrowser<T>(opts: BrowserOpts, fn: (seen: Seen) => Promise<T>)
     },
     remove: () => {},
   };
+  // The picker is looked up on globalThis (in a browser `window` IS
+  // globalThis, and that spelling keeps the ladder usable from the sync
+  // engine, which must stay importable without a `window`). `window` is still
+  // installed because the app's own code reads it elsewhere.
   const win: Record<string, unknown> = {};
   if (opts.picker) {
     win.showSaveFilePicker = async () => {
@@ -548,6 +603,7 @@ async function withBrowser<T>(opts: BrowserOpts, fn: (seen: Seen) => Promise<T>)
   }
   const g = globalThis as unknown as Record<string, unknown>;
   g.window = win;
+  if (opts.picker) g.showSaveFilePicker = win.showSaveFilePicker;
   g.document = { createElement: () => anchor, body: { appendChild: () => {} } };
 
   // navigator is a real global in Node, so save and restore the descriptor.
@@ -579,6 +635,7 @@ async function withBrowser<T>(opts: BrowserOpts, fn: (seen: Seen) => Promise<T>)
     return await fn(seen);
   } finally {
     delete g.window;
+    delete g.showSaveFilePicker;
     delete g.document;
     if (opts.share || opts.touch !== undefined) {
       if (originalNav) Object.defineProperty(globalThis, 'navigator', originalNav);
@@ -842,5 +899,294 @@ describe('backupNudgeState', () => {
 describe('exports', () => {
   it('CURRENT_SCHEMA_VERSION mirrors the db schema version', () => {
     expect(CURRENT_SCHEMA_VERSION).toBe(SCHEMA_VERSION);
+  });
+});
+
+
+// ------------------------------------------------ device identity on restore
+//
+// A backup — and a sync snapshot, which is the same file — carries the whole
+// settings row of the device that wrote it. The sync APPLY path has always
+// pinned the device-local half back (mergeSettingsRow); restore did not, and
+// restore is the path the sync feature's own conflict safety copy is fed
+// through. Restoring one therefore handed this browser the other device's
+// identity, OAuth client id and sync bookkeeping, after which both devices
+// call themselves "iMac" in the dialog that asks which copy of the book to
+// destroy (C8).
+
+describe('restoreBackup keeps this device (C8)', () => {
+  /** This browser, with a real identity and real sync bookkeeping. */
+  const thisDevice = (): Settings => ({
+    ...defaultSettings(),
+    baseCurrency: 'GBP',
+    onboarded: true,
+    savedMappings: seedSettings.savedMappings,
+    autoFxEnabled: true,
+    lastFxSyncAt: '2026-08-27T06:00:00.000Z',
+    lastFxSyncSource: 'exchangerate.host',
+    theme: 'dark',
+    lastBackupAt: '2026-08-20T08:00:00.000Z',
+    createdAt: '2026-01-02T00:00:00.000Z',
+    lastUsedAccountId: 'acc-gbp',
+    syncEnabled: true,
+    syncDeviceId: 'phone-uuid',
+    syncDeviceName: 'iPhone',
+    syncClientId: 'phone-client-id',
+    syncLastSyncedAt: '2026-08-27T07:00:00.000Z',
+    syncLastPulledRevision: 12,
+    syncLastPulledSnapshotId: 'snap-phone',
+    syncAncestry: ['snap-phone-0'],
+    syncLocalRevision: 5,
+    syncSyncedLocalRevision: 5,
+  });
+
+  /** The row inside a file the OTHER device wrote — every field different. */
+  const otherDevice = (): Settings => ({
+    ...defaultSettings(),
+    baseCurrency: 'EUR',
+    onboarded: true,
+    savedMappings: {},
+    autoFxEnabled: false,
+    lastFxSyncAt: '2026-08-26T09:00:00.000Z',
+    lastFxSyncSource: 'ecb',
+    theme: 'light',
+    lastBackupAt: '2026-08-26T08:00:00.000Z',
+    createdAt: '2025-05-05T00:00:00.000Z',
+    lastUsedAccountId: 'acc-usd',
+    syncEnabled: true,
+    syncDeviceId: 'imac-uuid',
+    syncDeviceName: 'iMac',
+    syncClientId: 'imac-client-id',
+    syncLastSyncedAt: '2026-08-26T08:30:00.000Z',
+    syncLastPulledRevision: 11,
+    syncLastPulledSnapshotId: 'snap-imac',
+    syncAncestry: ['snap-imac-0'],
+    syncLocalRevision: 2,
+    syncSyncedLocalRevision: 1,
+  });
+
+  const fileWith = (settingsRows: unknown[]): BackupFile =>
+    ({
+      app: 'MyMoney',
+      schemaVersion: SCHEMA_VERSION,
+      exportedAt: T0,
+      tables: { ...Object.fromEntries(ALL_TABLES.map((n) => [n, []])), settings: settingsRows },
+    }) as BackupFile;
+
+  it('takes the book from the file and the device from this browser', async () => {
+    await db.settings.add(thisDevice());
+    const incoming = otherDevice();
+
+    await restoreBackup(fileWith([incoming]));
+
+    const after = await getSettings();
+    for (const key of BOOK_LEVEL_SETTING_KEYS) {
+      expect({ [key]: after[key] }).toEqual({ [key]: incoming[key] });
+    }
+    for (const key of DEVICE_LOCAL_SETTING_KEYS) {
+      expect({ [key]: after[key] }).toEqual({ [key]: thisDevice()[key] });
+    }
+    // Spelled out, because these are the ones that corrupt the conflict dialog
+    // and the sync decision table rather than merely annoying the user.
+    expect(after.syncDeviceName).toBe('iPhone');
+    expect(after.syncDeviceId).toBe('phone-uuid');
+    expect(after.syncClientId).toBe('phone-client-id');
+    expect(after.syncLastPulledRevision).toBe(12);
+    expect(after.syncLastPulledSnapshotId).toBe('snap-phone');
+    // …and the 7-day backup nudge is not silenced by a backup this device
+    // never made (backup.ts: markBackupSaved is the only writer of it).
+    expect(after.lastBackupAt).toBe('2026-08-20T08:00:00.000Z');
+  });
+
+  it('a file with no settings row leaves this device with its own', async () => {
+    await db.settings.add(thisDevice());
+    await restoreBackup(fileWith([]));
+    expect(await db.settings.toArray()).toEqual([thisDevice()]);
+  });
+
+  it('two settings rows are still corruption, not something to merge away', async () => {
+    await db.settings.add(thisDevice());
+    const twice = fileWith([otherDevice(), otherDevice()]);
+    // Both have id 'app', so only bulkAdd can catch it — and it must still be
+    // reached: pinning must not quietly collapse a corrupt file into one row.
+    await expect(restoreBackup(twice)).rejects.toThrow();
+    expect(await db.settings.toArray()).toEqual([thisDevice()]);
+  });
+
+  it('pinDeviceLocalSettings is defined for a missing/rubbish incoming row', () => {
+    const local = thisDevice();
+    for (const junk of [undefined, null, 42, 'nope', []]) {
+      expect(pinDeviceLocalSettings(local, junk)).toEqual(local);
+    }
+  });
+});
+
+// ---------------------------------------------------------- recovery store
+//
+// The one save in this file whose success can be OBSERVED (C4). Everything
+// else here hands bytes to a browser API that reports nothing; this writes
+// them to IndexedDB and then reads them back, which is why the sync engine is
+// allowed to destroy a book once this — and only this — has succeeded.
+
+describe('recovery store', () => {
+  const keep = async (over: Partial<Parameters<typeof saveRecoverySnapshot>[1]> = {}) => {
+    const file = await exportBackup();
+    return saveRecoverySnapshot(file, {
+      reason: 'conflict-keep-remote',
+      label: "This device's copy",
+      fileName: 'mymoney-conflict-local-rev1-2026-08-27.json',
+      ...over,
+    });
+  };
+
+  it('keeps a copy that can be listed, read back and restored', async () => {
+    await seedAll();
+    const record = await keep({ delivery: 'delivered' });
+
+    expect(record.counts.transactions).toBe(seedTransactions.length);
+    expect(record.bytes).toBeGreaterThan(0);
+    expect(record.delivery).toBe('delivered');
+
+    const listed = await listRecoveryRecords();
+    expect(listed).toEqual([record]);
+
+    // A NORMAL backup file: the same thing the Restore screen takes.
+    const file = await readRecoveryBackup(record.id);
+    expect(validateBackup(file).ok).toBe(true);
+
+    await clearAll();
+    expect(await db.transactions.count()).toBe(0);
+    await restoreRecoveryBackup(record.id);
+    expect(sortById(await db.transactions.toArray())).toEqual(sortById(seedTransactions));
+    expect(sortById(await db.accounts.toArray())).toEqual(sortById(seedAccounts));
+  });
+
+  // THE POINT OF THE MODULE. A save that reports success while storing nothing
+  // is exactly what the <a download> did, and it is what destroyed books.
+  it('a write that stores nothing is a failure, not a success', async () => {
+    await seedAll();
+    // The write is accepted and keeps nothing — a driver that lies, a quota
+    // failure that surfaced as a no-op. Only reading it back can tell.
+    vi.spyOn(recoveryDb.bodies, 'put').mockResolvedValue('' as never);
+
+    await expect(keep()).rejects.toThrow(/read back/i);
+  });
+
+  it('a write that fails is reported, and nothing is left listed', async () => {
+    await seedAll();
+    vi.spyOn(recoveryDb.bodies, 'put').mockRejectedValue(new Error('QuotaExceededError'));
+
+    await expect(keep()).rejects.toThrow(/Quota/);
+    expect(await listRecoveryRecords()).toEqual([]);
+  });
+
+  it('a full store makes room and tries again rather than refusing forever', async () => {
+    await seedAll();
+    for (let i = 0; i < RECOVERY_KEEP; i++) await keep({ label: `old ${i}` });
+    const oldest = (await listRecoveryRecords()).at(-1)!;
+
+    // The first attempt fails on space; the retry, after the oldest copy has
+    // been given up, succeeds.
+    const put = vi.spyOn(recoveryDb.bodies, 'put');
+    put.mockRejectedValueOnce(new Error('QuotaExceededError'));
+    const record = await keep({ label: 'the new one' });
+
+    const listed = await listRecoveryRecords();
+    expect(listed[0]!.id).toBe(record.id);
+    expect(listed.map((r) => r.id)).not.toContain(oldest.id);
+    expect(listed).toHaveLength(RECOVERY_KEEP);
+  });
+
+  it(`keeps the newest ${RECOVERY_KEEP} and never drops the one just written`, async () => {
+    await seedAll();
+    const written: string[] = [];
+    for (let i = 0; i < RECOVERY_KEEP + 2; i++) {
+      const r = await keep({ label: `copy ${i}` });
+      written.push(r.id);
+      // The copy just written is present after every single save — never
+      // pruned by its own save (which is the one deletion that would matter).
+      expect((await listRecoveryRecords()).map((x) => x.id)).toContain(r.id);
+    }
+    const listed = await listRecoveryRecords();
+    expect(listed).toHaveLength(RECOVERY_KEEP);
+    expect(listed.map((r) => r.id)).toEqual(written.slice(-RECOVERY_KEEP).reverse());
+    // Bodies go with them: no orphaned megabytes left behind.
+    expect(await recoveryDb.bodies.count()).toBe(RECOVERY_KEEP);
+  });
+
+  it('ordering survives copies written inside the same millisecond', async () => {
+    await seedAll();
+    const a = await keep({ label: 'first' });
+    const b = await keep({ label: 'second' });
+    expect(a.savedAt <= b.savedAt).toBe(true);
+    expect(b.seq).toBeGreaterThan(a.seq);
+    expect((await listRecoveryRecords()).map((r) => r.label)).toEqual(['second', 'first']);
+  });
+
+  it('refuses to keep something that is not a valid backup', async () => {
+    const notABackup = { app: 'Nope', schemaVersion: 1, exportedAt: T0, tables: {} };
+    await expect(
+      saveRecoverySnapshot(notABackup as unknown as BackupFile, {
+        reason: 'conflict-keep-local',
+        label: 'rubbish',
+        fileName: 'x.json',
+      }),
+    ).rejects.toThrow(/unusable recovery copy/);
+    expect(await listRecoveryRecords()).toEqual([]);
+  });
+
+  it('a kept copy can be handed to the user as a file, by the normal ladder', async () => {
+    await seedAll();
+    const record = await keep();
+    const { result, written } = await withBrowser({ picker: 'saved' }, async (seen) => ({
+      result: await downloadRecoveryBackup(record.id),
+      written: seen.written,
+    }));
+    expect(result).toBe('saved');
+    expect(written).toHaveLength(1);
+    const parsed = JSON.parse(written[0]!) as BackupFile;
+    expect(sortById(parsed.tables.transactions as { id: string }[])).toEqual(
+      sortById(seedTransactions),
+    );
+  });
+
+  it('downloadBackupFile writes the file it is handed, not the current book', async () => {
+    await seedAll();
+    const handed = await exportBackup();
+    await clearAll(); // the book is gone; the file is not
+    const { result, written } = await withBrowser({ picker: 'saved' }, async (seen) => ({
+      result: await downloadBackupFile(handed, 'handed.json'),
+      written: seen.written,
+    }));
+    expect(result).toBe('saved');
+    expect((JSON.parse(written[0]!) as BackupFile).tables.transactions).toHaveLength(
+      seedTransactions.length,
+    );
+  });
+
+  it('copies can be deleted, one or all', async () => {
+    await seedAll();
+    const a = await keep({ label: 'a' });
+    const b = await keep({ label: 'b' });
+    await deleteRecoveryRecord(a.id);
+    expect((await listRecoveryRecords()).map((r) => r.id)).toEqual([b.id]);
+    expect(await recoveryDb.bodies.get(a.id)).toBeUndefined();
+    await clearRecoveryStore();
+    expect(await listRecoveryRecords()).toEqual([]);
+    expect(await recoveryDb.bodies.count()).toBe(0);
+  });
+
+  it('reading a copy that is gone says so instead of returning nothing', async () => {
+    await expect(readRecoveryBackup('never-existed')).rejects.toThrow(/no longer on this device/);
+    await expect(downloadRecoveryBackup('never-existed')).rejects.toThrow(/no longer/);
+  });
+
+  it('a corrupted body is refused rather than half-restored', async () => {
+    await seedAll();
+    const record = await keep();
+    await recoveryDb.bodies.put({ id: record.id, json: '{not json' });
+    await expect(readRecoveryBackup(record.id)).rejects.toThrow(/unreadable/);
+    // The book is untouched: nothing was cleared on the way to finding out.
+    expect(await db.transactions.count()).toBe(seedTransactions.length);
   });
 });

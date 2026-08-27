@@ -20,6 +20,7 @@ import {
   createGoogleTokenProvider,
   DRIVE_SCOPE,
   GSI_SCRIPT_SRC,
+  isOfflineError,
   isReconnectNeeded,
   resetGsiLoaderForTests,
   SyncTransportError,
@@ -29,6 +30,8 @@ import {
 import {
   createDriveTransport,
   DRIVE_API,
+  DRIVE_TIMEOUT_MS,
+  DRIVE_TRANSFER_TIMEOUT_MS,
   DRIVE_UPLOAD_API,
   MAX_APP_PROPERTY_BYTES,
   SYNC_FILE_NAME,
@@ -50,8 +53,13 @@ interface Snap {
   deviceId: string;
   deviceName: string;
   savedAt: string;
+  /** Identity of this write, and the write it replaces (see SyncSnapshot). */
+  snapshotId: string;
+  parentSnapshotId: string | null;
   tables: Record<string, unknown[]>;
 }
+
+let snapshotIdCounter = 0;
 
 /** Amounts are integer minor units and must survive the round trip
  *  byte-for-byte (SPEC §6). */
@@ -63,6 +71,10 @@ function snapshot(over: Partial<Snap> = {}): Snap {
     deviceId: 'device-imac',
     deviceName: "Girish's iMac",
     savedAt: '2026-08-27T09:15:00.000Z',
+    // A fresh identity per call: two builds of the same book are two
+    // snapshots, and only the one that actually landed may be an ancestor.
+    snapshotId: `snap-${++snapshotIdCounter}`,
+    parentSnapshotId: null,
     tables: {
       accounts: [{ id: 'a1', name: 'Current', currency: 'GBP', openingBalance: 123456 }],
       transactions: [
@@ -73,6 +85,15 @@ function snapshot(over: Partial<Snap> = {}): Snap {
     },
     ...over,
   };
+}
+
+/**
+ * The next snapshot in a lineage: same book, new identity, descending from
+ * `prev`. Anything else is a write built on a head that has moved, which
+ * writeRemote is now required to refuse.
+ */
+function child(prev: Snap, over: Partial<Snap> = {}): Snap {
+  return snapshot({ revision: prev.revision + 1, parentSnapshotId: prev.snapshotId, ...over });
 }
 
 interface FakeFile {
@@ -138,8 +159,32 @@ function createFakeDrive() {
   /** Runs when the next upload request arrives — lets a test pull the file out
    *  from under a write, the way another device could. */
   let onNextUpload: (() => void) | null = null;
+  /** Runs once the next upload has been COMMITTED — the window between Drive
+   *  accepting our bytes and us reading them back. */
+  let afterUpload: (() => void) | null = null;
   /** Makes the next upload request fail at the transport level. */
   let uploadFailure: Error | null = null;
+  /** The next response's headers arrive and its BODY then goes silent. */
+  let stallBody = false;
+
+  /**
+   * A response whose headers have arrived and whose body never comes — a
+   * phone leaving coverage mid-transfer. It rejects if and only if the request
+   * is aborted, exactly like a real body stream, so a transport that releases
+   * its timeout at the headers waits for ever.
+   */
+  const stalled = (status: number, signal?: AbortSignal | null) =>
+    ({
+      ok: status >= 200 && status < 300,
+      status,
+      json: () => new Promise(() => {}),
+      text: () =>
+        new Promise((_resolve, reject) => {
+          signal?.addEventListener('abort', () =>
+            reject(Object.assign(new Error('aborted'), { name: 'AbortError' })),
+          );
+        }),
+    }) as unknown as Response;
 
   const handler = vi.fn(async (input: unknown, init: RequestInit = {}): Promise<Response> => {
     const url = String(input);
@@ -155,6 +200,10 @@ function createFakeDrive() {
 
     if (!headers.authorization?.startsWith('Bearer ')) {
       return json({ error: { code: 401, message: 'Missing credentials' } }, 401);
+    }
+    if (stallBody) {
+      stallBody = false;
+      return stalled(forced?.status ?? 200, init.signal);
     }
     if (forced && forced.times > 0) {
       forced.times -= 1;
@@ -189,6 +238,9 @@ function createFakeDrive() {
         appProperties: (metadata.appProperties ?? {}) as Record<string, string>,
         content,
       });
+      const done = afterUpload;
+      afterUpload = null;
+      done?.();
       return json({ id });
     }
     if (upload && method === 'PATCH' && idFromPath) {
@@ -198,9 +250,17 @@ function createFakeDrive() {
       files.set(idFromPath, {
         ...existing,
         name: String(metadata.name ?? existing.name),
-        appProperties: (metadata.appProperties ?? existing.appProperties) as Record<string, string>,
+        // MERGED, not replaced — that is what files.update does, and a key
+        // left out of an upload therefore keeps its previous value.
+        appProperties: {
+          ...existing.appProperties,
+          ...((metadata.appProperties ?? {}) as Record<string, string>),
+        },
         content,
       });
+      const done = afterUpload;
+      afterUpload = null;
+      done?.();
       return json({ id: idFromPath });
     }
     if (!upload && method === 'GET' && u.searchParams.get('q')) {
@@ -238,6 +298,15 @@ function createFakeDrive() {
     duringNextUpload(fn: () => void) {
       onNextUpload = fn;
     },
+    /** Run `fn` once the next upload has been committed — i.e. in the window
+     *  between Drive accepting it and the transport reading it back. */
+    afterNextUpload(fn: () => void) {
+      afterUpload = fn;
+    },
+    /** The next response answers with headers and then goes silent. */
+    stallNextBody() {
+      stallBody = true;
+    },
     install() {
       vi.stubGlobal('fetch', handler);
       return this;
@@ -260,6 +329,7 @@ function memoryStore(initial: string | null = null) {
 function fakeAuth(over: Partial<TokenProvider> = {}): TokenProvider {
   let valid = true;
   return {
+    isConnected: () => valid,
     hasValidToken: () => valid,
     isLinked: () => true,
     getToken: async () => 'token-abc',
@@ -301,6 +371,7 @@ afterEach(() => {
 describe('silence before connect', () => {
   it('makes no request at all before connect() has been called', async () => {
     const notConnected = fakeAuth({
+      isConnected: () => false,
       hasValidToken: () => false,
       isLinked: () => false,
       getToken: async () => {
@@ -427,6 +498,8 @@ describe('readRemoteMeta', () => {
       revision: 12,
       savedAt: '2026-08-27T09:15:00.000Z',
       deviceName: 'Laptop',
+      snapshotId: expect.stringMatching(/^snap-\d+$/) as unknown as string,
+      parentSnapshotId: null,
     });
     // The whole point: a 3 MB snapshot is NOT fetched to answer this.
     expect(drive.urls().some((u) => u.includes('alt=media'))).toBe(false);
@@ -476,7 +549,8 @@ describe('readRemoteMeta', () => {
 describe('writeRemote', () => {
   it('sends content and appProperties in ONE multipart request', async () => {
     const t = transportWith(drive);
-    await t.writeRemote(snapshot());
+    const snap = snapshot();
+    await t.writeRemote(snap);
 
     const uploads = drive.calls.filter((c) => c.url.startsWith(DRIVE_UPLOAD_API));
     expect(uploads).toHaveLength(1);
@@ -490,13 +564,14 @@ describe('writeRemote', () => {
     const { metadata, content } = parseMultipart(uploads[0]!.body!, uploads[0]!.contentType!);
     expect(metadata.name).toBe(SYNC_FILE_NAME);
     expect(metadata.appProperties).toMatchObject({ revision: '7', deviceName: "Girish's iMac" });
-    expect(JSON.parse(content)).toEqual(snapshot());
+    expect(JSON.parse(content)).toEqual(snap);
   });
 
   it('updates the existing file instead of creating a second one', async () => {
     const t = transportWith(drive);
-    await t.writeRemote(snapshot({ revision: 1 }));
-    await t.writeRemote(snapshot({ revision: 2 }));
+    const first = snapshot({ revision: 1 });
+    await t.writeRemote(first);
+    await t.writeRemote(child(first, { revision: 2 }));
 
     expect(drive.files.size).toBe(1);
     expect(drive.only().appProperties.revision).toBe('2');
@@ -506,13 +581,14 @@ describe('writeRemote', () => {
 
   it('leaves the remote untouched when the upload fails mid-flight', async () => {
     const t = transportWith(drive);
-    await t.writeRemote(snapshot({ revision: 4 }));
+    const first = snapshot({ revision: 4 });
+    await t.writeRemote(first);
     const before = { ...drive.only() };
 
     // The cable is pulled during the upload: fetch rejects, and Drive never
     // commits the partial body.
     drive.breakNextUpload(Object.assign(new Error('network down'), { name: 'TypeError' }));
-    const err = await t.writeRemote(snapshot({ revision: 5 })).catch((e: unknown) => e);
+    const err = await t.writeRemote(child(first, { revision: 5 })).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(SyncTransportError);
     expect((err as SyncTransportError).kind).toBe('network');
 
@@ -550,15 +626,23 @@ describe('writeRemote', () => {
     expect(drive.handler).not.toHaveBeenCalled();
   });
 
-  it('re-creates the file if it was deleted between the check and the write', async () => {
+  // A file that disappears mid-write used to be re-created unconditionally,
+  // which is only right for a snapshot that descends from NOTHING. For any
+  // other, a new file restarts the revision counter at a number the rest of
+  // the lineage has already used, and every device then compares two unrelated
+  // histories as one — so it is refused, and the engine asks.
+  it('re-creates a first-of-lineage file if it was deleted between the check and the write', async () => {
     const t = transportWith(drive);
     await t.writeRemote(snapshot({ revision: 1 }));
     const id = drive.only().id;
+    // A file written before ancestry existed: no identity to descend from, so
+    // a snapshot that descends from nothing is the only one allowed near it.
+    delete drive.only().appProperties.snapshotId;
 
     // The file vanishes in the window between our existence check and the
     // upload landing, so the PATCH 404s.
     drive.duringNextUpload(() => drive.files.delete(id));
-    await t.writeRemote(snapshot({ revision: 2 }));
+    await t.writeRemote(snapshot({ revision: 2, parentSnapshotId: null }));
 
     // It tried the update, was told the file is gone, and created it again
     // rather than dropping the push on the floor.
@@ -566,6 +650,230 @@ describe('writeRemote', () => {
     expect(uploads.map((c) => c.method)).toEqual(['POST', 'PATCH', 'POST']);
     expect(drive.files.size).toBe(1);
     expect(drive.only().appProperties.revision).toBe('2');
+  });
+
+  // The owner already has a sync file in Drive from before any of this
+  // existed. Refusing to write to it would be its own kind of data loss —
+  // sync would simply stop — so a file with no identity is adopted by the
+  // first write that descends from nothing, and carries one from then on.
+  it('adopts a file written before ancestry existed, and stamps it', async () => {
+    const t = transportWith(drive);
+    await t.writeRemote(snapshot({ revision: 1 }));
+    delete drive.only().appProperties.snapshotId;
+    delete drive.only().appProperties.parentSnapshotId;
+
+    const adopting = snapshot({ revision: 2, parentSnapshotId: null });
+    await t.writeRemote(adopting);
+
+    expect(drive.files.size).toBe(1);
+    expect(drive.only().appProperties.snapshotId).toBe(adopting.snapshotId);
+    await expect(t.readRemoteMeta()).resolves.toMatchObject({
+      revision: 2,
+      snapshotId: adopting.snapshotId,
+      parentSnapshotId: null,
+    });
+  });
+
+  it('refuses to re-create a file its snapshot was supposed to descend from', async () => {
+    const t = transportWith(drive);
+    const first = snapshot({ revision: 1 });
+    await t.writeRemote(first);
+    const id = drive.only().id;
+
+    drive.duringNextUpload(() => drive.files.delete(id));
+    const err = await t.writeRemote(child(first, { revision: 2 })).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(SyncTransportError);
+    expect((err as SyncTransportError).message).toMatch(/deleted from Google Drive/i);
+    expect(drive.files.size).toBe(0); // no second lineage started
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Identity, ancestry, and the two checks that make a write safe
+//
+// Drive has no If-Match for files.update, so "only replace the file I read"
+// has to be enforced here. Without it, two devices that both read revision 5
+// both PATCH revision 6 and the second silently erases the first — with both
+// devices recording that Drive holds their book.
+// ---------------------------------------------------------------------------
+
+describe('a write is conditional on the head it was built from', () => {
+  it('carries identity and ancestry in appProperties, whole and untrimmed', async () => {
+    const t = transportWith(drive);
+    const first = snapshot({ revision: 1 });
+    await t.writeRemote(first);
+    const second = child(first, { revision: 2 });
+    await t.writeRemote(second);
+
+    const props = drive.only().appProperties;
+    expect(props.snapshotId).toBe(second.snapshotId);
+    expect(props.parentSnapshotId).toBe(first.snapshotId);
+    // An id is compared, never displayed: trimming one to fit would let two
+    // different snapshots compare equal.
+    const encoder = new TextEncoder();
+    for (const [key, value] of Object.entries(props)) {
+      expect(encoder.encode(key + value).length).toBeLessThanOrEqual(MAX_APP_PROPERTY_BYTES);
+    }
+  });
+
+  // Drive MERGES appProperties on update, so a key left out of an upload keeps
+  // its old value. A first-of-lineage write after a normal one would then look
+  // like a child of whatever came before it.
+  it('clears the parent when a snapshot descends from nothing', async () => {
+    const t = transportWith(drive);
+    const first = snapshot({ revision: 1 });
+    await t.writeRemote(first);
+    await t.writeRemote(child(first, { revision: 2 }));
+    expect(drive.only().appProperties.parentSnapshotId).toBe(first.snapshotId);
+
+    // The file loses its identity (hand-edited, or written by an older build)
+    // and is adopted by a snapshot that descends from nothing.
+    delete drive.only().appProperties.snapshotId;
+    await t.writeRemote(snapshot({ revision: 3, parentSnapshotId: null }));
+
+    expect(drive.only().appProperties.parentSnapshotId).toBe('');
+    await expect(t.readRemoteMeta()).resolves.toMatchObject({ parentSnapshotId: null });
+  });
+
+  // The identity check on its own, with the revision guard deliberately out of
+  // the way: this snapshot is numbered ABOVE the head (the shape a resolved
+  // conflict produces, `max(remote, pulled) + 1`), so only ancestry can tell
+  // that the file underneath is not the one it was built from.
+  it('refuses when another device has written since this snapshot was built', async () => {
+    const t = transportWith(drive);
+    const base = snapshot({ revision: 5 });
+    await t.writeRemote(base);
+    const ours = snapshot({ revision: 8, parentSnapshotId: base.snapshotId, deviceName: 'iPhone' });
+
+    // The other device's push lands first — a complete, well-formed write off
+    // the same ancestor.
+    const theirs = child(base, { revision: 6, deviceName: 'iMac' });
+    await transportWith(drive, fakeAuth(), drive.only().id).writeRemote(theirs);
+    drive.calls.length = 0;
+
+    const err = await t.writeRemote(ours).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(SyncTransportError);
+    expect((err as SyncTransportError).kind).toBe('remote');
+    expect((err as SyncTransportError).message).toMatch(/another device saved/i);
+    expect((err as SyncTransportError).message).toMatch(/nothing was uploaded/i);
+    // Not one upload request was made, so the other device's book is intact.
+    expect(drive.calls.filter((c) => c.url.startsWith(DRIVE_UPLOAD_API))).toHaveLength(0);
+    expect(drive.only().appProperties.snapshotId).toBe(theirs.snapshotId);
+    expect(drive.only().appProperties.deviceName).toBe('iMac');
+    expect(drive.files.size).toBe(1);
+  });
+
+  // The mixed-version window: the other device is still running a build from
+  // before any of this, so its upload leaves the PREVIOUS snapshotId in
+  // appProperties (Drive merges them) on top of a completely different book.
+  // Identity alone reads as "still the file I based on"; the revision it does
+  // write is what gives it away.
+  it('refuses a write at or below the revision already in Drive, whatever the ids say', async () => {
+    const t = transportWith(drive);
+    const base = snapshot({ revision: 5 });
+    await t.writeRemote(base);
+
+    // An old build's PATCH: new content and a new revision, no snapshotId.
+    drive.only().appProperties = { ...drive.only().appProperties, revision: '6' };
+    drive.only().content = JSON.stringify(snapshot({ revision: 6, deviceName: 'Old iMac' }));
+
+    const err = await t.writeRemote(child(base, { revision: 6 })).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(SyncTransportError);
+    expect((err as SyncTransportError).message).toMatch(/already at version 6/i);
+    expect((err as SyncTransportError).message).toMatch(/nothing was uploaded/i);
+    expect(drive.only().appProperties.deviceName).toBe("Girish's iMac"); // unchanged file
+    expect(JSON.parse(drive.only().content).deviceName).toBe('Old iMac');
+  });
+
+  it('reads back what landed, and refuses to call a clobbered write a success', async () => {
+    const t = transportWith(drive);
+    const base = snapshot({ revision: 5 });
+    await t.writeRemote(base);
+    const ours = child(base, { revision: 6, deviceName: 'iPhone' });
+
+    // Our bytes are committed — and something else lands on top of them before
+    // we can confirm. A 200 from the upload is not evidence that the file is
+    // still ours a moment later.
+    drive.afterNextUpload(() => {
+      drive.only().appProperties = {
+        ...drive.only().appProperties,
+        snapshotId: 'somebody-elses-write',
+        deviceName: 'iMac',
+      };
+    });
+
+    const err = await t.writeRemote(ours).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(SyncTransportError);
+    expect((err as SyncTransportError).message).toMatch(/no longer holds this device/i);
+    expect((err as SyncTransportError).message).toMatch(/NOT been recorded as backed up/);
+  });
+
+  it('refuses to upload a snapshot with no identity of its own', async () => {
+    const t = transportWith(drive);
+    const anonymous = { ...snapshot() } as Partial<Snap>;
+    delete anonymous.snapshotId;
+
+    const err = await t.writeRemote(anonymous as never).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(SyncTransportError);
+    expect((err as SyncTransportError).message).toMatch(/no snapshot id/i);
+    expect(drive.handler).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Drive's bin
+// ---------------------------------------------------------------------------
+
+describe("a file in Drive's bin exists", () => {
+  // files.list cannot see the bin, so a trashed file used to read as "no sync
+  // file at all" — and the engine's answer to that was to create a new one at
+  // revision 1, beside a file that was one click from being restored.
+  it('is reported as present-but-trashed, never as absent', async () => {
+    const t = transportWith(drive);
+    await t.writeRemote(snapshot({ revision: 47 }));
+    drive.only().trashed = true;
+
+    const meta = await t.readRemoteMeta();
+    expect(meta).toMatchObject({ revision: 47, trashed: true });
+    // The pointer to it is deliberately kept: it is the only remaining
+    // evidence that the file exists at all.
+    expect(drive.urls().some((u) => u.includes('files?q='))).toBe(true);
+  });
+
+  it('is neither written over nor duplicated', async () => {
+    const t = transportWith(drive);
+    const first = snapshot({ revision: 47 });
+    await t.writeRemote(first);
+    const contentBefore = drive.only().content;
+    drive.only().trashed = true;
+    drive.calls.length = 0;
+
+    const err = await t.writeRemote(child(first, { revision: 48 })).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(SyncTransportError);
+    expect((err as SyncTransportError).message).toMatch(/bin/i);
+    expect(drive.files.size).toBe(1);
+    expect(drive.only().content).toBe(contentBefore);
+    expect(drive.calls.filter((c) => c.url.startsWith(DRIVE_UPLOAD_API))).toHaveLength(0);
+  });
+
+  it('gives way to a live file of the same name when the user has made one', async () => {
+    const t = transportWith(drive);
+    await t.writeRemote(snapshot({ revision: 47 }));
+    const binned = drive.only().id;
+    drive.only().trashed = true;
+    // A second device seeded a fresh file while this one's pointer still names
+    // the binned one.
+    await transportWith(drive).writeRemote(snapshot({ revision: 1, deviceName: 'iMac' }));
+
+    const meta = await t.readRemoteMeta();
+    expect(meta).toMatchObject({ revision: 1, deviceName: 'iMac' });
+    expect(meta?.trashed).toBeUndefined();
+    expect(drive.files.get(binned)?.trashed).toBe(true); // still there, untouched
   });
 });
 
@@ -654,6 +962,105 @@ describe('failures stay calm', () => {
     expect(isReconnectNeeded(err)).toBe(true);
   });
 
+
+  // A request is not over when its headers arrive. If the abort timer is
+  // released at that moment, every body read afterwards is unbounded AND
+  // unabortable: a connection that answers "200 OK" and then goes silent
+  // leaves the promise unsettled for ever, and the Sync screen sits on
+  // "Syncing…" with no error, no toast and no way out but a page reload.
+  // These two fail by TIMING OUT — i.e. by hanging — if the leash is ever
+  // released early again.
+  it('times out when the body stalls after the headers, instead of hanging for ever', async () => {
+    const t = transportWith(drive);
+    await t.writeRemote(snapshot());
+    vi.useFakeTimers();
+    try {
+      drive.stallNextBody(); // the search answers; the download stalls
+      const pending = t.readRemote().catch((e: unknown) => e);
+      await vi.advanceTimersByTimeAsync(DRIVE_TRANSFER_TIMEOUT_MS + 1_000);
+      const err = await pending;
+      expect(err).toBeInstanceOf(SyncTransportError);
+      expect((err as SyncTransportError).kind).toBe('timeout');
+      expect((err as SyncTransportError).message).toMatch(/took too long/i);
+      expect((err as SyncTransportError).message).toMatch(/Nothing was changed/i);
+    } finally {
+      vi.useRealTimers();
+    }
+  }, 15_000);
+
+  it('times out on the error path too, where the body is the error message', async () => {
+    const t = transportWith(drive);
+    vi.useFakeTimers();
+    try {
+      // A 500 whose explanation never arrives: reading it used to hang just
+      // as completely as reading a snapshot.
+      drive.force(500, 1);
+      drive.stallNextBody();
+      const pending = t.readRemoteMeta().catch((e: unknown) => e);
+      await vi.advanceTimersByTimeAsync(DRIVE_TIMEOUT_MS + 1_000);
+      const err = await pending;
+      expect(err).toBeInstanceOf(SyncTransportError);
+      expect((err as SyncTransportError).kind).toBe('timeout');
+    } finally {
+      vi.useRealTimers();
+    }
+  }, 15_000);
+
+  // Drive says "quota" for two opposite things. One clears by itself in
+  // seconds; the other never clears until the owner deletes something, and
+  // telling them to "try again shortly" for ever means the off-site copy
+  // quietly stops advancing while every sync says the same reassuring thing.
+  it('reports a FULL Drive as the permanent problem it is, not as rate limiting', async () => {
+    const t = transportWith(drive);
+    drive.force(
+      403,
+      1,
+      JSON.stringify({
+        error: {
+          code: 403,
+          errors: [
+            {
+              domain: 'usageLimits',
+              reason: 'storageQuotaExceeded',
+              message: "The user's Drive storage quota has been exceeded.",
+            },
+          ],
+          message: "The user's Drive storage quota has been exceeded.",
+        },
+      }),
+    );
+
+    const err = await t.writeRemote(snapshot()).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(SyncTransportError);
+    // Not 'network': nothing about waiting helps, and isOfflineError() must
+    // not class it as "shrug and try later".
+    expect((err as SyncTransportError).kind).toBe('remote');
+    expect(isOfflineError(err)).toBe(false);
+    expect(isReconnectNeeded(err)).toBe(false);
+    expect((err as SyncTransportError).message).toMatch(/full/i);
+    expect((err as SyncTransportError).message).toMatch(/free up space/i);
+    expect((err as SyncTransportError).message).not.toMatch(/try again shortly/i);
+  });
+
+  it('still treats a real rate limit as transient, reason code or not', async () => {
+    const t = transportWith(drive);
+    drive.force(
+      403,
+      1,
+      JSON.stringify({
+        error: {
+          code: 403,
+          errors: [{ reason: 'userRateLimitExceeded', message: 'User Rate Limit Exceeded' }],
+          message: 'User Rate Limit Exceeded',
+        },
+      }),
+    );
+    const err = await t.readRemoteMeta().catch((e: unknown) => e);
+    expect((err as SyncTransportError).kind).toBe('network');
+    expect((err as SyncTransportError).message).toMatch(/try again shortly/i);
+  });
+
   it('never deletes the Drive file when disconnecting', async () => {
     const t = transportWith(drive);
     await t.writeRemote(snapshot());
@@ -737,7 +1144,11 @@ describe('OAuth scope and token handling', () => {
     expect(gis.prompts).toEqual(['consent']); // still valid: nothing asked
 
     clock += 3600_000; // an hour later
-    expect(provider.hasValidToken()).toBe(false);
+    // The token has lapsed, but the DEVICE is still connected: the standing
+    // grant is what "connected" means, and the lapsed token is what the silent
+    // re-grant below is for. (Reporting `false` here is what used to make a
+    // set-up device announce itself as unconfigured once an hour.)
+    expect(provider.isConnected()).toBe(true);
     const refreshing = provider.getToken();
     await tick();
     gis.respond({ access_token: 'tok-2', expires_in: 3600, scope: DRIVE_SCOPE });
