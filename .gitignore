@@ -5,3 +5,25 @@ coverage/
 *.local
 .DS_Store
 .claude/scheduled_tasks.lock
+
+# --- Real financial data must never land here ---------------------------
+# This repository is PUBLIC (GitHub Pages cannot serve a private repo on a
+# free account, and moving hosts would orphan the IndexedDB data, so public
+# it stays). The fabricated CSVs in tests/fixtures/ are the ONLY account
+# data that belongs in it. The realistic accident is dropping a real
+# MoneyWiz export in there to debug an importer and pushing without
+# thinking — these rules make that impossible rather than unlikely.
+*.csv
+*.ofx
+*.qif
+*.qfx
+*.xls
+*.xlsx
+!tests/fixtures/*.csv
+
+# What the app itself writes: mymoney-backup-<date>.json from downloadBackup,
+# and mymoney-conflict-*.json from a sync conflict. Both are a full export of
+# every transaction.
+mymoney-backup*.json
+mymoney-conflict*.json
+backups/
