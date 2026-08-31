@@ -35,6 +35,13 @@ import {
   txSaveDisabled,
 } from '../src/ui/tx/txShared';
 
+// This file is the reason vite.config.ts raises `testTimeout`: it seeds ~2,500
+// rows through fake-indexeddb and then runs full queries over them, sharing a
+// worker pool with 38 other files, and the default 5s bound turned that
+// scheduling noise into a report of a broken index. The bound lives in the
+// config rather than here so the next file to grow heavy inherits it. Nothing
+// in this file measures speed — see the header above.
+
 // One row past a batch boundary: batch 1 fills, batch 2 is the short tail.
 const ROWS = SCAN_BATCH + 7;
 const TODAY = todayISO();

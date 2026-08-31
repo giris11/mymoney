@@ -1,0 +1,994 @@
+{
+  "oracleVersion": 1,
+  "area": "money",
+  "title": "Money: parsing, formatting, rounding and minor-unit scaling",
+  "generatedFrom": [
+    "src/money/money.ts"
+  ],
+  "notes": [
+    "Amounts are ALWAYS integers in the currency’s minor units. No case here has a fractional money value.",
+    "Rounding is half away from zero and is applied exactly once, at the end of a conversion or display computation.",
+    "A null result means \"refused\": the input could not be represented without changing the user’s number.",
+    "money.formatMinor cases are advisory — see the note on each."
+  ],
+  "cases": [
+    {
+      "id": "money.decimals.gbp",
+      "describes": "the base currency: 2 decimals",
+      "op": "money.decimalsFor",
+      "input": {
+        "currency": "GBP"
+      },
+      "expect": {
+        "value": 2
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "src/money/money.test.ts"
+    },
+    {
+      "id": "money.decimals.usd",
+      "describes": "an unlisted currency defaults to 2 decimals",
+      "op": "money.decimalsFor",
+      "input": {
+        "currency": "USD"
+      },
+      "expect": {
+        "value": 2
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "money.decimals.eur",
+      "describes": "the euro is an ordinary 2-decimal currency",
+      "op": "money.decimalsFor",
+      "input": {
+        "currency": "EUR"
+      },
+      "expect": {
+        "value": 2
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "money.decimals.jpy",
+      "describes": "yen has NO minor unit — 500 minor units is ¥500, not ¥5.00",
+      "op": "money.decimalsFor",
+      "input": {
+        "currency": "JPY"
+      },
+      "expect": {
+        "value": 0
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "src/money/money.test.ts"
+    },
+    {
+      "id": "money.decimals.krw",
+      "describes": "the Korean won has no minor unit either",
+      "op": "money.decimalsFor",
+      "input": {
+        "currency": "KRW"
+      },
+      "expect": {
+        "value": 0
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "money.decimals.isk",
+      "describes": "Icelandic króna has no minor unit",
+      "op": "money.decimalsFor",
+      "input": {
+        "currency": "ISK"
+      },
+      "expect": {
+        "value": 0
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "money.decimals.bhd",
+      "describes": "Bahraini dinar has 3 decimals (1000 fils)",
+      "op": "money.decimalsFor",
+      "input": {
+        "currency": "BHD"
+      },
+      "expect": {
+        "value": 3
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "src/money/money.test.ts"
+    },
+    {
+      "id": "money.decimals.kwd",
+      "describes": "Kuwaiti dinar has 3 decimals",
+      "op": "money.decimalsFor",
+      "input": {
+        "currency": "KWD"
+      },
+      "expect": {
+        "value": 3
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "money.decimals.tnd",
+      "describes": "Tunisian dinar has 3 decimals",
+      "op": "money.decimalsFor",
+      "input": {
+        "currency": "TND"
+      },
+      "expect": {
+        "value": 3
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "money.decimals.unknown-code",
+      "describes": "an unknown code falls back to 2 rather than throwing",
+      "op": "money.decimalsFor",
+      "input": {
+        "currency": "XYZ"
+      },
+      "expect": {
+        "value": 2
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "src/money/money.test.ts"
+    },
+    {
+      "id": "money.decimals.lowercase-code",
+      "describes": "the lookup is case-insensitive — a lowercase code is the same currency",
+      "op": "money.decimalsFor",
+      "input": {
+        "currency": "jpy"
+      },
+      "expect": {
+        "value": 0
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "money.minorFactor.gbp",
+      "describes": "one whole GBP is 100 minor units — the factor every conversion scales by",
+      "op": "money.minorFactor",
+      "input": {
+        "currency": "GBP"
+      },
+      "expect": {
+        "value": 100
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "money.minorFactor.jpy",
+      "describes": "one whole JPY is 1 minor unit — the factor every conversion scales by",
+      "op": "money.minorFactor",
+      "input": {
+        "currency": "JPY"
+      },
+      "expect": {
+        "value": 1
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "money.minorFactor.bhd",
+      "describes": "one whole BHD is 1000 minor units — the factor every conversion scales by",
+      "op": "money.minorFactor",
+      "input": {
+        "currency": "BHD"
+      },
+      "expect": {
+        "value": 1000
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "money.round.half-up-positive",
+      "describes": "2.5 rounds AWAY from zero to 3",
+      "op": "money.roundHalfAwayFromZero",
+      "input": {
+        "x": 2.5
+      },
+      "expect": {
+        "value": 3
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "src/money/money.test.ts"
+    },
+    {
+      "id": "money.round.half-up-negative",
+      "describes": "-2.5 rounds AWAY from zero to -3 (not -2: this is where banker’s rounding and Int(x+0.5) both break)",
+      "op": "money.roundHalfAwayFromZero",
+      "input": {
+        "x": -2.5
+      },
+      "expect": {
+        "value": -3
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "src/money/money.test.ts"
+    },
+    {
+      "id": "money.round.half-small-positive",
+      "describes": "0.5 rounds up to 1 — the smallest positive half",
+      "op": "money.roundHalfAwayFromZero",
+      "input": {
+        "x": 0.5
+      },
+      "expect": {
+        "value": 1
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "src/money/money.test.ts"
+    },
+    {
+      "id": "money.round.half-small-negative",
+      "describes": "-0.5 rounds to -1, never to 0 and never to -0",
+      "op": "money.roundHalfAwayFromZero",
+      "input": {
+        "x": -0.5
+      },
+      "expect": {
+        "value": -1
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "src/money/money.test.ts"
+    },
+    {
+      "id": "money.round.half-odd-positive",
+      "describes": "1.5 → 2 (banker’s rounding would also say 2 — kept as the pair for 2.5)",
+      "op": "money.roundHalfAwayFromZero",
+      "input": {
+        "x": 1.5
+      },
+      "expect": {
+        "value": 2
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "money.round.half-odd-negative",
+      "describes": "-1.5 → -2 (banker’s rounding would say -2 as well; 2.5/-2.5 is the discriminating pair)",
+      "op": "money.roundHalfAwayFromZero",
+      "input": {
+        "x": -1.5
+      },
+      "expect": {
+        "value": -2
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "money.round.below-half-positive",
+      "describes": "2.4 is below the half and rounds down to 2",
+      "op": "money.roundHalfAwayFromZero",
+      "input": {
+        "x": 2.4
+      },
+      "expect": {
+        "value": 2
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "src/money/money.test.ts"
+    },
+    {
+      "id": "money.round.below-half-negative",
+      "describes": "-2.4 is below the half in magnitude and rounds to -2",
+      "op": "money.roundHalfAwayFromZero",
+      "input": {
+        "x": -2.4
+      },
+      "expect": {
+        "value": -2
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "src/money/money.test.ts"
+    },
+    {
+      "id": "money.round.above-half-positive",
+      "describes": "2.6 is above the half and rounds up to 3",
+      "op": "money.roundHalfAwayFromZero",
+      "input": {
+        "x": 2.6
+      },
+      "expect": {
+        "value": 3
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "money.round.above-half-negative",
+      "describes": "-2.6 is above the half in magnitude and rounds to -3",
+      "op": "money.roundHalfAwayFromZero",
+      "input": {
+        "x": -2.6
+      },
+      "expect": {
+        "value": -3
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "money.round.zero",
+      "describes": "zero rounds to zero, with no sign attached to it",
+      "op": "money.roundHalfAwayFromZero",
+      "input": {
+        "x": 0
+      },
+      "expect": {
+        "value": 0
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "src/money/money.test.ts"
+    },
+    {
+      "id": "money.round.just-below-half",
+      "describes": "the largest double below 0.5 must round DOWN — the classic Math.round/Int(x+0.5) trap",
+      "op": "money.roundHalfAwayFromZero",
+      "input": {
+        "x": 0.49999999999999994
+      },
+      "expect": {
+        "value": 0
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "money.round.negative-just-below-half",
+      "describes": "and its negative rounds to 0, never -1",
+      "op": "money.roundHalfAwayFromZero",
+      "input": {
+        "x": -0.49999999999999994
+      },
+      "expect": {
+        "value": 0
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "money.round.large-half",
+      "describes": "a half that is still exactly representable (2^51 + 0.5) rounds away from zero",
+      "op": "money.roundHalfAwayFromZero",
+      "input": {
+        "x": 2251799813685248.5
+      },
+      "expect": {
+        "value": 2251799813685249
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "money.round.large-negative-half",
+      "describes": "and its negative — the sign must not be lost at scale",
+      "op": "money.roundHalfAwayFromZero",
+      "input": {
+        "x": -2251799813685248.5
+      },
+      "expect": {
+        "value": -2251799813685249
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "money.parse.plain",
+      "describes": "a plain decimal amount becomes minor units",
+      "op": "money.parseAmountToMinor",
+      "input": {
+        "input": "12.34",
+        "currency": "GBP",
+        "decimal": "dot"
+      },
+      "expect": {
+        "minor": 1234
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "src/money/money.test.ts"
+    },
+    {
+      "id": "money.parse.no-decimals",
+      "describes": "a whole number is scaled, not taken as minor units",
+      "op": "money.parseAmountToMinor",
+      "input": {
+        "input": "12",
+        "currency": "GBP",
+        "decimal": "dot"
+      },
+      "expect": {
+        "minor": 1200
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "src/money/money.test.ts"
+    },
+    {
+      "id": "money.parse.sub-unit",
+      "describes": "a fraction below one unit: five pence is 5 minor units",
+      "op": "money.parseAmountToMinor",
+      "input": {
+        "input": "0.05",
+        "currency": "GBP",
+        "decimal": "dot"
+      },
+      "expect": {
+        "minor": 5
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "src/money/money.test.ts"
+    },
+    {
+      "id": "money.parse.grouped",
+      "describes": "thousands separators are ignored in dot style",
+      "op": "money.parseAmountToMinor",
+      "input": {
+        "input": "1,234.56",
+        "currency": "GBP",
+        "decimal": "dot"
+      },
+      "expect": {
+        "minor": 123456
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "src/money/money.test.ts"
+    },
+    {
+      "id": "money.parse.negative",
+      "describes": "a leading minus sign makes the amount negative",
+      "op": "money.parseAmountToMinor",
+      "input": {
+        "input": "-45.67",
+        "currency": "GBP",
+        "decimal": "dot"
+      },
+      "expect": {
+        "minor": -4567
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "src/money/money.test.ts"
+    },
+    {
+      "id": "money.parse.parens-negative",
+      "describes": "accounting parentheses mean negative",
+      "op": "money.parseAmountToMinor",
+      "input": {
+        "input": "(45.67)",
+        "currency": "GBP",
+        "decimal": "dot"
+      },
+      "expect": {
+        "minor": -4567
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "src/money/money.test.ts"
+    },
+    {
+      "id": "money.parse.symbol",
+      "describes": "a currency symbol is stripped",
+      "op": "money.parseAmountToMinor",
+      "input": {
+        "input": "£99.99",
+        "currency": "GBP",
+        "decimal": "dot"
+      },
+      "expect": {
+        "minor": 9999
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "src/money/money.test.ts"
+    },
+    {
+      "id": "money.parse.leading-code",
+      "describes": "a leading ISO code is stripped",
+      "op": "money.parseAmountToMinor",
+      "input": {
+        "input": "GBP 5.00",
+        "currency": "GBP",
+        "decimal": "dot"
+      },
+      "expect": {
+        "minor": 500
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "money.parse.trailing-code",
+      "describes": "a trailing ISO code is stripped",
+      "op": "money.parseAmountToMinor",
+      "input": {
+        "input": "5.00 GBP",
+        "currency": "GBP",
+        "decimal": "dot"
+      },
+      "expect": {
+        "minor": 500
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "money.parse.plus",
+      "describes": "an explicit plus is allowed",
+      "op": "money.parseAmountToMinor",
+      "input": {
+        "input": "+5.00",
+        "currency": "GBP",
+        "decimal": "dot"
+      },
+      "expect": {
+        "minor": 500
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "money.parse.short-fraction",
+      "describes": "a one-digit fraction is padded, not truncated",
+      "op": "money.parseAmountToMinor",
+      "input": {
+        "input": "1.5",
+        "currency": "GBP",
+        "decimal": "dot"
+      },
+      "expect": {
+        "minor": 150
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "money.parse.bare-fraction",
+      "describes": "a leading decimal point with no integer part is allowed",
+      "op": "money.parseAmountToMinor",
+      "input": {
+        "input": ".5",
+        "currency": "GBP",
+        "decimal": "dot"
+      },
+      "expect": {
+        "minor": 50
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "money.parse.zero",
+      "describes": "the string \"0\" parses to exactly zero minor units",
+      "op": "money.parseAmountToMinor",
+      "input": {
+        "input": "0",
+        "currency": "GBP",
+        "decimal": "dot"
+      },
+      "expect": {
+        "minor": 0
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "money.parse.negative-zero",
+      "describes": "a signed zero amount is just zero (the oracle normalises IEEE -0 to 0; nothing may ever display “-£0.00”)",
+      "op": "money.parseAmountToMinor",
+      "input": {
+        "input": "-0.00",
+        "currency": "GBP",
+        "decimal": "dot"
+      },
+      "expect": {
+        "minor": 0
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "money.parse.jpy-whole",
+      "describes": "a 0-decimal currency: ¥500 IS 500 minor units",
+      "op": "money.parseAmountToMinor",
+      "input": {
+        "input": "500",
+        "currency": "JPY",
+        "decimal": "dot"
+      },
+      "expect": {
+        "minor": 500
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "src/money/money.test.ts"
+    },
+    {
+      "id": "money.parse.jpy-fraction-rejected",
+      "describes": "yen has no minor unit, so a fraction is refused rather than rounded",
+      "op": "money.parseAmountToMinor",
+      "input": {
+        "input": "500.5",
+        "currency": "JPY",
+        "decimal": "dot"
+      },
+      "expect": {
+        "minor": null
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "src/money/money.test.ts"
+    },
+    {
+      "id": "money.parse.bhd-three",
+      "describes": "a 3-decimal currency scales by 1000",
+      "op": "money.parseAmountToMinor",
+      "input": {
+        "input": "1.234",
+        "currency": "BHD",
+        "decimal": "dot"
+      },
+      "expect": {
+        "minor": 1234
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "src/money/money.test.ts"
+    },
+    {
+      "id": "money.parse.bhd-short",
+      "describes": "a short fraction pads to the currency’s 3 decimals",
+      "op": "money.parseAmountToMinor",
+      "input": {
+        "input": "1.2",
+        "currency": "BHD",
+        "decimal": "dot"
+      },
+      "expect": {
+        "minor": 1200
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "money.parse.too-precise",
+      "describes": "more precision than the currency has is REFUSED — never silently rounded",
+      "op": "money.parseAmountToMinor",
+      "input": {
+        "input": "1.2345",
+        "currency": "GBP",
+        "decimal": "dot"
+      },
+      "expect": {
+        "minor": null
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "src/money/money.test.ts"
+    },
+    {
+      "id": "money.parse.comma-decimal",
+      "describes": "decimal-comma style: dots group, comma is the decimal",
+      "op": "money.parseAmountToMinor",
+      "input": {
+        "input": "1.234,56",
+        "currency": "EUR",
+        "decimal": "comma"
+      },
+      "expect": {
+        "minor": 123456
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "src/money/money.test.ts"
+    },
+    {
+      "id": "money.parse.comma-short",
+      "describes": "decimal-comma with one fractional digit",
+      "op": "money.parseAmountToMinor",
+      "input": {
+        "input": "12,5",
+        "currency": "EUR",
+        "decimal": "comma"
+      },
+      "expect": {
+        "minor": 1250
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "src/money/money.test.ts"
+    },
+    {
+      "id": "money.parse.empty",
+      "describes": "an empty string is refused, because an empty field is not a zero amount",
+      "op": "money.parseAmountToMinor",
+      "input": {
+        "input": "",
+        "currency": "GBP",
+        "decimal": "dot"
+      },
+      "expect": {
+        "minor": null
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "src/money/money.test.ts"
+    },
+    {
+      "id": "money.parse.whitespace",
+      "describes": "whitespace alone is refused for the same reason",
+      "op": "money.parseAmountToMinor",
+      "input": {
+        "input": "   ",
+        "currency": "GBP",
+        "decimal": "dot"
+      },
+      "expect": {
+        "minor": null
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "money.parse.letters",
+      "describes": "unparseable text yields null, never 0",
+      "op": "money.parseAmountToMinor",
+      "input": {
+        "input": "abc",
+        "currency": "GBP",
+        "decimal": "dot"
+      },
+      "expect": {
+        "minor": null
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "src/money/money.test.ts"
+    },
+    {
+      "id": "money.parse.two-dots",
+      "describes": "two decimal separators are unparseable",
+      "op": "money.parseAmountToMinor",
+      "input": {
+        "input": "1.2.3",
+        "currency": "GBP",
+        "decimal": "dot"
+      },
+      "expect": {
+        "minor": null
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "src/money/money.test.ts"
+    },
+    {
+      "id": "money.parse.huge",
+      "describes": "an amount beyond exact integer range is refused, not silently mangled",
+      "op": "money.parseAmountToMinor",
+      "input": {
+        "input": "99999999999999999999",
+        "currency": "GBP",
+        "decimal": "dot"
+      },
+      "expect": {
+        "minor": null
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "money.plain.penny",
+      "describes": "one penny is 0.01, not 0.010000000000000002",
+      "op": "money.formatMinorPlain",
+      "input": {
+        "minor": 1,
+        "currency": "GBP"
+      },
+      "expect": {
+        "text": "0.01"
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "src/money/money.test.ts"
+    },
+    {
+      "id": "money.plain.negative-penny",
+      "describes": "the sign leads the whole string",
+      "op": "money.formatMinorPlain",
+      "input": {
+        "minor": -1,
+        "currency": "GBP"
+      },
+      "expect": {
+        "text": "-0.01"
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "src/money/money.test.ts"
+    },
+    {
+      "id": "money.plain.whole",
+      "describes": "plain formatting has no group separators",
+      "op": "money.formatMinorPlain",
+      "input": {
+        "minor": 123456,
+        "currency": "GBP"
+      },
+      "expect": {
+        "text": "1234.56"
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "money.plain.zero",
+      "describes": "zero shows the currency’s decimals",
+      "op": "money.formatMinorPlain",
+      "input": {
+        "minor": 0,
+        "currency": "GBP"
+      },
+      "expect": {
+        "text": "0.00"
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "money.plain.huge",
+      "describes": "a trillion pounds is exact — string maths, never a float",
+      "op": "money.formatMinorPlain",
+      "input": {
+        "minor": 100000000000000,
+        "currency": "GBP"
+      },
+      "expect": {
+        "text": "1000000000000.00"
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "src/money/money.test.ts"
+    },
+    {
+      "id": "money.plain.jpy",
+      "describes": "a 0-decimal currency has no decimal point at all",
+      "op": "money.formatMinorPlain",
+      "input": {
+        "minor": 5,
+        "currency": "JPY"
+      },
+      "expect": {
+        "text": "5"
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "src/money/money.test.ts"
+    },
+    {
+      "id": "money.plain.jpy-negative",
+      "describes": "and the same value negated keeps its sign in front",
+      "op": "money.formatMinorPlain",
+      "input": {
+        "minor": -5,
+        "currency": "JPY"
+      },
+      "expect": {
+        "text": "-5"
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "money.plain.bhd",
+      "describes": "a 3-decimal currency pads to three",
+      "op": "money.formatMinorPlain",
+      "input": {
+        "minor": 5,
+        "currency": "BHD"
+      },
+      "expect": {
+        "text": "0.005"
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "src/money/money.test.ts"
+    },
+    {
+      "id": "money.plain.bhd-whole",
+      "describes": "a whole unit of a 3-decimal currency is 1000 minor units",
+      "op": "money.formatMinorPlain",
+      "input": {
+        "minor": 1234,
+        "currency": "BHD"
+      },
+      "expect": {
+        "text": "1.234"
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "money.format.gbp",
+      "describes": "en-GB puts £ before the digits and groups thousands",
+      "op": "money.formatMinor",
+      "input": {
+        "minor": 123456,
+        "currency": "GBP",
+        "locale": "en-GB"
+      },
+      "expect": {
+        "text": "£1,234.56"
+      },
+      "provenance": "derived",
+      "advisory": [
+        "text"
+      ],
+      "note": "Locale-dependent display string (ICU en-GB). The minor-unit value is the contract; the glyphs are the platform’s."
+    },
+    {
+      "id": "money.format.gbp-negative",
+      "describes": "a negative sign precedes the symbol",
+      "op": "money.formatMinor",
+      "input": {
+        "minor": -4567,
+        "currency": "GBP",
+        "locale": "en-GB"
+      },
+      "expect": {
+        "text": "-£45.67"
+      },
+      "provenance": "derived",
+      "advisory": [
+        "text"
+      ],
+      "note": "Locale-dependent display string (ICU en-GB). The minor-unit value is the contract; the glyphs are the platform’s."
+    },
+    {
+      "id": "money.format.jpy",
+      "describes": "a 0-decimal currency renders with no decimals",
+      "op": "money.formatMinor",
+      "input": {
+        "minor": 500,
+        "currency": "JPY",
+        "locale": "en-GB"
+      },
+      "expect": {
+        "text": "JP¥500"
+      },
+      "provenance": "derived",
+      "advisory": [
+        "text"
+      ],
+      "note": "Locale-dependent display string (ICU en-GB). The minor-unit value is the contract; the glyphs are the platform’s."
+    },
+    {
+      "id": "money.format.eur",
+      "describes": "euros formatted for an en-GB reader, symbol first",
+      "op": "money.formatMinor",
+      "input": {
+        "minor": 20000,
+        "currency": "EUR",
+        "locale": "en-GB"
+      },
+      "expect": {
+        "text": "€200.00"
+      },
+      "provenance": "derived",
+      "advisory": [
+        "text"
+      ],
+      "note": "Locale-dependent display string (ICU en-GB). The minor-unit value is the contract; the glyphs are the platform’s."
+    },
+    {
+      "id": "money.splits.sum-negative",
+      "describes": "splits sum by plain integer addition — a split transaction is valid iff this equals the parent amount",
+      "op": "money.sumSplits",
+      "input": {
+        "amounts": [
+          -300,
+          -700
+        ]
+      },
+      "expect": {
+        "value": -1000
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "src/money/money.test.ts"
+    },
+    {
+      "id": "money.splits.sum-mixed",
+      "describes": "a refund line inside a split subtracts",
+      "op": "money.sumSplits",
+      "input": {
+        "amounts": [
+          -6000,
+          -4000,
+          1000
+        ]
+      },
+      "expect": {
+        "value": -9000
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "money.splits.sum-empty",
+      "describes": "a transaction with no splits sums to zero, not to its own amount",
+      "op": "money.sumSplits",
+      "input": {
+        "amounts": []
+      },
+      "expect": {
+        "value": 0
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "src/money/money.test.ts"
+    }
+  ]
+}

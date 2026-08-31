@@ -8,8 +8,8 @@ import {
   backupNudgeState,
   clearRecoveryStore,
   deleteRecoveryRecord,
-  downloadBackup,
   downloadRecoveryBackup,
+  downloadVerifiedBackup,
   listRecoveryRecords,
   markBackupSaved,
   restoreBackup,
@@ -17,6 +17,7 @@ import {
   validateBackup,
   type RecoveryRecord,
 } from '../../backup/backup';
+import { summariseManifest } from '../../backup/manifest';
 import {
   persistenceState,
   requestPersistence,
@@ -29,7 +30,7 @@ import { Button, Card, ConfirmDialog } from '../kit/kit';
 import { IconDownload, IconTrash } from '../kit/icons';
 import { useToast } from '../kit/toast';
 import { errorMessage, SettingsPage } from './shared';
-import { RestoreFromBackup } from './RestoreFromBackup';
+import { restoredNote, RestoreFromBackup, type RestoreResult } from './RestoreFromBackup';
 
 function formatBytes(n: number): string {
   if (n >= 1024 ** 3) return `${(n / 1024 ** 3).toFixed(1)} GB`;
@@ -65,6 +66,16 @@ export default function BackupSection() {
   // destination kept it). Only the user can settle either, and until they do
   // we record nothing (D33).
   const [pending, setPending] = useState<'shared' | 'delivered' | null>(null);
+  // What the last export actually wrote, in the owner's own terms, plus the
+  // fingerprint of its contents. Kept on screen after the toast has gone: the
+  // point of a self-verifying backup is that he can read the figures and
+  // recognise them, not that the app says "done" (Task 4).
+  const [written, setWritten] = useState<{ summary: string; hash: string } | null>(null);
+  // …and the same after a restore, recomputed from the database once it had
+  // committed. The screen deliberately does NOT bounce to the dashboard any
+  // more: being told "restored" and shown a different page is exactly the
+  // "take our word for it" this feature exists to end.
+  const [restored, setRestored] = useState<RestoreResult | null>(null);
   const [eraseOpen, setEraseOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   // Copies of the whole book that a sync conflict replaced. Kept in their own
@@ -92,21 +103,31 @@ export default function BackupSection() {
 
   const exportBackupNow = async () => {
     try {
-      const result = await downloadBackup();
+      // Verified before it is offered: the bytes are parsed back and every
+      // figure in the file's manifest is recomputed from them, so a file that
+      // cannot prove itself throws here and is never handed over.
+      const { result, manifest, contentHash } = await downloadVerifiedBackup();
+      const summary = summariseManifest(manifest);
+      setRestored(null); // a fresh export supersedes the last restore's figures
+      if (result === 'cancelled') {
+        setPending(null);
+        setWritten(null);
+        toast('Backup cancelled — nothing was saved', 'info');
+        return;
+      }
+      setWritten({ summary, hash: contentHash });
       if (result === 'saved') {
         // The browser wrote the file where the user chose — observed, so it
         // can be recorded without asking.
         await markBackupSaved();
         setPending(null);
-        toast('Backup saved', 'success');
-      } else if (result === 'cancelled') {
-        setPending(null);
-        toast('Backup cancelled — nothing was saved', 'info');
+        toast(`Backup saved — ${summary}`, 'success');
       } else {
         setPending(result);
       }
     } catch (e) {
       setPending(null);
+      setWritten(null);
       toast(errorMessage(e), 'error');
     }
   };
@@ -221,8 +242,56 @@ export default function BackupSection() {
           <Button variant="primary" onClick={() => void exportBackupNow()}>
             <IconDownload size={16} /> Export backup
           </Button>
-          <RestoreFromBackup onDone={() => navigate('/dashboard')} />
+          <RestoreFromBackup
+            onDone={(result) => {
+              setRestored(result);
+              setWritten(null); // that fingerprint described the previous book
+            }}
+          />
         </div>
+        {/* What went into the file, checked against the file itself. Not a
+            congratulation — a statement he can compare with what he expects,
+            and a fingerprint he can compare with a future import's. */}
+        {written && (
+          <div className="mt-3 rounded-lg border border-border bg-surface2 p-3 text-sm">
+            <p className="text-text">
+              Written: <strong className="tnum">{written.summary}</strong> — verified.
+            </p>
+            <p className="mt-1 text-xs text-muted">
+              Every figure above was recomputed from the finished file&rsquo;s own rows before it
+              left the app. Fingerprint of the contents (the export time is excluded, so an
+              unchanged book always fingerprints the same):
+            </p>
+            <code className="mt-1 block break-all text-xs text-faint">{written.hash}</code>
+          </div>
+        )}
+        {/* After a restore: the same figures, recomputed from the database
+            itself rather than read off the file that was just imported. */}
+        {restored && (
+          <div className="mt-3 rounded-lg border border-border bg-surface2 p-3 text-sm">
+            {restored.manifest ? (
+              <>
+                <p className="text-text">
+                  Restored: <strong className="tnum">{summariseManifest(restored.manifest)}</strong>
+                  {restored.verified ? ' — verified.' : ' — not verified.'}
+                </p>
+                <p className="mt-1 text-xs text-muted">{restoredNote(restored.verified)}</p>
+              </>
+            ) : (
+              // The restore itself succeeded; only the description of it did
+              // not. Saying so beats implying the data is missing.
+              <p className="text-text">
+                Restored. The app could not recompute the figures just now — the data is in
+                place; reopen this screen to see them.
+              </p>
+            )}
+            <div className="mt-2">
+              <Button size="sm" onClick={() => navigate('/dashboard')}>
+                Go to the dashboard
+              </Button>
+            </div>
+          </div>
+        )}
         {pending && (
           <div className="mt-3 rounded-lg border border-warn bg-surface2 p-3 text-sm">
             {/* Deliberately demanding wording: confirming stamps this as the

@@ -1,0 +1,226 @@
+{
+  "app": "MyMoney",
+  "schemaVersion": 1,
+  "exportedAt": "2026-08-20T09:15:00.000Z",
+  "tables": {
+    "accounts": [
+      {
+        "id": "acc-gbp",
+        "name": "Current",
+        "type": "current",
+        "currency": "GBP",
+        "openingBalanceMinor": 150000,
+        "colour": "#3b82f6",
+        "groupId": "grp1",
+        "sortOrder": 0,
+        "archived": false
+      },
+      {
+        "id": "acc-old",
+        "name": "Closed ISA",
+        "type": "savings",
+        "currency": "GBP",
+        "openingBalanceMinor": 25000,
+        "colour": "#f59e0b",
+        "groupId": null,
+        "sortOrder": 2,
+        "archived": true
+      },
+      {
+        "id": "acc-usd",
+        "name": "US Savings",
+        "type": "savings",
+        "currency": "USD",
+        "openingBalanceMinor": 0,
+        "colour": "#22c55e",
+        "groupId": null,
+        "sortOrder": 1,
+        "archived": false
+      }
+    ],
+    "accountGroups": [
+      {
+        "id": "grp1",
+        "name": "Everyday",
+        "sortOrder": 0
+      }
+    ],
+    "transactions": [
+      {
+        "currency": "GBP",
+        "payeeId": "pay-tesco",
+        "categoryId": "cat-groc",
+        "tagIds": [
+          "tag-work"
+        ],
+        "notes": "weekly shop",
+        "status": "cleared",
+        "splits": [],
+        "transferGroupId": null,
+        "importBatchId": null,
+        "dedupeHash": "h-tx-groc",
+        "createdAt": "2026-08-01T10:00:00.000Z",
+        "updatedAt": "2026-08-01T10:00:00.000Z",
+        "id": "tx-groc",
+        "accountId": "acc-gbp",
+        "date": "2026-08-10",
+        "amountMinor": -4567
+      },
+      {
+        "currency": "GBP",
+        "payeeId": null,
+        "categoryId": null,
+        "tagIds": [],
+        "notes": "closing withdrawal",
+        "status": "cleared",
+        "splits": [],
+        "transferGroupId": null,
+        "importBatchId": null,
+        "dedupeHash": "h-tx-old",
+        "createdAt": "2026-08-01T10:00:00.000Z",
+        "updatedAt": "2026-08-01T10:00:00.000Z",
+        "id": "tx-old",
+        "accountId": "acc-old",
+        "date": "2026-02-02",
+        "amountMinor": -5000
+      },
+      {
+        "currency": "GBP",
+        "payeeId": null,
+        "categoryId": null,
+        "tagIds": [],
+        "notes": "August salary",
+        "status": "cleared",
+        "splits": [],
+        "transferGroupId": null,
+        "importBatchId": null,
+        "dedupeHash": "h-tx-salary",
+        "createdAt": "2026-08-01T10:00:00.000Z",
+        "updatedAt": "2026-08-01T10:00:00.000Z",
+        "id": "tx-salary",
+        "accountId": "acc-gbp",
+        "date": "2026-08-25",
+        "amountMinor": 250000
+      },
+      {
+        "currency": "USD",
+        "payeeId": null,
+        "categoryId": null,
+        "tagIds": [],
+        "notes": "transfer in",
+        "status": "cleared",
+        "splits": [],
+        "transferGroupId": null,
+        "importBatchId": null,
+        "dedupeHash": "h-tx-usd",
+        "createdAt": "2026-08-01T10:00:00.000Z",
+        "updatedAt": "2026-08-01T10:00:00.000Z",
+        "id": "tx-usd",
+        "accountId": "acc-usd",
+        "date": "2026-08-15",
+        "amountMinor": 12700
+      }
+    ],
+    "categories": [
+      {
+        "id": "cat-food",
+        "name": "Food & Drink",
+        "parentId": null,
+        "kind": "expense",
+        "archived": false,
+        "sortOrder": 0
+      },
+      {
+        "id": "cat-groc",
+        "name": "Groceries",
+        "parentId": "cat-food",
+        "kind": "expense",
+        "archived": false,
+        "sortOrder": 0
+      }
+    ],
+    "payees": [
+      {
+        "id": "pay-tesco",
+        "name": "Tesco",
+        "nameLower": "tesco",
+        "defaultCategoryId": "cat-groc"
+      }
+    ],
+    "tags": [
+      {
+        "id": "tag-work",
+        "name": "work",
+        "nameLower": "work"
+      }
+    ],
+    "budgets": [
+      {
+        "id": "bud-food",
+        "name": "Food budget",
+        "categoryIds": [
+          "cat-food"
+        ],
+        "amountMinor": 30000,
+        "period": "monthly",
+        "startDate": "2026-01-01",
+        "rollover": false,
+        "archived": false
+      }
+    ],
+    "fxRates": [
+      {
+        "id": "GBP:USD",
+        "base": "GBP",
+        "quote": "USD",
+        "rate": 1.27,
+        "asOf": "2026-08-01T10:00:00.000Z",
+        "source": "manual"
+      }
+    ],
+    "importBatches": [
+      {
+        "id": "batch-1",
+        "source": "moneywiz",
+        "fileName": "moneywiz-export.csv",
+        "rowCount": 1,
+        "importedAt": "2026-08-01T10:00:00.000Z",
+        "createdAccountIds": [],
+        "createdCategoryIds": [
+          "cat-groc"
+        ],
+        "createdPayeeIds": [
+          "pay-tesco"
+        ],
+        "createdTagIds": [],
+        "createdGroupIds": []
+      }
+    ],
+    "settings": [
+      {
+        "id": "app",
+        "schemaVersion": 1,
+        "baseCurrency": "GBP",
+        "theme": "dark",
+        "lastBackupAt": null,
+        "onboarded": true,
+        "lastUsedAccountId": "acc-gbp",
+        "savedMappings": {},
+        "createdAt": "2020-01-01T00:00:00.000Z",
+        "autoFxEnabled": true,
+        "lastFxSyncAt": null,
+        "lastFxSyncSource": null,
+        "syncEnabled": false,
+        "syncDeviceId": "",
+        "syncDeviceName": "",
+        "syncClientId": null,
+        "syncLastSyncedAt": null,
+        "syncLastPulledRevision": 0,
+        "syncLastPulledSnapshotId": null,
+        "syncAncestry": [],
+        "syncLocalRevision": 0,
+        "syncSyncedLocalRevision": 0
+      }
+    ]
+  }
+}

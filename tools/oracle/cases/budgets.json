@@ -1,0 +1,1166 @@
+{
+  "oracleVersion": 1,
+  "area": "budgets",
+  "title": "Budgets: period windows (including month-end clamping) and spend against them",
+  "generatedFrom": [
+    "src/domain/budgets.ts"
+  ],
+  "notes": [
+    "A window is [start, end] with BOTH ends inclusive, and windows tile the timeline with no gaps or overlaps.",
+    "Window n = [anchor + n periods, anchor + (n+1) periods − 1 day]. Both ends derive from the anchor, so month-end clamping never accumulates.",
+    "n may be negative: dates before startDate fall in negative windows on the same grid.",
+    "A budget covers its categoryIds PLUS all their descendants (D16).",
+    "Spend is reported POSITIVE (expenses are negative amounts, so spend = −Σ). Refunds subtract and spend may go negative.",
+    "pct = spent / limit, floored at 0 and NOT capped at 1; it is 0 when the limit is 0. It is a ratio, so compare with an epsilon.",
+    "over is spent > limit — spending exactly the limit is not over.",
+    "Transfer legs never count. Split transactions contribute only the splits whose category the budget covers.",
+    "A transaction whose currency has no rate to base is excluded and counted ONCE in missingRateCount, however many of its splits the budget covers (D28)."
+  ],
+  "books": {
+    "budget": {
+      "baseCurrency": "GBP",
+      "fxRates": [
+        {
+          "base": "EUR",
+          "quote": "GBP",
+          "rate": 0.85
+        }
+      ],
+      "accounts": [
+        {
+          "id": "b-cur",
+          "name": "Current",
+          "type": "current",
+          "currency": "GBP",
+          "openingBalanceMinor": 0,
+          "archived": false,
+          "excludeFromNetWorth": false,
+          "sortOrder": 0
+        },
+        {
+          "id": "b-eur",
+          "name": "Euro Pot",
+          "type": "current",
+          "currency": "EUR",
+          "openingBalanceMinor": 0,
+          "archived": false,
+          "excludeFromNetWorth": false,
+          "sortOrder": 1
+        },
+        {
+          "id": "b-chf",
+          "name": "Swiss Pot",
+          "type": "current",
+          "currency": "CHF",
+          "openingBalanceMinor": 0,
+          "archived": false,
+          "excludeFromNetWorth": false,
+          "sortOrder": 2
+        },
+        {
+          "id": "b-sav",
+          "name": "Savings",
+          "type": "savings",
+          "currency": "GBP",
+          "openingBalanceMinor": 0,
+          "archived": false,
+          "excludeFromNetWorth": false,
+          "sortOrder": 3
+        }
+      ],
+      "categories": [
+        {
+          "id": "k-food",
+          "name": "Food",
+          "kind": "expense",
+          "parentId": null,
+          "archived": false,
+          "sortOrder": 0
+        },
+        {
+          "id": "k-groceries",
+          "name": "Groceries",
+          "kind": "expense",
+          "parentId": "k-food",
+          "archived": false,
+          "sortOrder": 0
+        },
+        {
+          "id": "k-dining",
+          "name": "Dining",
+          "kind": "expense",
+          "parentId": "k-food",
+          "archived": false,
+          "sortOrder": 1
+        },
+        {
+          "id": "k-coffee",
+          "name": "Coffee",
+          "kind": "expense",
+          "parentId": "k-dining",
+          "archived": false,
+          "sortOrder": 0
+        },
+        {
+          "id": "k-travel",
+          "name": "Travel",
+          "kind": "expense",
+          "parentId": null,
+          "archived": false,
+          "sortOrder": 1
+        }
+      ],
+      "payees": [],
+      "tags": [],
+      "transactions": [
+        {
+          "id": "k0",
+          "accountId": "b-cur",
+          "date": "2026-02-28",
+          "amountMinor": -9999,
+          "currency": "GBP",
+          "payeeId": null,
+          "categoryId": "k-groceries",
+          "tagIds": [],
+          "status": "cleared",
+          "splits": [],
+          "transferGroupId": null,
+          "notes": ""
+        },
+        {
+          "id": "k1",
+          "accountId": "b-cur",
+          "date": "2026-03-01",
+          "amountMinor": -12345,
+          "currency": "GBP",
+          "payeeId": null,
+          "categoryId": "k-groceries",
+          "tagIds": [],
+          "status": "cleared",
+          "splits": [],
+          "transferGroupId": null,
+          "notes": ""
+        },
+        {
+          "id": "k2",
+          "accountId": "b-cur",
+          "date": "2026-03-31",
+          "amountMinor": -1000,
+          "currency": "GBP",
+          "payeeId": null,
+          "categoryId": "k-coffee",
+          "tagIds": [],
+          "status": "cleared",
+          "splits": [],
+          "transferGroupId": null,
+          "notes": ""
+        },
+        {
+          "id": "k3",
+          "accountId": "b-cur",
+          "date": "2026-03-10",
+          "amountMinor": -2500,
+          "currency": "GBP",
+          "payeeId": null,
+          "categoryId": "k-dining",
+          "tagIds": [],
+          "status": "cleared",
+          "splits": [],
+          "transferGroupId": null,
+          "notes": ""
+        },
+        {
+          "id": "k4",
+          "accountId": "b-cur",
+          "date": "2026-03-12",
+          "amountMinor": 500,
+          "currency": "GBP",
+          "payeeId": null,
+          "categoryId": "k-groceries",
+          "tagIds": [],
+          "status": "cleared",
+          "splits": [],
+          "transferGroupId": null,
+          "notes": ""
+        },
+        {
+          "id": "k5",
+          "accountId": "b-cur",
+          "date": "2026-03-14",
+          "amountMinor": -6000,
+          "currency": "GBP",
+          "payeeId": null,
+          "categoryId": null,
+          "tagIds": [],
+          "status": "cleared",
+          "splits": [
+            {
+              "categoryId": "k-groceries",
+              "amountMinor": -4000
+            },
+            {
+              "categoryId": "k-travel",
+              "amountMinor": -2000
+            }
+          ],
+          "transferGroupId": null,
+          "notes": ""
+        },
+        {
+          "id": "k6",
+          "accountId": "b-cur",
+          "date": "2026-03-15",
+          "amountMinor": -20000,
+          "currency": "GBP",
+          "payeeId": null,
+          "categoryId": null,
+          "tagIds": [],
+          "status": "cleared",
+          "splits": [],
+          "transferGroupId": "k-tg1",
+          "notes": ""
+        },
+        {
+          "id": "k7",
+          "accountId": "b-sav",
+          "date": "2026-03-15",
+          "amountMinor": 20000,
+          "currency": "GBP",
+          "payeeId": null,
+          "categoryId": null,
+          "tagIds": [],
+          "status": "cleared",
+          "splits": [],
+          "transferGroupId": "k-tg1",
+          "notes": ""
+        },
+        {
+          "id": "k8",
+          "accountId": "b-eur",
+          "date": "2026-03-18",
+          "amountMinor": -2000,
+          "currency": "EUR",
+          "payeeId": null,
+          "categoryId": "k-groceries",
+          "tagIds": [],
+          "status": "cleared",
+          "splits": [],
+          "transferGroupId": null,
+          "notes": ""
+        },
+        {
+          "id": "k9",
+          "accountId": "b-chf",
+          "date": "2026-03-20",
+          "amountMinor": -8000,
+          "currency": "CHF",
+          "payeeId": null,
+          "categoryId": null,
+          "tagIds": [],
+          "status": "cleared",
+          "splits": [
+            {
+              "categoryId": "k-groceries",
+              "amountMinor": -5000
+            },
+            {
+              "categoryId": "k-coffee",
+              "amountMinor": -3000
+            }
+          ],
+          "transferGroupId": null,
+          "notes": ""
+        },
+        {
+          "id": "k10",
+          "accountId": "b-cur",
+          "date": "2026-04-01",
+          "amountMinor": -7777,
+          "currency": "GBP",
+          "payeeId": null,
+          "categoryId": "k-groceries",
+          "tagIds": [],
+          "status": "cleared",
+          "splits": [],
+          "transferGroupId": null,
+          "notes": ""
+        },
+        {
+          "id": "k11",
+          "accountId": "b-cur",
+          "date": "2026-04-05",
+          "amountMinor": 9000,
+          "currency": "GBP",
+          "payeeId": null,
+          "categoryId": "k-groceries",
+          "tagIds": [],
+          "status": "cleared",
+          "splits": [],
+          "transferGroupId": null,
+          "notes": ""
+        }
+      ]
+    }
+  },
+  "cases": [
+    {
+      "id": "budgets.window.weekly.on-start",
+      "describes": "the first weekly window opens ON startDate and both ends are INCLUSIVE",
+      "op": "budgets.windowContaining",
+      "input": {
+        "period": "weekly",
+        "startDate": "2025-01-06",
+        "date": "2025-01-06"
+      },
+      "expect": {
+        "start": "2025-01-06",
+        "end": "2025-01-12"
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "tests/budgets.test.ts"
+    },
+    {
+      "id": "budgets.window.weekly.mid",
+      "describes": "a date inside the window resolves to it",
+      "op": "budgets.windowContaining",
+      "input": {
+        "period": "weekly",
+        "startDate": "2025-01-06",
+        "date": "2025-01-09"
+      },
+      "expect": {
+        "start": "2025-01-06",
+        "end": "2025-01-12"
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "tests/budgets.test.ts"
+    },
+    {
+      "id": "budgets.window.weekly.on-end",
+      "describes": "the last day belongs to the window, not to the next one",
+      "op": "budgets.windowContaining",
+      "input": {
+        "period": "weekly",
+        "startDate": "2025-01-06",
+        "date": "2025-01-12"
+      },
+      "expect": {
+        "start": "2025-01-06",
+        "end": "2025-01-12"
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "tests/budgets.test.ts"
+    },
+    {
+      "id": "budgets.window.weekly.next-day",
+      "describes": "the day after an end starts the next window",
+      "op": "budgets.windowContaining",
+      "input": {
+        "period": "weekly",
+        "startDate": "2025-01-06",
+        "date": "2025-01-13"
+      },
+      "expect": {
+        "start": "2025-01-13",
+        "end": "2025-01-19"
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "tests/budgets.test.ts"
+    },
+    {
+      "id": "budgets.window.weekly.crosses-month",
+      "describes": "a weekly window is 7 days, so it crosses month ends without noticing",
+      "op": "budgets.windowContaining",
+      "input": {
+        "period": "weekly",
+        "startDate": "2025-01-06",
+        "date": "2025-02-01"
+      },
+      "expect": {
+        "start": "2025-01-27",
+        "end": "2025-02-02"
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "tests/budgets.test.ts"
+    },
+    {
+      "id": "budgets.window.weekly.before-start",
+      "describes": "dates before startDate fall in negative windows on the same 7-day grid",
+      "op": "budgets.windowContaining",
+      "input": {
+        "period": "weekly",
+        "startDate": "2025-01-06",
+        "date": "2025-01-05"
+      },
+      "expect": {
+        "start": "2024-12-30",
+        "end": "2025-01-05"
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "tests/budgets.test.ts"
+    },
+    {
+      "id": "budgets.window.weekly.two-before-start",
+      "describes": "and the windows keep tiling backwards on the same grid",
+      "op": "budgets.windowContaining",
+      "input": {
+        "period": "weekly",
+        "startDate": "2025-01-06",
+        "date": "2024-12-29"
+      },
+      "expect": {
+        "start": "2024-12-23",
+        "end": "2024-12-29"
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "tests/budgets.test.ts"
+    },
+    {
+      "id": "budgets.window.weekly.crosses-dst",
+      "describes": "a weekly window spanning a DST change is still exactly 7 calendar days — windows are date arithmetic, never elapsed hours",
+      "op": "budgets.windowContaining",
+      "input": {
+        "period": "weekly",
+        "startDate": "2025-03-24",
+        "date": "2025-03-30"
+      },
+      "expect": {
+        "start": "2025-03-24",
+        "end": "2025-03-30"
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "budgets.window.monthly.plain",
+      "describes": "the ordinary case: anchored on the 1st, the window is the calendar month",
+      "op": "budgets.windowContaining",
+      "input": {
+        "period": "monthly",
+        "startDate": "2026-03-01",
+        "date": "2026-03-15"
+      },
+      "expect": {
+        "start": "2026-03-01",
+        "end": "2026-03-31"
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "budgets.window.monthly.31st-leap-feb",
+      "describes": "anchored on the 31st in a LEAP year: 31 Jan + 1 month clamps to 29 Feb, so window 0 ends on the 28th",
+      "op": "budgets.windowContaining",
+      "input": {
+        "period": "monthly",
+        "startDate": "2024-01-31",
+        "date": "2024-01-31"
+      },
+      "expect": {
+        "start": "2024-01-31",
+        "end": "2024-02-28"
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "tests/budgets.test.ts"
+    },
+    {
+      "id": "budgets.window.monthly.31st-leap-feb-inside",
+      "describes": "a February date still resolves into that window",
+      "op": "budgets.windowContaining",
+      "input": {
+        "period": "monthly",
+        "startDate": "2024-01-31",
+        "date": "2024-02-01"
+      },
+      "expect": {
+        "start": "2024-01-31",
+        "end": "2024-02-28"
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "tests/budgets.test.ts"
+    },
+    {
+      "id": "budgets.window.monthly.31st-leap-feb-end",
+      "describes": "and its last day is 28 Feb",
+      "op": "budgets.windowContaining",
+      "input": {
+        "period": "monthly",
+        "startDate": "2024-01-31",
+        "date": "2024-02-28"
+      },
+      "expect": {
+        "start": "2024-01-31",
+        "end": "2024-02-28"
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "tests/budgets.test.ts"
+    },
+    {
+      "id": "budgets.window.monthly.31st-leap-next",
+      "describes": "window 1 opens on 29 Feb — the clamped day — and runs to 30 March",
+      "op": "budgets.windowContaining",
+      "input": {
+        "period": "monthly",
+        "startDate": "2024-01-31",
+        "date": "2024-02-29"
+      },
+      "expect": {
+        "start": "2024-02-29",
+        "end": "2024-03-30"
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "tests/budgets.test.ts"
+    },
+    {
+      "id": "budgets.window.monthly.31st-anchor-returns",
+      "describes": "window 2 opens on the 31st again: clamping never accumulates, because both ends come from the same anchor",
+      "op": "budgets.windowContaining",
+      "input": {
+        "period": "monthly",
+        "startDate": "2024-01-31",
+        "date": "2024-03-31"
+      },
+      "expect": {
+        "start": "2024-03-31",
+        "end": "2024-04-29"
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "tests/budgets.test.ts"
+    },
+    {
+      "id": "budgets.window.monthly.31st-nonleap-feb",
+      "describes": "anchored on the 31st in a NON-leap year: window 0 ends 27 Feb",
+      "op": "budgets.windowContaining",
+      "input": {
+        "period": "monthly",
+        "startDate": "2023-01-31",
+        "date": "2023-02-27"
+      },
+      "expect": {
+        "start": "2023-01-31",
+        "end": "2023-02-27"
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "tests/budgets.test.ts"
+    },
+    {
+      "id": "budgets.window.monthly.31st-nonleap-next",
+      "describes": "and the next window opens on 28 February, the day after that end",
+      "op": "budgets.windowContaining",
+      "input": {
+        "period": "monthly",
+        "startDate": "2023-01-31",
+        "date": "2023-02-28"
+      },
+      "expect": {
+        "start": "2023-02-28",
+        "end": "2023-03-30"
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "tests/budgets.test.ts"
+    },
+    {
+      "id": "budgets.window.monthly.31st-before-start",
+      "describes": "window −1 of a 31 March anchor opens on the clamped 29 Feb",
+      "op": "budgets.windowContaining",
+      "input": {
+        "period": "monthly",
+        "startDate": "2024-03-31",
+        "date": "2024-02-29"
+      },
+      "expect": {
+        "start": "2024-02-29",
+        "end": "2024-03-30"
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "tests/budgets.test.ts"
+    },
+    {
+      "id": "budgets.window.monthly.31st-two-before-start",
+      "describes": "window −2 opens on 31 January — the anchor day, recovered",
+      "op": "budgets.windowContaining",
+      "input": {
+        "period": "monthly",
+        "startDate": "2024-03-31",
+        "date": "2024-02-28"
+      },
+      "expect": {
+        "start": "2024-01-31",
+        "end": "2024-02-28"
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "tests/budgets.test.ts"
+    },
+    {
+      "id": "budgets.window.monthly.31st-far-future",
+      "describes": "six years on, a 31st anchor still lands exactly: February 2030 sits in [31 Jan, 27 Feb]",
+      "op": "budgets.windowContaining",
+      "input": {
+        "period": "monthly",
+        "startDate": "2024-01-31",
+        "date": "2030-02-14"
+      },
+      "expect": {
+        "start": "2030-01-31",
+        "end": "2030-02-27"
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "tests/budgets.test.ts"
+    },
+    {
+      "id": "budgets.window.monthly.31st-far-future-next",
+      "describes": "and the following window opens 28 Feb 2030",
+      "op": "budgets.windowContaining",
+      "input": {
+        "period": "monthly",
+        "startDate": "2024-01-31",
+        "date": "2030-02-28"
+      },
+      "expect": {
+        "start": "2030-02-28",
+        "end": "2030-03-30"
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "tests/budgets.test.ts"
+    },
+    {
+      "id": "budgets.window.monthly.30th-february",
+      "describes": "a 30th anchor also clamps through February",
+      "op": "budgets.windowContaining",
+      "input": {
+        "period": "monthly",
+        "startDate": "2025-01-30",
+        "date": "2025-02-15"
+      },
+      "expect": {
+        "start": "2025-01-30",
+        "end": "2025-02-27"
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "budgets.window.monthly.29th-nonleap",
+      "describes": "a 29th anchor clamps only in non-leap Februarys",
+      "op": "budgets.windowContaining",
+      "input": {
+        "period": "monthly",
+        "startDate": "2025-01-29",
+        "date": "2025-02-27"
+      },
+      "expect": {
+        "start": "2025-01-29",
+        "end": "2025-02-27"
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "budgets.window.yearly.leap-anchor",
+      "describes": "a 29 Feb anchor: window 0 runs to 27 Feb the next year (29 Feb + 1 year clamps to 28 Feb, minus a day)",
+      "op": "budgets.windowContaining",
+      "input": {
+        "period": "yearly",
+        "startDate": "2024-02-29",
+        "date": "2024-02-29"
+      },
+      "expect": {
+        "start": "2024-02-29",
+        "end": "2025-02-27"
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "tests/budgets.test.ts"
+    },
+    {
+      "id": "budgets.window.yearly.leap-anchor-inside",
+      "describes": "any date in between resolves to it",
+      "op": "budgets.windowContaining",
+      "input": {
+        "period": "yearly",
+        "startDate": "2024-02-29",
+        "date": "2024-12-31"
+      },
+      "expect": {
+        "start": "2024-02-29",
+        "end": "2025-02-27"
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "tests/budgets.test.ts"
+    },
+    {
+      "id": "budgets.window.yearly.leap-anchor-next",
+      "describes": "window 1 opens on the clamped 28 Feb",
+      "op": "budgets.windowContaining",
+      "input": {
+        "period": "yearly",
+        "startDate": "2024-02-29",
+        "date": "2025-02-28"
+      },
+      "expect": {
+        "start": "2025-02-28",
+        "end": "2026-02-27"
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "tests/budgets.test.ts"
+    },
+    {
+      "id": "budgets.window.yearly.leap-returns",
+      "describes": "four years on, the anchor day returns: window 4 opens on a real 29 Feb",
+      "op": "budgets.windowContaining",
+      "input": {
+        "period": "yearly",
+        "startDate": "2024-02-29",
+        "date": "2028-02-29"
+      },
+      "expect": {
+        "start": "2028-02-29",
+        "end": "2029-02-27"
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "tests/budgets.test.ts"
+    },
+    {
+      "id": "budgets.window.yearly.leap-before-start",
+      "describes": "window −1 of a 29 Feb anchor opens on the clamped 28 Feb of the previous year",
+      "op": "budgets.windowContaining",
+      "input": {
+        "period": "yearly",
+        "startDate": "2024-02-29",
+        "date": "2024-02-28"
+      },
+      "expect": {
+        "start": "2023-02-28",
+        "end": "2024-02-28"
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "tests/budgets.test.ts"
+    },
+    {
+      "id": "budgets.window.yearly.plain",
+      "describes": "an ordinary yearly window is the anniversary year, both ends inclusive",
+      "op": "budgets.windowContaining",
+      "input": {
+        "period": "yearly",
+        "startDate": "2026-04-06",
+        "date": "2027-04-05"
+      },
+      "expect": {
+        "start": "2026-04-06",
+        "end": "2027-04-05"
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "budgets.window.weekly.far-future-grid",
+      "describes": "a weekly window two and a half years out is still a whole number of weeks from the anchor and spans exactly 6 days end-to-start",
+      "op": "budgets.windowContaining",
+      "input": {
+        "period": "weekly",
+        "startDate": "2025-01-06",
+        "date": "2027-06-15"
+      },
+      "expect": {
+        "start": "2027-06-14",
+        "end": "2027-06-20",
+        "wholeWeeksFromAnchor": 127,
+        "spanDays": 6
+      },
+      "provenance": "derived",
+      "note": "wholeWeeksFromAnchor and spanDays are properties of the returned window, not extra return values."
+    },
+    {
+      "id": "budgets.shift.weekly.forward",
+      "describes": "shifting forward moves by whole weeks",
+      "op": "budgets.shiftWindow",
+      "input": {
+        "period": "weekly",
+        "startDate": "2025-01-06",
+        "window": {
+          "start": "2025-01-06",
+          "end": "2025-01-12"
+        },
+        "n": 2
+      },
+      "expect": {
+        "start": "2025-01-20",
+        "end": "2025-01-26"
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "tests/budgets.test.ts"
+    },
+    {
+      "id": "budgets.shift.weekly.back",
+      "describes": "shifting backwards moves by whole weeks too",
+      "op": "budgets.shiftWindow",
+      "input": {
+        "period": "weekly",
+        "startDate": "2025-01-06",
+        "window": {
+          "start": "2025-01-06",
+          "end": "2025-01-12"
+        },
+        "n": -1
+      },
+      "expect": {
+        "start": "2024-12-30",
+        "end": "2025-01-05"
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "tests/budgets.test.ts"
+    },
+    {
+      "id": "budgets.shift.weekly.zero",
+      "describes": "shifting by zero returns the same window",
+      "op": "budgets.shiftWindow",
+      "input": {
+        "period": "weekly",
+        "startDate": "2025-01-06",
+        "window": {
+          "start": "2025-01-06",
+          "end": "2025-01-12"
+        },
+        "n": 0
+      },
+      "expect": {
+        "start": "2025-01-06",
+        "end": "2025-01-12"
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "tests/budgets.test.ts"
+    },
+    {
+      "id": "budgets.shift.monthly.31st-forward",
+      "describes": "shifting a clamped window re-derives from the ANCHOR: +1 from [31 Jan, 28 Feb] is [29 Feb, 30 Mar] — adding a month to both ends would wrongly say 28 Mar",
+      "op": "budgets.shiftWindow",
+      "input": {
+        "period": "monthly",
+        "startDate": "2024-01-31",
+        "window": {
+          "start": "2024-01-31",
+          "end": "2024-02-28"
+        },
+        "n": 1
+      },
+      "expect": {
+        "start": "2024-02-29",
+        "end": "2024-03-30"
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "tests/budgets.test.ts"
+    },
+    {
+      "id": "budgets.shift.monthly.31st-forward-two",
+      "describes": "shifting two months on recovers the anchor day, the 31st",
+      "op": "budgets.shiftWindow",
+      "input": {
+        "period": "monthly",
+        "startDate": "2024-01-31",
+        "window": {
+          "start": "2024-01-31",
+          "end": "2024-02-28"
+        },
+        "n": 2
+      },
+      "expect": {
+        "start": "2024-03-31",
+        "end": "2024-04-29"
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "tests/budgets.test.ts"
+    },
+    {
+      "id": "budgets.shift.monthly.31st-back",
+      "describes": "−1 crosses into the previous December",
+      "op": "budgets.shiftWindow",
+      "input": {
+        "period": "monthly",
+        "startDate": "2024-01-31",
+        "window": {
+          "start": "2024-01-31",
+          "end": "2024-02-28"
+        },
+        "n": -1
+      },
+      "expect": {
+        "start": "2023-12-31",
+        "end": "2024-01-30"
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "tests/budgets.test.ts"
+    },
+    {
+      "id": "budgets.shift.monthly.zero-on-clamped",
+      "describes": "shifting by zero is the identity even on a February-clamped window — the window index is recovered from its start date, not re-derived by arithmetic on its ends",
+      "op": "budgets.shiftWindow",
+      "input": {
+        "period": "monthly",
+        "startDate": "2024-01-31",
+        "window": {
+          "start": "2024-02-29",
+          "end": "2024-03-30"
+        },
+        "n": 0
+      },
+      "expect": {
+        "start": "2024-02-29",
+        "end": "2024-03-30"
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "budgets.shift.yearly.leap-forward",
+      "describes": "four yearly steps from a 29 Feb anchor land back on a real 29 Feb",
+      "op": "budgets.shiftWindow",
+      "input": {
+        "period": "yearly",
+        "startDate": "2024-02-29",
+        "window": {
+          "start": "2024-02-29",
+          "end": "2025-02-27"
+        },
+        "n": 4
+      },
+      "expect": {
+        "start": "2028-02-29",
+        "end": "2029-02-27"
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "tests/budgets.test.ts"
+    },
+    {
+      "id": "budgets.shift.monthly.round-trip-3",
+      "describes": "shifting a February-clamped window forward three months and back three returns it unchanged",
+      "op": "budgets.shiftWindowRoundTrip",
+      "input": {
+        "period": "monthly",
+        "startDate": "2024-01-31",
+        "window": {
+          "start": "2024-02-29",
+          "end": "2024-03-30"
+        },
+        "n": 3
+      },
+      "expect": {
+        "forward": {
+          "start": "2024-05-31",
+          "end": "2024-06-29"
+        },
+        "backAgain": {
+          "start": "2024-02-29",
+          "end": "2024-03-30"
+        }
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "tests/budgets.test.ts"
+    },
+    {
+      "id": "budgets.progress.food-month",
+      "describes": "a monthly budget over a parent category: descendants count, the covered split leg counts, a refund subtracts, a foreign amount converts once, the transfer is invisible, and the unconvertible transaction is excluded and counted once",
+      "op": "budgets.progress",
+      "input": {
+        "book": "budget",
+        "budget": {
+          "categoryIds": [
+            "k-food"
+          ],
+          "amountMinor": 50000,
+          "period": "monthly",
+          "startDate": "2026-03-01"
+        },
+        "refDate": "2026-03-15"
+      },
+      "expect": {
+        "window": {
+          "start": "2026-03-01",
+          "end": "2026-03-31"
+        },
+        "spentMinor": 21045,
+        "limitMinor": 50000,
+        "remainingMinor": 28955,
+        "pct": 0.4209,
+        "over": false,
+        "missingRateCount": 1
+      },
+      "provenance": "hand-calculated",
+      "note": "pct is a ratio (a Double), not a percentage: 0.4209 here. Compare it with a small epsilon."
+    },
+    {
+      "id": "budgets.progress.over-limit",
+      "describes": "only the travel leg of the split falls in this budget — £20.00 against a £10.00 limit, so remaining goes negative and over is true",
+      "op": "budgets.progress",
+      "input": {
+        "book": "budget",
+        "budget": {
+          "categoryIds": [
+            "k-travel"
+          ],
+          "amountMinor": 1000,
+          "period": "monthly",
+          "startDate": "2026-03-01"
+        },
+        "refDate": "2026-03-15"
+      },
+      "expect": {
+        "window": {
+          "start": "2026-03-01",
+          "end": "2026-03-31"
+        },
+        "spentMinor": 2000,
+        "limitMinor": 1000,
+        "remainingMinor": -1000,
+        "pct": 2,
+        "over": true,
+        "missingRateCount": 0
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "budgets.progress.exactly-at-limit",
+      "describes": "spending exactly the limit is NOT over — remaining is zero and over is false",
+      "op": "budgets.progress",
+      "input": {
+        "book": "budget",
+        "budget": {
+          "categoryIds": [
+            "k-coffee"
+          ],
+          "amountMinor": 1000,
+          "period": "monthly",
+          "startDate": "2026-03-01"
+        },
+        "refDate": "2026-03-15"
+      },
+      "expect": {
+        "window": {
+          "start": "2026-03-01",
+          "end": "2026-03-31"
+        },
+        "spentMinor": 1000,
+        "limitMinor": 1000,
+        "remainingMinor": 0,
+        "pct": 1,
+        "over": false,
+        "missingRateCount": 1
+      },
+      "provenance": "hand-calculated",
+      "note": "missingRateCount is 1 because the unconvertible CHF transaction has a Coffee split — the count is of TRANSACTIONS, not of splits."
+    },
+    {
+      "id": "budgets.progress.weekly-window",
+      "describes": "the same book seen through a weekly budget: only the £17.00 converted euro spend falls in [15 Mar, 21 Mar]",
+      "op": "budgets.progress",
+      "input": {
+        "book": "budget",
+        "budget": {
+          "categoryIds": [
+            "k-food"
+          ],
+          "amountMinor": 5000,
+          "period": "weekly",
+          "startDate": "2026-03-01"
+        },
+        "refDate": "2026-03-15"
+      },
+      "expect": {
+        "window": {
+          "start": "2026-03-15",
+          "end": "2026-03-21"
+        },
+        "spentMinor": 1700,
+        "limitMinor": 5000,
+        "remainingMinor": 3300,
+        "pct": 0.34,
+        "over": false,
+        "missingRateCount": 1
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "budgets.progress.refunds-exceed-spend",
+      "describes": "April is refund-heavy: £90.00 back against £77.77 spent, so spend is NEGATIVE (−£12.23), remaining exceeds the limit, and pct floors at zero rather than going negative",
+      "op": "budgets.progress",
+      "input": {
+        "book": "budget",
+        "budget": {
+          "categoryIds": [
+            "k-food"
+          ],
+          "amountMinor": 50000,
+          "period": "monthly",
+          "startDate": "2026-03-01"
+        },
+        "refDate": "2026-04-15"
+      },
+      "expect": {
+        "window": {
+          "start": "2026-04-01",
+          "end": "2026-04-30"
+        },
+        "spentMinor": -1223,
+        "limitMinor": 50000,
+        "remainingMinor": 51223,
+        "pct": 0,
+        "over": false,
+        "missingRateCount": 0
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "budgets.progress.empty-window",
+      "describes": "a window with no matching transactions spends exactly zero — never −0, which would display as “-£0.00”",
+      "op": "budgets.progress",
+      "input": {
+        "book": "budget",
+        "budget": {
+          "categoryIds": [
+            "k-travel"
+          ],
+          "amountMinor": 10000,
+          "period": "monthly",
+          "startDate": "2026-03-01"
+        },
+        "refDate": "2026-05-15"
+      },
+      "expect": {
+        "window": {
+          "start": "2026-05-01",
+          "end": "2026-05-31"
+        },
+        "spentMinor": 0,
+        "limitMinor": 10000,
+        "remainingMinor": 10000,
+        "pct": 0,
+        "over": false,
+        "missingRateCount": 0
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "budgets.progress.two-roots",
+      "describes": "a budget over two roots covers both subtrees: the whole £60.00 split now counts, so spend is the Food total plus the £20.00 travel leg",
+      "op": "budgets.progress",
+      "input": {
+        "book": "budget",
+        "budget": {
+          "categoryIds": [
+            "k-food",
+            "k-travel"
+          ],
+          "amountMinor": 50000,
+          "period": "monthly",
+          "startDate": "2026-03-01"
+        },
+        "refDate": "2026-03-15"
+      },
+      "expect": {
+        "window": {
+          "start": "2026-03-01",
+          "end": "2026-03-31"
+        },
+        "spentMinor": 23045,
+        "limitMinor": 50000,
+        "remainingMinor": 26955,
+        "pct": 0.4609,
+        "over": false,
+        "missingRateCount": 1
+      },
+      "provenance": "hand-calculated"
+    }
+  ]
+}

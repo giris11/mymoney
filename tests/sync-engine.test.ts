@@ -503,16 +503,51 @@ describe('local change tracking', () => {
     const rows = Array.from({ length: 5127 }, (_, i) => txRow(`bulk-${i}`, -(100 + i)));
     const before = await revisionOf();
 
-    const started = performance.now();
-    await db.transactions.bulkAdd(rows);
-    const elapsed = performance.now() - started;
+    // COUNT THE WORK, NOT THE CLOCK.
+    //
+    // This used to time the import and assert `elapsed < 5000`, as a stand-in
+    // for "a per-row settings write would be orders of magnitude slower". That
+    // was a bad instrument in both directions: it fails on a machine whose
+    // cores are busy with the other 38 test files (which is how it was found —
+    // it is a statement about the scheduler, not about this code), and it
+    // PASSES on a machine fast enough to do the wrong thing in five seconds.
+    // Rejected alternative: keep the timing and just raise the bound — that
+    // only moves the false red further away, and the further away it moves the
+    // less the assertion means.
+    //
+    // The counters below state the property directly. The middleware
+    // intercepts OPERATIONS, not rows, so a 5,127-row bulkAdd is ONE `mutate`:
+    // the tracker runs once, and the coalesced flag reaches disk in ONE
+    // settings write. A per-row implementation scores 5,127 on both, on any
+    // machine, at any speed.
+    let settingsWrites = 0;
+    const countSettingsWrite = () => {
+      settingsWrites++;
+    };
+    // Dexie table hooks, not a spy on `db.settings.update`: they fire for
+    // every write path into the row (put/update/bulkPut), so an implementation
+    // that reached the settings table by another route would still be counted.
+    db.settings.hook('creating', countSettingsWrite);
+    db.settings.hook('updating', countSettingsWrite);
+    const markBefore = localChangeMarkNow();
+    try {
+      await db.transactions.bulkAdd(rows);
+      // One operation noticed for 5,127 rows.
+      expect(localChangeMarkNow() - markBefore).toBe(1);
+      // …and the import itself touched `settings` not at all. (Deterministic,
+      // not a race: the flush is a 250 ms macrotask armed after the mutate
+      // resolves, so it cannot have run by the time this line does.)
+      expect(settingsWrites).toBe(0);
+      await flushLocalRevision();
+      // The whole import costs exactly one settings write, on the flush.
+      expect(settingsWrites).toBe(1);
+    } finally {
+      db.settings.hook('creating').unsubscribe(countSettingsWrite);
+      db.settings.hook('updating').unsubscribe(countSettingsWrite);
+    }
 
-    await flushLocalRevision();
     expect(await revisionOf()).toBe(before + 1); // ONE bump, not 5,127
     expect(await db.transactions.count()).toBe(5127);
-    // Guard-rail, not a benchmark: a per-row settings write would be orders of
-    // magnitude slower than this.
-    expect(elapsed).toBeLessThan(5000);
   });
 
   it('writes to every data table bump it; DEVICE-LOCAL settings writes never do', async () => {

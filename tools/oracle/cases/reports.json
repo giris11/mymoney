@@ -1,0 +1,1461 @@
+{
+  "oracleVersion": 1,
+  "area": "reports",
+  "title": "Reports: the golden month, category rollup with descendants, and flow classification",
+  "generatedFrom": [
+    "src/reports/aggregate.ts",
+    "src/domain/categories.ts"
+  ],
+  "notes": [
+    "Date ranges are inclusive of both endpoints. An inverted range yields nothing.",
+    "Every figure is in the BASE currency; each contribution is converted ONCE.",
+    "A transaction whose currency has no rate to base is excluded from the whole report and counted once in missingRateCount.",
+    "Transfer legs (transferGroupId non-null) are excluded from every flow report but are real to balances and net worth (D13).",
+    "A split transaction contributes each split under the SPLIT’s category, carrying the parent’s payee, tags, date and currency.",
+    "Ledger side is decided by CATEGORY KIND when a contribution is categorised, and by SIGN only when it is not (D14) — so a refund subtracts from spending and a clawback subtracts from income.",
+    "Spending figures are POSITIVE and net of refunds. Zero rows are dropped. Rows sort by amount descending, then by name.",
+    "txCount is the number of DISTINCT transactions contributing; a multi-split transaction counts once.",
+    "Tag rows deliberately overlap: a transaction with two tags counts fully under each, so tag totals do not sum to the spend total.",
+    "categories.descendantIds returns a SET; the fixture sorts the ids for stability and the order carries no meaning."
+  ],
+  "books": {
+    "golden": {
+      "baseCurrency": "GBP",
+      "fxRates": [
+        {
+          "base": "EUR",
+          "quote": "GBP",
+          "rate": 0.85
+        }
+      ],
+      "accounts": [
+        {
+          "id": "cur",
+          "name": "Current",
+          "type": "current",
+          "currency": "GBP",
+          "openingBalanceMinor": 100000,
+          "archived": false,
+          "excludeFromNetWorth": false,
+          "sortOrder": 0
+        },
+        {
+          "id": "sav",
+          "name": "Savings",
+          "type": "savings",
+          "currency": "GBP",
+          "openingBalanceMinor": 50000,
+          "archived": false,
+          "excludeFromNetWorth": false,
+          "sortOrder": 1
+        },
+        {
+          "id": "hol",
+          "name": "Holiday",
+          "type": "current",
+          "currency": "EUR",
+          "openingBalanceMinor": 20000,
+          "archived": false,
+          "excludeFromNetWorth": false,
+          "sortOrder": 2
+        }
+      ],
+      "categories": [
+        {
+          "id": "food",
+          "name": "Food",
+          "kind": "expense",
+          "parentId": null,
+          "archived": false,
+          "sortOrder": 0
+        },
+        {
+          "id": "groceries",
+          "name": "Groceries",
+          "kind": "expense",
+          "parentId": "food",
+          "archived": false,
+          "sortOrder": 0
+        },
+        {
+          "id": "transport",
+          "name": "Transport",
+          "kind": "expense",
+          "parentId": null,
+          "archived": false,
+          "sortOrder": 1
+        },
+        {
+          "id": "salary",
+          "name": "Salary",
+          "kind": "income",
+          "parentId": null,
+          "archived": false,
+          "sortOrder": 2
+        }
+      ],
+      "payees": [
+        {
+          "id": "p-acme",
+          "name": "Acme Ltd"
+        },
+        {
+          "id": "p-tesco",
+          "name": "Tesco"
+        },
+        {
+          "id": "p-bigshop",
+          "name": "Big Shop"
+        },
+        {
+          "id": "p-uber",
+          "name": "Uber"
+        },
+        {
+          "id": "p-cafe",
+          "name": "Café Paris"
+        }
+      ],
+      "tags": [],
+      "transactions": [
+        {
+          "id": "t1",
+          "accountId": "cur",
+          "date": "2026-08-01",
+          "amountMinor": 250000,
+          "currency": "GBP",
+          "payeeId": "p-acme",
+          "categoryId": "salary",
+          "tagIds": [],
+          "status": "cleared",
+          "splits": [],
+          "transferGroupId": null,
+          "notes": ""
+        },
+        {
+          "id": "t2",
+          "accountId": "cur",
+          "date": "2026-08-03",
+          "amountMinor": -4567,
+          "currency": "GBP",
+          "payeeId": "p-tesco",
+          "categoryId": "groceries",
+          "tagIds": [],
+          "status": "cleared",
+          "splits": [],
+          "transferGroupId": null,
+          "notes": ""
+        },
+        {
+          "id": "t3",
+          "accountId": "cur",
+          "date": "2026-08-10",
+          "amountMinor": -5433,
+          "currency": "GBP",
+          "payeeId": "p-tesco",
+          "categoryId": "groceries",
+          "tagIds": [],
+          "status": "cleared",
+          "splits": [],
+          "transferGroupId": null,
+          "notes": ""
+        },
+        {
+          "id": "t4",
+          "accountId": "cur",
+          "date": "2026-08-12",
+          "amountMinor": -10000,
+          "currency": "GBP",
+          "payeeId": "p-bigshop",
+          "categoryId": null,
+          "tagIds": [],
+          "status": "cleared",
+          "splits": [
+            {
+              "categoryId": "groceries",
+              "amountMinor": -6000
+            },
+            {
+              "categoryId": "transport",
+              "amountMinor": -4000
+            }
+          ],
+          "transferGroupId": null,
+          "notes": ""
+        },
+        {
+          "id": "t5",
+          "accountId": "cur",
+          "date": "2026-08-15",
+          "amountMinor": 1000,
+          "currency": "GBP",
+          "payeeId": "p-tesco",
+          "categoryId": "groceries",
+          "tagIds": [],
+          "status": "cleared",
+          "splits": [],
+          "transferGroupId": null,
+          "notes": ""
+        },
+        {
+          "id": "t6",
+          "accountId": "cur",
+          "date": "2026-08-20",
+          "amountMinor": -20000,
+          "currency": "GBP",
+          "payeeId": null,
+          "categoryId": null,
+          "tagIds": [],
+          "status": "cleared",
+          "splits": [],
+          "transferGroupId": "tg1",
+          "notes": ""
+        },
+        {
+          "id": "t7",
+          "accountId": "sav",
+          "date": "2026-08-20",
+          "amountMinor": 20000,
+          "currency": "GBP",
+          "payeeId": null,
+          "categoryId": null,
+          "tagIds": [],
+          "status": "cleared",
+          "splits": [],
+          "transferGroupId": "tg1",
+          "notes": ""
+        },
+        {
+          "id": "t8",
+          "accountId": "hol",
+          "date": "2026-08-22",
+          "amountMinor": -2000,
+          "currency": "EUR",
+          "payeeId": "p-cafe",
+          "categoryId": "transport",
+          "tagIds": [],
+          "status": "cleared",
+          "splits": [],
+          "transferGroupId": null,
+          "notes": ""
+        },
+        {
+          "id": "t9",
+          "accountId": "cur",
+          "date": "2026-08-25",
+          "amountMinor": -3000,
+          "currency": "GBP",
+          "payeeId": "p-uber",
+          "categoryId": "transport",
+          "tagIds": [],
+          "status": "pending",
+          "splits": [],
+          "transferGroupId": null,
+          "notes": ""
+        }
+      ]
+    },
+    "rollup": {
+      "baseCurrency": "GBP",
+      "fxRates": [
+        {
+          "base": "EUR",
+          "quote": "GBP",
+          "rate": 0.85
+        }
+      ],
+      "accounts": [
+        {
+          "id": "r-cur",
+          "name": "Current",
+          "type": "current",
+          "currency": "GBP",
+          "openingBalanceMinor": 200000,
+          "archived": false,
+          "excludeFromNetWorth": false,
+          "sortOrder": 0
+        },
+        {
+          "id": "r-sav",
+          "name": "Savings",
+          "type": "savings",
+          "currency": "GBP",
+          "openingBalanceMinor": 0,
+          "archived": false,
+          "excludeFromNetWorth": false,
+          "sortOrder": 1
+        },
+        {
+          "id": "r-eur",
+          "name": "Euro Pot",
+          "type": "current",
+          "currency": "EUR",
+          "openingBalanceMinor": 10000,
+          "archived": false,
+          "excludeFromNetWorth": false,
+          "sortOrder": 2
+        },
+        {
+          "id": "r-chf",
+          "name": "Swiss Pot",
+          "type": "current",
+          "currency": "CHF",
+          "openingBalanceMinor": 0,
+          "archived": false,
+          "excludeFromNetWorth": false,
+          "sortOrder": 3
+        }
+      ],
+      "categories": [
+        {
+          "id": "c-food",
+          "name": "Food",
+          "kind": "expense",
+          "parentId": null,
+          "archived": false,
+          "sortOrder": 0
+        },
+        {
+          "id": "c-dining",
+          "name": "Dining",
+          "kind": "expense",
+          "parentId": "c-food",
+          "archived": false,
+          "sortOrder": 0
+        },
+        {
+          "id": "c-coffee",
+          "name": "Coffee",
+          "kind": "expense",
+          "parentId": "c-dining",
+          "archived": false,
+          "sortOrder": 0
+        },
+        {
+          "id": "c-groceries",
+          "name": "Groceries",
+          "kind": "expense",
+          "parentId": "c-food",
+          "archived": false,
+          "sortOrder": 1
+        },
+        {
+          "id": "c-transport",
+          "name": "Transport",
+          "kind": "expense",
+          "parentId": null,
+          "archived": false,
+          "sortOrder": 1
+        },
+        {
+          "id": "c-salary",
+          "name": "Salary",
+          "kind": "income",
+          "parentId": null,
+          "archived": false,
+          "sortOrder": 2
+        }
+      ],
+      "payees": [
+        {
+          "id": "r-p-cafe",
+          "name": "Corner Cafe"
+        },
+        {
+          "id": "r-p-shop",
+          "name": "Corner Shop"
+        },
+        {
+          "id": "r-p-rail",
+          "name": "Rail Co"
+        },
+        {
+          "id": "r-p-work",
+          "name": "Work Ltd"
+        }
+      ],
+      "tags": [
+        {
+          "id": "g-work",
+          "name": "work"
+        },
+        {
+          "id": "g-treat",
+          "name": "treat"
+        }
+      ],
+      "transactions": [
+        {
+          "id": "r1",
+          "accountId": "r-cur",
+          "date": "2026-06-01",
+          "amountMinor": 300000,
+          "currency": "GBP",
+          "payeeId": "r-p-work",
+          "categoryId": "c-salary",
+          "tagIds": [],
+          "status": "cleared",
+          "splits": [],
+          "transferGroupId": null,
+          "notes": ""
+        },
+        {
+          "id": "r2",
+          "accountId": "r-cur",
+          "date": "2026-06-02",
+          "amountMinor": -350,
+          "currency": "GBP",
+          "payeeId": "r-p-cafe",
+          "categoryId": "c-coffee",
+          "tagIds": [
+            "g-treat"
+          ],
+          "status": "cleared",
+          "splits": [],
+          "transferGroupId": null,
+          "notes": ""
+        },
+        {
+          "id": "r3",
+          "accountId": "r-cur",
+          "date": "2026-06-03",
+          "amountMinor": -2400,
+          "currency": "GBP",
+          "payeeId": "r-p-cafe",
+          "categoryId": "c-dining",
+          "tagIds": [],
+          "status": "cleared",
+          "splits": [],
+          "transferGroupId": null,
+          "notes": ""
+        },
+        {
+          "id": "r4",
+          "accountId": "r-cur",
+          "date": "2026-06-04",
+          "amountMinor": -8000,
+          "currency": "GBP",
+          "payeeId": "r-p-shop",
+          "categoryId": "c-groceries",
+          "tagIds": [],
+          "status": "cleared",
+          "splits": [],
+          "transferGroupId": null,
+          "notes": ""
+        },
+        {
+          "id": "r5",
+          "accountId": "r-cur",
+          "date": "2026-06-05",
+          "amountMinor": 1500,
+          "currency": "GBP",
+          "payeeId": "r-p-shop",
+          "categoryId": "c-groceries",
+          "tagIds": [],
+          "status": "cleared",
+          "splits": [],
+          "transferGroupId": null,
+          "notes": ""
+        },
+        {
+          "id": "r6",
+          "accountId": "r-cur",
+          "date": "2026-06-06",
+          "amountMinor": -5000,
+          "currency": "GBP",
+          "payeeId": "r-p-shop",
+          "categoryId": null,
+          "tagIds": [
+            "g-work",
+            "g-treat"
+          ],
+          "status": "cleared",
+          "splits": [
+            {
+              "categoryId": "c-groceries",
+              "amountMinor": -3000
+            },
+            {
+              "categoryId": "c-transport",
+              "amountMinor": -2000
+            }
+          ],
+          "transferGroupId": null,
+          "notes": ""
+        },
+        {
+          "id": "r7",
+          "accountId": "r-cur",
+          "date": "2026-06-07",
+          "amountMinor": -1100,
+          "currency": "GBP",
+          "payeeId": null,
+          "categoryId": null,
+          "tagIds": [],
+          "status": "cleared",
+          "splits": [],
+          "transferGroupId": null,
+          "notes": ""
+        },
+        {
+          "id": "r8",
+          "accountId": "r-cur",
+          "date": "2026-06-08",
+          "amountMinor": 900,
+          "currency": "GBP",
+          "payeeId": null,
+          "categoryId": null,
+          "tagIds": [],
+          "status": "cleared",
+          "splits": [],
+          "transferGroupId": null,
+          "notes": ""
+        },
+        {
+          "id": "r9",
+          "accountId": "r-cur",
+          "date": "2026-06-09",
+          "amountMinor": -10000,
+          "currency": "GBP",
+          "payeeId": "r-p-work",
+          "categoryId": "c-salary",
+          "tagIds": [],
+          "status": "cleared",
+          "splits": [],
+          "transferGroupId": null,
+          "notes": ""
+        },
+        {
+          "id": "r10",
+          "accountId": "r-cur",
+          "date": "2026-06-10",
+          "amountMinor": -50000,
+          "currency": "GBP",
+          "payeeId": null,
+          "categoryId": null,
+          "tagIds": [],
+          "status": "cleared",
+          "splits": [],
+          "transferGroupId": "r-tg1",
+          "notes": ""
+        },
+        {
+          "id": "r11",
+          "accountId": "r-sav",
+          "date": "2026-06-10",
+          "amountMinor": 50000,
+          "currency": "GBP",
+          "payeeId": null,
+          "categoryId": null,
+          "tagIds": [],
+          "status": "cleared",
+          "splits": [],
+          "transferGroupId": "r-tg1",
+          "notes": ""
+        },
+        {
+          "id": "r12",
+          "accountId": "r-eur",
+          "date": "2026-06-11",
+          "amountMinor": -4000,
+          "currency": "EUR",
+          "payeeId": "r-p-rail",
+          "categoryId": "c-transport",
+          "tagIds": [
+            "g-work"
+          ],
+          "status": "cleared",
+          "splits": [],
+          "transferGroupId": null,
+          "notes": ""
+        },
+        {
+          "id": "r13",
+          "accountId": "r-chf",
+          "date": "2026-06-12",
+          "amountMinor": -7000,
+          "currency": "CHF",
+          "payeeId": "r-p-shop",
+          "categoryId": "c-groceries",
+          "tagIds": [],
+          "status": "cleared",
+          "splits": [],
+          "transferGroupId": null,
+          "notes": ""
+        },
+        {
+          "id": "r14",
+          "accountId": "r-cur",
+          "date": "2026-07-01",
+          "amountMinor": 300000,
+          "currency": "GBP",
+          "payeeId": "r-p-work",
+          "categoryId": "c-salary",
+          "tagIds": [],
+          "status": "cleared",
+          "splits": [],
+          "transferGroupId": null,
+          "notes": ""
+        },
+        {
+          "id": "r15",
+          "accountId": "r-cur",
+          "date": "2026-07-15",
+          "amountMinor": -12000,
+          "currency": "GBP",
+          "payeeId": "r-p-shop",
+          "categoryId": "c-groceries",
+          "tagIds": [],
+          "status": "cleared",
+          "splits": [],
+          "transferGroupId": null,
+          "notes": ""
+        }
+      ]
+    }
+  },
+  "cases": [
+    {
+      "id": "categories.descendants.three-deep",
+      "describes": "a rollup is RECURSIVE: asking for Food returns Food, its children and its grandchildren",
+      "op": "categories.descendantIds",
+      "input": {
+        "categories": [
+          {
+            "id": "c-food",
+            "parentId": null
+          },
+          {
+            "id": "c-dining",
+            "parentId": "c-food"
+          },
+          {
+            "id": "c-coffee",
+            "parentId": "c-dining"
+          },
+          {
+            "id": "c-groceries",
+            "parentId": "c-food"
+          },
+          {
+            "id": "c-transport",
+            "parentId": null
+          },
+          {
+            "id": "c-salary",
+            "parentId": null
+          }
+        ],
+        "rootIds": [
+          "c-food"
+        ]
+      },
+      "expect": {
+        "ids": [
+          "c-coffee",
+          "c-dining",
+          "c-food",
+          "c-groceries"
+        ]
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "categories.descendants.leaf",
+      "describes": "a leaf returns just itself",
+      "op": "categories.descendantIds",
+      "input": {
+        "categories": [
+          {
+            "id": "c-food",
+            "parentId": null
+          },
+          {
+            "id": "c-dining",
+            "parentId": "c-food"
+          },
+          {
+            "id": "c-coffee",
+            "parentId": "c-dining"
+          },
+          {
+            "id": "c-groceries",
+            "parentId": "c-food"
+          },
+          {
+            "id": "c-transport",
+            "parentId": null
+          },
+          {
+            "id": "c-salary",
+            "parentId": null
+          }
+        ],
+        "rootIds": [
+          "c-coffee"
+        ]
+      },
+      "expect": {
+        "ids": [
+          "c-coffee"
+        ]
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "categories.descendants.two-roots",
+      "describes": "several roots union, and a subtree is not double-counted",
+      "op": "categories.descendantIds",
+      "input": {
+        "categories": [
+          {
+            "id": "c-food",
+            "parentId": null
+          },
+          {
+            "id": "c-dining",
+            "parentId": "c-food"
+          },
+          {
+            "id": "c-coffee",
+            "parentId": "c-dining"
+          },
+          {
+            "id": "c-groceries",
+            "parentId": "c-food"
+          },
+          {
+            "id": "c-transport",
+            "parentId": null
+          },
+          {
+            "id": "c-salary",
+            "parentId": null
+          }
+        ],
+        "rootIds": [
+          "c-dining",
+          "c-transport"
+        ]
+      },
+      "expect": {
+        "ids": [
+          "c-coffee",
+          "c-dining",
+          "c-transport"
+        ]
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "categories.descendants.unknown-id",
+      "describes": "an id no category has still comes back — the set is \"these ids and everything under them\", and dropping it would silently widen a budget",
+      "op": "categories.descendantIds",
+      "input": {
+        "categories": [
+          {
+            "id": "c-food",
+            "parentId": null
+          },
+          {
+            "id": "c-dining",
+            "parentId": "c-food"
+          },
+          {
+            "id": "c-coffee",
+            "parentId": "c-dining"
+          },
+          {
+            "id": "c-groceries",
+            "parentId": "c-food"
+          },
+          {
+            "id": "c-transport",
+            "parentId": null
+          },
+          {
+            "id": "c-salary",
+            "parentId": null
+          }
+        ],
+        "rootIds": [
+          "no-such-category"
+        ]
+      },
+      "expect": {
+        "ids": [
+          "no-such-category"
+        ]
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "categories.descendants.empty",
+      "describes": "no roots means no categories",
+      "op": "categories.descendantIds",
+      "input": {
+        "categories": [
+          {
+            "id": "c-food",
+            "parentId": null
+          },
+          {
+            "id": "c-dining",
+            "parentId": "c-food"
+          },
+          {
+            "id": "c-coffee",
+            "parentId": "c-dining"
+          },
+          {
+            "id": "c-groceries",
+            "parentId": "c-food"
+          },
+          {
+            "id": "c-transport",
+            "parentId": null
+          },
+          {
+            "id": "c-salary",
+            "parentId": null
+          }
+        ],
+        "rootIds": []
+      },
+      "expect": {
+        "ids": []
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "categories.path.three-deep",
+      "describes": "a category path names every ancestor, top down, joined by “ › ”",
+      "op": "categories.categoryPathName",
+      "input": {
+        "categories": [
+          {
+            "id": "c-food",
+            "name": "Food",
+            "parentId": null
+          },
+          {
+            "id": "c-dining",
+            "name": "Dining",
+            "parentId": "c-food"
+          },
+          {
+            "id": "c-coffee",
+            "name": "Coffee",
+            "parentId": "c-dining"
+          },
+          {
+            "id": "c-groceries",
+            "name": "Groceries",
+            "parentId": "c-food"
+          },
+          {
+            "id": "c-transport",
+            "name": "Transport",
+            "parentId": null
+          },
+          {
+            "id": "c-salary",
+            "name": "Salary",
+            "parentId": null
+          }
+        ],
+        "id": "c-coffee"
+      },
+      "expect": {
+        "text": "Food › Dining › Coffee"
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "categories.path.root",
+      "describes": "a root category’s path is just its own name",
+      "op": "categories.categoryPathName",
+      "input": {
+        "categories": [
+          {
+            "id": "c-food",
+            "name": "Food",
+            "parentId": null
+          },
+          {
+            "id": "c-dining",
+            "name": "Dining",
+            "parentId": "c-food"
+          },
+          {
+            "id": "c-coffee",
+            "name": "Coffee",
+            "parentId": "c-dining"
+          },
+          {
+            "id": "c-groceries",
+            "name": "Groceries",
+            "parentId": "c-food"
+          },
+          {
+            "id": "c-transport",
+            "name": "Transport",
+            "parentId": null
+          },
+          {
+            "id": "c-salary",
+            "name": "Salary",
+            "parentId": null
+          }
+        ],
+        "id": "c-transport"
+      },
+      "expect": {
+        "text": "Transport"
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "reports.golden.category-top",
+      "describes": "the golden month by top-level category: Food £150.00 (the Groceries child rolled up, net of a £10.00 refund) and Transport £87.00 (a split leg, a converted euro spend and a PENDING transaction)",
+      "op": "reports.spendingByCategory",
+      "input": {
+        "book": "golden",
+        "from": "2026-08-01",
+        "to": "2026-08-31",
+        "parentId": null
+      },
+      "expect": {
+        "rows": [
+          {
+            "categoryId": "food",
+            "name": "Food",
+            "spentMinor": 15000,
+            "hasChildren": true
+          },
+          {
+            "categoryId": "transport",
+            "name": "Transport",
+            "spentMinor": 8700,
+            "hasChildren": false
+          }
+        ],
+        "totalMinor": 23700,
+        "missingRateCount": 0
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "tests/golden.test.ts",
+      "note": "Rows sort by spentMinor descending, then by name. A row with no colour set simply has no colour key."
+    },
+    {
+      "id": "reports.golden.category-drill",
+      "describes": "drilling into Food shows the Groceries subtree only — £150.00, the same figure the parent row rolled up",
+      "op": "reports.spendingByCategory",
+      "input": {
+        "book": "golden",
+        "from": "2026-08-01",
+        "to": "2026-08-31",
+        "parentId": "food"
+      },
+      "expect": {
+        "rows": [
+          {
+            "categoryId": "groceries",
+            "name": "Groceries",
+            "spentMinor": 15000,
+            "hasChildren": false
+          }
+        ],
+        "totalMinor": 15000,
+        "missingRateCount": 0
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "tests/golden.test.ts"
+    },
+    {
+      "id": "reports.golden.income-expense",
+      "describes": "August: £2,500.00 in, £237.00 out — and the £200.00 transfer is INVISIBLE to both sides",
+      "op": "reports.incomeVsExpenseByMonth",
+      "input": {
+        "book": "golden",
+        "from": "2026-08-01",
+        "to": "2026-08-31"
+      },
+      "expect": {
+        "rows": [
+          {
+            "month": "2026-08",
+            "incomeMinor": 250000,
+            "expenseMinor": 23700
+          }
+        ],
+        "missingRateCount": 0
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "tests/golden.test.ts"
+    },
+    {
+      "id": "reports.golden.cash-flow",
+      "describes": "cash flow: net +£2,263.00, and over a single-month range the cumulative equals the net",
+      "op": "reports.cashFlowByMonth",
+      "input": {
+        "book": "golden",
+        "from": "2026-08-01",
+        "to": "2026-08-31"
+      },
+      "expect": {
+        "rows": [
+          {
+            "month": "2026-08",
+            "netMinor": 226300,
+            "cumulativeMinor": 226300
+          }
+        ],
+        "missingRateCount": 0
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "tests/golden.test.ts"
+    },
+    {
+      "id": "reports.golden.payee",
+      "describes": "by payee: Tesco nets its £10.00 refund to £90.00 over three transactions, and the whole £100.00 split is attributed to Big Shop, not divided among its categories’ payees",
+      "op": "reports.spendingByPayee",
+      "input": {
+        "book": "golden",
+        "from": "2026-08-01",
+        "to": "2026-08-31"
+      },
+      "expect": {
+        "rows": [
+          {
+            "payeeId": "p-bigshop",
+            "name": "Big Shop",
+            "spentMinor": 10000,
+            "txCount": 1
+          },
+          {
+            "payeeId": "p-tesco",
+            "name": "Tesco",
+            "spentMinor": 9000,
+            "txCount": 3
+          },
+          {
+            "payeeId": "p-uber",
+            "name": "Uber",
+            "spentMinor": 3000,
+            "txCount": 1
+          },
+          {
+            "payeeId": "p-cafe",
+            "name": "Café Paris",
+            "spentMinor": 1700,
+            "txCount": 1
+          }
+        ],
+        "missingRateCount": 0
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "tests/golden.test.ts",
+      "note": "txCount counts DISTINCT transactions: the two-split Big Shop purchase is one, not two."
+    },
+    {
+      "id": "reports.golden.transfers-invisible",
+      "describes": "a range containing NOTHING but the two legs of a transfer produces no spending at all — a port that treats the outgoing leg as an expense invents £200.00 of spending here",
+      "op": "reports.spendingByCategory",
+      "input": {
+        "book": "golden",
+        "from": "2026-08-20",
+        "to": "2026-08-20",
+        "parentId": null
+      },
+      "expect": {
+        "rows": [],
+        "totalMinor": 0,
+        "missingRateCount": 0
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "reports.golden.net-worth-series",
+      "describes": "net worth sampled at each month end is CUMULATIVE FROM THE BEGINNING OF TIME, not from the range start: July is the three opening balances (£1,000 + £500 + €200×0.85), August adds the month, September is unchanged",
+      "op": "reports.netWorthSeries",
+      "input": {
+        "book": "golden",
+        "from": "2026-07-01",
+        "to": "2026-09-30"
+      },
+      "expect": {
+        "points": [
+          {
+            "date": "2026-07-31",
+            "totalBaseMinor": 167000
+          },
+          {
+            "date": "2026-08-31",
+            "totalBaseMinor": 393300
+          },
+          {
+            "date": "2026-09-30",
+            "totalBaseMinor": 393300
+          }
+        ],
+        "missingRateCurrencies": []
+      },
+      "provenance": "hand-calculated",
+      "note": "Sample dates are every month end inside the range, plus the range end itself, deduplicated and ascending."
+    },
+    {
+      "id": "reports.golden.single-month-series",
+      "describes": "over exactly one month the only sample is that month’s end, at the golden month’s £3,933.00",
+      "op": "reports.netWorthSeries",
+      "input": {
+        "book": "golden",
+        "from": "2026-08-01",
+        "to": "2026-08-31"
+      },
+      "expect": {
+        "points": [
+          {
+            "date": "2026-08-31",
+            "totalBaseMinor": 393300
+          }
+        ],
+        "missingRateCurrencies": []
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "tests/golden.test.ts"
+    },
+    {
+      "id": "reports.rollup.category-top",
+      "describes": "a three-level tree rolls all the way up to its root, an uncategorised OUTFLOW gets its own row while an uncategorised inflow does not, and the unconvertible transaction is excluded and counted",
+      "op": "reports.spendingByCategory",
+      "input": {
+        "book": "rollup",
+        "from": "2026-06-01",
+        "to": "2026-06-30",
+        "parentId": null
+      },
+      "expect": {
+        "rows": [
+          {
+            "categoryId": "c-food",
+            "name": "Food",
+            "spentMinor": 12250,
+            "hasChildren": true
+          },
+          {
+            "categoryId": "c-transport",
+            "name": "Transport",
+            "spentMinor": 5400,
+            "hasChildren": false
+          },
+          {
+            "categoryId": null,
+            "name": "Uncategorised",
+            "spentMinor": 1100,
+            "hasChildren": false
+          }
+        ],
+        "totalMinor": 18750,
+        "missingRateCount": 1
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "reports.rollup.category-drill-food",
+      "describes": "drilling into Food buckets by DIRECT CHILD, each carrying its own subtree: Dining brings Coffee with it",
+      "op": "reports.spendingByCategory",
+      "input": {
+        "book": "rollup",
+        "from": "2026-06-01",
+        "to": "2026-06-30",
+        "parentId": "c-food"
+      },
+      "expect": {
+        "rows": [
+          {
+            "categoryId": "c-groceries",
+            "name": "Groceries",
+            "spentMinor": 9500,
+            "hasChildren": false
+          },
+          {
+            "categoryId": "c-dining",
+            "name": "Dining",
+            "spentMinor": 2750,
+            "hasChildren": true
+          }
+        ],
+        "totalMinor": 12250,
+        "missingRateCount": 1
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "reports.rollup.category-drill-dining",
+      "describes": "drilling into Dining separates money logged ON Dining itself from its Coffee child — the “itself” row keeps the parent’s own id",
+      "op": "reports.spendingByCategory",
+      "input": {
+        "book": "rollup",
+        "from": "2026-06-01",
+        "to": "2026-06-30",
+        "parentId": "c-dining"
+      },
+      "expect": {
+        "rows": [
+          {
+            "categoryId": "c-dining",
+            "name": "Dining",
+            "spentMinor": 2400,
+            "hasChildren": false
+          },
+          {
+            "categoryId": "c-coffee",
+            "name": "Coffee",
+            "spentMinor": 350,
+            "hasChildren": false
+          }
+        ],
+        "totalMinor": 2750,
+        "missingRateCount": 1
+      },
+      "provenance": "hand-calculated",
+      "note": "The “itself” row reports hasChildren false: there is nothing further to drill into from it."
+    },
+    {
+      "id": "reports.rollup.income-expense",
+      "describes": "a NEGATIVE amount in an INCOME category is a clawback and nets within income (£3,000 − £100 = £2,900); an uncategorised inflow is income by sign; only uncategorised amounts are classified by sign at all",
+      "op": "reports.incomeVsExpenseByMonth",
+      "input": {
+        "book": "rollup",
+        "from": "2026-06-01",
+        "to": "2026-07-31"
+      },
+      "expect": {
+        "rows": [
+          {
+            "month": "2026-06",
+            "incomeMinor": 290900,
+            "expenseMinor": 18750
+          },
+          {
+            "month": "2026-07",
+            "incomeMinor": 300000,
+            "expenseMinor": 12000
+          }
+        ],
+        "missingRateCount": 1
+      },
+      "provenance": "hand-calculated",
+      "note": "Every month in the range gets a row, zero-filled — a month with no activity is a zero row, not a missing one."
+    },
+    {
+      "id": "reports.rollup.cash-flow",
+      "describes": "cumulative cash flow runs across the requested range only and starts at zero",
+      "op": "reports.cashFlowByMonth",
+      "input": {
+        "book": "rollup",
+        "from": "2026-06-01",
+        "to": "2026-07-31"
+      },
+      "expect": {
+        "rows": [
+          {
+            "month": "2026-06",
+            "netMinor": 272150,
+            "cumulativeMinor": 272150
+          },
+          {
+            "month": "2026-07",
+            "netMinor": 288000,
+            "cumulativeMinor": 560150
+          }
+        ],
+        "missingRateCount": 1
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "reports.rollup.payee",
+      "describes": "a split transaction is attributed WHOLE to the parent’s payee across all its splits, and an expense with no payee gets its own bucket",
+      "op": "reports.spendingByPayee",
+      "input": {
+        "book": "rollup",
+        "from": "2026-06-01",
+        "to": "2026-06-30"
+      },
+      "expect": {
+        "rows": [
+          {
+            "payeeId": "r-p-shop",
+            "name": "Corner Shop",
+            "spentMinor": 11500,
+            "txCount": 3
+          },
+          {
+            "payeeId": "r-p-rail",
+            "name": "Rail Co",
+            "spentMinor": 3400,
+            "txCount": 1
+          },
+          {
+            "payeeId": "r-p-cafe",
+            "name": "Corner Cafe",
+            "spentMinor": 2750,
+            "txCount": 2
+          },
+          {
+            "payeeId": null,
+            "name": "No payee",
+            "spentMinor": 1100,
+            "txCount": 1
+          }
+        ],
+        "missingRateCount": 1
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "reports.rollup.payee-limited",
+      "describes": "a limit slices the sorted rows and changes nothing else",
+      "op": "reports.spendingByPayee",
+      "input": {
+        "book": "rollup",
+        "from": "2026-06-01",
+        "to": "2026-06-30",
+        "limit": 2
+      },
+      "expect": {
+        "rows": [
+          {
+            "payeeId": "r-p-shop",
+            "name": "Corner Shop",
+            "spentMinor": 11500,
+            "txCount": 3
+          },
+          {
+            "payeeId": "r-p-rail",
+            "name": "Rail Co",
+            "spentMinor": 3400,
+            "txCount": 1
+          }
+        ],
+        "missingRateCount": 1
+      },
+      "provenance": "derived"
+    },
+    {
+      "id": "reports.rollup.tag",
+      "describes": "a transaction with two tags counts FULLY under each — tag totals deliberately overlap and do not sum to the spend total; the split’s tags come from its parent",
+      "op": "reports.spendingByTag",
+      "input": {
+        "book": "rollup",
+        "from": "2026-06-01",
+        "to": "2026-06-30"
+      },
+      "expect": {
+        "rows": [
+          {
+            "tagId": "g-work",
+            "name": "work",
+            "spentMinor": 8400,
+            "txCount": 2
+          },
+          {
+            "tagId": "g-treat",
+            "name": "treat",
+            "spentMinor": 5350,
+            "txCount": 2
+          }
+        ],
+        "missingRateCount": 1
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "reports.rollup.net-worth-series",
+      "describes": "net worth over two months with an unconvertible account: CHF is named once and contributes nothing to any point, while both legs of the transfer cancel inside the GBP subtotal",
+      "op": "reports.netWorthSeries",
+      "input": {
+        "book": "rollup",
+        "from": "2026-06-01",
+        "to": "2026-07-31"
+      },
+      "expect": {
+        "points": [
+          {
+            "date": "2026-06-30",
+            "totalBaseMinor": 480650
+          },
+          {
+            "date": "2026-07-31",
+            "totalBaseMinor": 768650
+          }
+        ],
+        "missingRateCurrencies": [
+          "CHF"
+        ]
+      },
+      "provenance": "hand-calculated",
+      "note": "Per-currency running totals are kept in integer minor units and converted to base ONCE per currency per sample point."
+    },
+    {
+      "id": "reports.rollup.inverted-range",
+      "describes": "a range whose end precedes its start yields nothing rather than an error or a full-table scan",
+      "op": "reports.spendingByCategory",
+      "input": {
+        "book": "rollup",
+        "from": "2026-07-31",
+        "to": "2026-06-01",
+        "parentId": null
+      },
+      "expect": {
+        "rows": [],
+        "totalMinor": 0,
+        "missingRateCount": 0
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "reports.rollup.inverted-range-series",
+      "describes": "and the net-worth series over an inverted range is empty, not a single mystery point",
+      "op": "reports.netWorthSeries",
+      "input": {
+        "book": "rollup",
+        "from": "2026-07-31",
+        "to": "2026-06-01"
+      },
+      "expect": {
+        "points": [],
+        "missingRateCurrencies": []
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "reports.rollup.quiet-month",
+      "describes": "a month inside the range with no transactions still gets a zero-filled row",
+      "op": "reports.incomeVsExpenseByMonth",
+      "input": {
+        "book": "rollup",
+        "from": "2026-08-01",
+        "to": "2026-09-30"
+      },
+      "expect": {
+        "rows": [
+          {
+            "month": "2026-08",
+            "incomeMinor": 0,
+            "expenseMinor": 0
+          },
+          {
+            "month": "2026-09",
+            "incomeMinor": 0,
+            "expenseMinor": 0
+          }
+        ],
+        "missingRateCount": 0
+      },
+      "provenance": "hand-calculated"
+    }
+  ]
+}

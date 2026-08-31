@@ -3,7 +3,17 @@
 // Semantics:
 //  * exportBackup snapshots EVERY table (src/db/db.ts ALL_TABLES) plus
 //    schemaVersion + exportedAt — read inside ONE 'r' transaction so the
-//    snapshot is internally consistent;
+//    snapshot is internally consistent — and a MANIFEST computed from those
+//    very rows, in the same pass, stating what they add up to (./manifest.ts);
+//  * the file is written in a CANONICAL form (./canonical.ts): sorted keys,
+//    rows ordered by primary key, so two exports of an unchanged book are
+//    byte-identical apart from the timestamp and canonicalBackupHash() can
+//    fingerprint the CONTENT;
+//  * restoreBackup RECOMPUTES every manifest figure from the rows that landed
+//    and refuses — aborting the transaction, changing nothing — if any of them
+//    disagrees, naming the account or table that does. A file with no manifest
+//    (every backup written before this existed, and every sync snapshot)
+//    restores exactly as it always did, and says it carries no self-check;
 //  * validateBackup fully validates shape/version BEFORE any write;
 //  * restoreBackup is all-or-nothing: one Dexie rw-transaction that clears and
 //    repopulates every table — a malformed file must change nothing (D21);
@@ -34,33 +44,103 @@ import Dexie, { type Table } from 'dexie';
 import {
   ALL_TABLES,
   db,
+  defaultSettings,
   DEVICE_LOCAL_SETTING_KEYS,
   getSettings,
   SCHEMA_VERSION,
   updateSettings,
 } from '../db/db';
-import type { Settings } from '../db/types';
+import type { Settings, Transaction } from '../db/types';
+import { SCAN_BATCH } from '../domain/balances';
 import { nowISO, todayISO, uid } from '../lib/util';
+import { canonicalBackupHash, canonicalJson } from './canonical';
+import {
+  addTxToTotals,
+  baseCurrencyFromRows,
+  compareManifests,
+  computeManifest,
+  isCheckableManifest,
+  manifestSourceFromTables,
+  validateManifestShape,
+  type BackupManifest,
+  type ManifestSource,
+  type TxTotals,
+} from './manifest';
 
 export interface BackupFile {
   app: 'MyMoney';
   schemaVersion: number;
   exportedAt: string;
+  /**
+   * What the rows below add up to, computed from those very rows as they were
+   * read (./manifest.ts). OPTIONAL, and it must stay optional: every backup
+   * written before this existed has none, and so does every sync snapshot
+   * (src/sync/syncEngine.ts builds a BackupFile out of a snapshot's tables).
+   * Absent means "this file cannot prove itself", never "this file is invalid".
+   */
+  manifest?: BackupManifest;
   tables: Record<string, unknown[]>;
 }
 
+/**
+ * The base currency to assume when the rows carry no settings row at all —
+ * only reachable for a book that has never been written to. Read from
+ * defaultSettings() rather than spelled 'GBP' here, so there is one answer to
+ * "what is this app's base currency by default" (SPEC §13).
+ */
+const fallbackBaseCurrency = (): string => defaultSettings().baseCurrency;
+
+/**
+ * Rows in a defined order: by primary key, never "whatever came back".
+ *
+ * Row order is DATA in JSON — an array that came back in a different order is
+ * a different file — so two exports of an unchanged book can only be
+ * byte-identical if the exporter decides the order. IndexedDB already hands
+ * rows back in primary-key order, so the common case is a single linear check
+ * that finds nothing to do; the sort is there for the case where some other
+ * source (a hand-edited file, a future cursor) does not.
+ */
+function sortRowsById(rows: unknown[]): unknown[] {
+  const key = (r: unknown): string => (isPlainObject(r) && typeof r.id === 'string' ? r.id : '');
+  for (let i = 1; i < rows.length; i++) {
+    if (key(rows[i - 1]) > key(rows[i])) {
+      return [...rows].sort((a, b) => {
+        const ka = key(a);
+        const kb = key(b);
+        return ka < kb ? -1 : ka > kb ? 1 : 0;
+      });
+    }
+  }
+  return rows;
+}
+
 export async function exportBackup(): Promise<BackupFile> {
+  // One timestamp for the file and its manifest: they describe the same
+  // instant, and validateBackup refuses a file where they disagree.
+  const exportedAt = nowISO();
   // One read transaction across every table: writes that land mid-export can
   // never produce a half-old, half-new snapshot.
-  const tables = await db.transaction('r', [...ALL_TABLES], async () => {
+  const { tables, manifest } = await db.transaction('r', [...ALL_TABLES], async () => {
     const out: Record<string, unknown[]> = {};
-    for (const name of ALL_TABLES) out[name] = await db.table(name).toArray();
-    return out;
+    for (const name of ALL_TABLES) out[name] = sortRowsById(await db.table(name).toArray());
+    // Computed from the arrays that are about to BE the file, inside the
+    // transaction that read them. Never a second query (`db.accounts.count()`
+    // next to a row array describes a different moment, and a manifest that
+    // describes a different moment is worse than none).
+    return {
+      tables: out,
+      manifest: computeManifest(manifestSourceFromTables(out), {
+        schemaVersion: SCHEMA_VERSION,
+        exportedAt,
+        baseCurrency: baseCurrencyFromRows(out, fallbackBaseCurrency()),
+      }),
+    };
   });
   return {
     app: 'MyMoney',
     schemaVersion: SCHEMA_VERSION,
-    exportedAt: nowISO(),
+    exportedAt,
+    manifest,
     tables,
   };
 }
@@ -90,11 +170,16 @@ function totalRows(file: BackupFile): number {
 /**
  * Serialize a backup: indented while it is small enough for a human to read,
  * compact once it is big enough for the size to matter (PRETTY_PRINT_ROW_LIMIT).
+ *
+ * canonicalJson, not JSON.stringify: object keys go out in sorted order, so
+ * two exports of an unchanged database are the SAME BYTES apart from the
+ * timestamp (./canonical.ts explains why insertion order cannot be relied on,
+ * least of all by a second implementation in another language). The indent
+ * rules and the escaping are JSON.stringify's, unchanged — only the order is
+ * pinned.
  */
 export function serializeBackup(file: BackupFile): string {
-  return totalRows(file) > PRETTY_PRINT_ROW_LIMIT
-    ? JSON.stringify(file)
-    : JSON.stringify(file, null, 2);
+  return canonicalJson(file, totalRows(file) > PRETTY_PRINT_ROW_LIMIT ? 0 : 2);
 }
 
 export type BackupValidation = { ok: true; file: BackupFile } | { ok: false; error: string };
@@ -153,6 +238,16 @@ export function validateBackup(parsed: unknown): BackupValidation {
       }
     }
   }
+  // The manifest is optional (older files and sync snapshots have none), but a
+  // malformed one is corruption and must be caught here, before any write —
+  // the figures themselves are checked against the rows during the restore.
+  if (parsed.manifest !== undefined && parsed.manifest !== null) {
+    const problem = validateManifestShape(parsed.manifest, {
+      schemaVersion: version,
+      exportedAt: parsed.exportedAt,
+    });
+    if (problem !== null) return fail(problem);
+  }
   return { ok: true, file: parsed as unknown as BackupFile };
 }
 
@@ -163,6 +258,15 @@ export function validateBackup(parsed: unknown): BackupValidation {
  * yet. When SCHEMA_VERSION grows, add per-version data transforms here
  * (v1→v2, v2→v3, …) applied in order. Restored settings rows are always
  * stamped with the schema they now conform to.
+ *
+ * WHOEVER ADDS THE FIRST TRANSFORM MUST READ THIS. The file's manifest
+ * describes the rows as they were WRITTEN, and restoreBackup checks it against
+ * the rows as they LAND. A transform that changes any figure the manifest
+ * states — an amount, an account's currency, whether an account counts toward
+ * net worth, the number of rows in a table — must also carry the manifest
+ * forward, or every restore of an older file will be refused with a message
+ * about a balance that is not actually wrong. Returning the upgraded manifest
+ * from here alongside the tables is the intended shape.
  */
 function upgradeBackupData(file: BackupFile): Record<string, unknown[]> {
   const tables: Record<string, unknown[]> = {};
@@ -204,6 +308,34 @@ export function pinDeviceLocalSettings(local: Settings, incoming: unknown): Sett
   return merged;
 }
 
+/** What a restore proved, for a UI that must never ask to be taken on trust. */
+export interface RestoreReport {
+  /**
+   * The file stated what it contained, and every one of those figures was
+   * recomputed from the rows that landed and agreed. False means the file made
+   * no checkable claim — not that a claim failed, which throws.
+   */
+  verified: boolean;
+  /** The file's own figures, when it carried any this build understands. */
+  claimed: BackupManifest | null;
+  /** The same figures, recomputed from the restored rows. */
+  recomputed: BackupManifest | null;
+}
+
+/** At most this many disagreements are listed before the message is cut short. */
+const MAX_REPORTED_PROBLEMS = 8;
+
+function refusalMessage(problems: string[]): string {
+  const shown = problems.slice(0, MAX_REPORTED_PROBLEMS);
+  const more = problems.length - shown.length;
+  return [
+    'Restore refused: the restored data does not match what this backup says it contains.',
+    ...shown.map((p) => `• ${p}`),
+    ...(more > 0 ? [`• …and ${more} more`] : []),
+    'Nothing was changed.',
+  ].join('\n');
+}
+
 /**
  * All-or-nothing restore: ONE rw transaction clears every table, then bulkAdds
  * every row from the file. Any failure (e.g. a duplicate primary key) aborts
@@ -215,30 +347,127 @@ export function pinDeviceLocalSettings(local: Settings, incoming: unknown): Sett
  * settings row at all still leaves this device with its own one rather than
  * none — losing an identity is the same defect in the other direction, and a
  * device with no row cannot even say when it was installed.
+ *
+ * THEN, IF THE FILE SAYS WHAT IT CONTAINS, IT IS HELD TO IT. Every manifest
+ * figure is recomputed from the rows as they now sit in the database — read
+ * back, not assumed from the arrays we passed to bulkAdd, because "the write
+ * was accepted" and "the data is there" are different claims and only the
+ * second one matters. A disagreement throws, which aborts this transaction:
+ * the previous data is still there and the message names what disagreed.
+ * A file with no manifest restores exactly as it always has (Task 3: every
+ * backup the previous build wrote, and every sync snapshot), and the report
+ * says plainly that it carried no self-check.
  */
-export async function restoreBackup(file: BackupFile): Promise<void> {
+export async function restoreBackup(file: BackupFile): Promise<RestoreReport> {
   // Defence in depth: never write from a file that would not validate,
   // even if the caller skipped validateBackup.
   const checked = validateBackup(file);
   if (!checked.ok) throw new Error(checked.error);
+  const claimed = isCheckableManifest(checked.file.manifest) ? checked.file.manifest : null;
   const tables = upgradeBackupData(checked.file);
-  await db.transaction('rw', [...ALL_TABLES], async () => {
+  // The recomputation is RETURNED out of the transaction rather than assigned
+  // into an outer variable: a figure that escaped a transaction which then
+  // rolled back would be a report about data that does not exist.
+  const recomputed = await db.transaction('rw', [...ALL_TABLES], async () => {
     // BEFORE the clear, or there would be nothing left to pin from.
     const local = await getSettings();
     const incoming = tables.settings;
     // Mapped one-for-one rather than collapsed to a single row: two settings
     // rows in a file is corruption, and bulkAdd must still be the thing that
     // catches it (validateBackup has already pinned every id to 'app').
-    tables.settings =
-      incoming.length === 0
-        ? [pinDeviceLocalSettings(local, undefined)]
-        : incoming.map((row) => pinDeviceLocalSettings(local, row));
+    const settingsRowMintedLocally = incoming.length === 0;
+    tables.settings = settingsRowMintedLocally
+      ? [pinDeviceLocalSettings(local, undefined)]
+      : incoming.map((row) => pinDeviceLocalSettings(local, row));
     for (const name of ALL_TABLES) await db.table(name).clear();
     for (const name of ALL_TABLES) {
       const rows = tables[name];
       // bulkAdd (not bulkPut): a duplicate id is corruption — abort, don't mask.
       if (rows.length > 0) await db.table(name).bulkAdd(rows as never[]);
     }
+    if (!claimed) return null;
+
+    // Which base currency the recomputation is done in. Normally the restored
+    // settings row's — book-level, so it came from the file and must match
+    // what the manifest names. When the file carried NO settings row the app
+    // has just minted this device's own (see above), and its base currency is
+    // this browser's, not the file's: the manifest's naming of it is then
+    // unverifiable, so the arithmetic is checked in the currency the file
+    // named rather than refused over a difference the restore itself created.
+    const restoredSettings = settingsRowMintedLocally ? undefined : await db.settings.get('app');
+    const baseCurrency = restoredSettings?.baseCurrency || claimed.netWorth.baseCurrency;
+    const landed = computeManifest(await readManifestSource(), {
+      schemaVersion: claimed.schemaVersion,
+      exportedAt: claimed.exportedAt,
+      baseCurrency,
+    });
+    const problems = compareManifests(claimed, landed, { settingsRowMintedLocally });
+    if (problems.length > 0) throw new Error(refusalMessage(problems));
+    return landed;
+  });
+  return { verified: claimed !== null, claimed, recomputed };
+}
+
+/**
+ * The manifest inputs, read back OUT of the database.
+ *
+ * Streamed in batches keyed on the last id seen, exactly as
+ * domain/balances.ts aggregates for the sidebar and for the same reason
+ * (SPEC §9): checking a 100,000-row book must not materialise it a second
+ * time just to add up one integer field per row. Small tables are counted
+ * through their own index. Every read here happens inside the caller's
+ * transaction, so all of it describes one moment.
+ */
+async function readManifestSource(): Promise<ManifestSource> {
+  const accounts = await db.accounts.toArray();
+  const fxRates = await db.fxRates.toArray();
+  const rowCounts: Record<string, number> = {};
+  for (const name of ALL_TABLES) {
+    if (name === 'accounts') rowCounts[name] = accounts.length;
+    else if (name === 'fxRates') rowCounts[name] = fxRates.length;
+    else if (name !== 'transactions') rowCounts[name] = await db.table(name).count();
+  }
+
+  const txByAccount: TxTotals = new Map();
+  let txCount = 0;
+  let after: string | null = null;
+  for (;;) {
+    const batch: Transaction[] =
+      after === null
+        ? await db.transactions.orderBy('id').limit(SCAN_BATCH).toArray()
+        : await db.transactions.where('id').above(after).limit(SCAN_BATCH).toArray();
+    for (const t of batch) {
+      addTxToTotals(txByAccount, t.accountId, t.amountMinor);
+      txCount += 1;
+    }
+    // A short batch means the index is exhausted — `above()` is strict, so
+    // resuming from the last id seen never re-reads or skips a row.
+    if (batch.length < SCAN_BATCH) break;
+    after = batch[batch.length - 1]!.id;
+  }
+  // Counted by walking the rows, not by asking the index: the count that
+  // matters is how many transactions can actually be READ back.
+  rowCounts.transactions = txCount;
+  return { rowCounts, accounts, fxRates, txByAccount };
+}
+
+/**
+ * What this app is holding RIGHT NOW, computed from the live database.
+ *
+ * The independent second opinion the Settings screen shows after a restore:
+ * taken after the transaction has committed, so it is a fresh read of the
+ * database as it now stands rather than a figure carried out of the operation
+ * that wrote it. The owner should never have to take the app's word for what
+ * landed, least of all the word of the code that did the landing.
+ */
+export async function bookManifest(): Promise<BackupManifest> {
+  return db.transaction('r', [...ALL_TABLES], async () => {
+    const settings = await db.settings.get('app');
+    return computeManifest(await readManifestSource(), {
+      schemaVersion: SCHEMA_VERSION,
+      exportedAt: nowISO(),
+      baseCurrency: settings?.baseCurrency || fallbackBaseCurrency(),
+    });
   });
 }
 
@@ -359,16 +588,100 @@ async function saveViaShareSheet(
   return 'shared';
 }
 
+/** An export whose own bytes have been read back and checked. */
+export interface VerifiedExport {
+  file: BackupFile;
+  /** The exact text that will be written — already proved to parse back. */
+  json: string;
+  /** What the file says it contains, and what its bytes were shown to contain. */
+  manifest: BackupManifest;
+  /** Fingerprint of the content, timestamp excluded (canonicalBackupHash). */
+  contentHash: string;
+}
+
 /**
- * Browser-only: build the snapshot and hand it to the user. Deliberately does
- * NOT touch settings.lastBackupAt — neither an <a download> nor a share sheet
- * can tell us the file reached storage, and telling someone they have a backup
- * they do not have is the worst failure this app can have (SPEC §9). Callers
- * stamp via markBackupSaved() on 'saved', or after the user confirms a
- * 'shared'/'delivered' file really landed.
+ * Export, serialise, and then PROVE the serialised bytes still say the same
+ * thing before anybody is offered them.
+ *
+ * The manifest is computed from the rows in memory; this parses the finished
+ * text back and recomputes every figure from the parsed rows. That closes the
+ * gap between "the database contained this" and "the file contains this" — a
+ * dropped field, a number that did not survive serialisation, a truncated
+ * write. Failing here throws rather than handing over a file that cannot prove
+ * itself, because a backup you believe in and cannot restore is worse than a
+ * backup you know you do not have (SPEC §9).
  */
+export async function exportVerifiedBackup(): Promise<VerifiedExport> {
+  const file = await exportBackup();
+  const json = serializeBackup(file);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    throw new Error('The backup this app just wrote is not valid JSON — nothing was saved.');
+  }
+  const checked = validateBackup(parsed);
+  if (!checked.ok) {
+    throw new Error(`The backup this app just wrote does not validate — ${checked.error}`);
+  }
+  const claimed = checked.file.manifest;
+  if (!isCheckableManifest(claimed)) {
+    throw new Error('The backup this app just wrote carries no manifest — nothing was saved.');
+  }
+  const recomputed = computeManifest(manifestSourceFromTables(checked.file.tables), {
+    schemaVersion: checked.file.schemaVersion,
+    exportedAt: checked.file.exportedAt,
+    // Re-derived from the written rows, not taken from the manifest: a
+    // settings row that failed to serialise must show up as a disagreement,
+    // not be quietly papered over by the figure we are checking.
+    baseCurrency: baseCurrencyFromRows(checked.file.tables, fallbackBaseCurrency()),
+  });
+  const problems = compareManifests(claimed, recomputed);
+  if (problems.length > 0) {
+    throw new Error(
+      [
+        'The backup this app just wrote does not describe its own contents, so it was not saved:',
+        ...problems.slice(0, MAX_REPORTED_PROBLEMS).map((p) => `• ${p}`),
+      ].join('\n'),
+    );
+  }
+  // Same content in, same fingerprint out — the last check that serialising
+  // and parsing round-trips without losing anything the hash can see.
+  const contentHash = canonicalBackupHash(checked.file);
+  if (contentHash !== canonicalBackupHash(file)) {
+    throw new Error('The backup this app just wrote changed as it was written — nothing was saved.');
+  }
+  return { file, json, manifest: claimed, contentHash };
+}
+
+/** What an export actually did, and what it wrote — for the Settings screen. */
+export interface BackupExportOutcome {
+  result: BackupSaveResult;
+  manifest: BackupManifest;
+  contentHash: string;
+  fileName: string;
+}
+
+/**
+ * Browser-only: build the snapshot, prove it, and hand it to the user.
+ * Deliberately does NOT touch settings.lastBackupAt — neither an <a download>
+ * nor a share sheet can tell us the file reached storage, and telling someone
+ * they have a backup they do not have is the worst failure this app can have
+ * (SPEC §9). Callers stamp via markBackupSaved() on 'saved', or after the user
+ * confirms a 'shared'/'delivered' file really landed.
+ *
+ * Returns the manifest as well as the outcome so the UI can say what was
+ * written in the owner's own terms rather than "Backup saved".
+ */
+export async function downloadVerifiedBackup(): Promise<BackupExportOutcome> {
+  const { json, manifest, contentHash } = await exportVerifiedBackup();
+  const fileName = `mymoney-backup-${todayISO()}.json`;
+  return { result: await deliverJson(json, fileName), manifest, contentHash, fileName };
+}
+
+/** The outcome alone, for callers that do not report the figures. */
 export async function downloadBackup(): Promise<BackupSaveResult> {
-  return downloadBackupFile(await exportBackup(), `mymoney-backup-${todayISO()}.json`);
+  return (await downloadVerifiedBackup()).result;
 }
 
 /**

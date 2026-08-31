@@ -1,0 +1,758 @@
+{
+  "oracleVersion": 1,
+  "area": "fx",
+  "title": "FX: rate direction, conversion rounding, and the missing-rate outcome",
+  "generatedFrom": [
+    "src/money/money.ts",
+    "src/domain/fx.ts"
+  ],
+  "notes": [
+    "A rate row {base, quote, rate} means 1 base = rate quote (D11).",
+    "A missing rate is an OUTCOME the user is shown, never a substituted number: expect.outcome is \"converted\" or \"missing-rate\".",
+    "Cross rates are never triangulated and never averaged with their inverse.",
+    "Conversion happens only at display/report time; stored amounts never change currency.",
+    "op fx.convertEach converts each element of `minors` independently and is included to pin that rounding is per contribution, not per total."
+  ],
+  "cases": [
+    {
+      "id": "fx.direction.base-to-quote",
+      "describes": "a row {EUR,GBP,0.85} means 1 EUR = 0.85 GBP: €200.00 → £170.00",
+      "op": "fx.convertMinor",
+      "input": {
+        "minor": 20000,
+        "from": "EUR",
+        "to": "GBP",
+        "rates": [
+          {
+            "base": "EUR",
+            "quote": "GBP",
+            "rate": 0.85
+          },
+          {
+            "base": "USD",
+            "quote": "GBP",
+            "rate": 0.79
+          },
+          {
+            "base": "GBP",
+            "quote": "JPY",
+            "rate": 190.5
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "converted",
+        "minor": 17000
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "fx.direction.quote-to-base",
+      "describes": "the same row read backwards: £170.00 → €200.00 via 1/0.85 — an inverted port gets €144.50 here",
+      "op": "fx.convertMinor",
+      "input": {
+        "minor": 17000,
+        "from": "GBP",
+        "to": "EUR",
+        "rates": [
+          {
+            "base": "EUR",
+            "quote": "GBP",
+            "rate": 0.85
+          },
+          {
+            "base": "USD",
+            "quote": "GBP",
+            "rate": 0.79
+          },
+          {
+            "base": "GBP",
+            "quote": "JPY",
+            "rate": 190.5
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "converted",
+        "minor": 20000
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "fx.direction.usd-to-gbp",
+      "describes": "$10.00 at 1 USD = 0.79 GBP is £7.90",
+      "op": "fx.convertMinor",
+      "input": {
+        "minor": 1000,
+        "from": "USD",
+        "to": "GBP",
+        "rates": [
+          {
+            "base": "EUR",
+            "quote": "GBP",
+            "rate": 0.85
+          },
+          {
+            "base": "USD",
+            "quote": "GBP",
+            "rate": 0.79
+          },
+          {
+            "base": "GBP",
+            "quote": "JPY",
+            "rate": 190.5
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "converted",
+        "minor": 790
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "src/money/money.test.ts"
+    },
+    {
+      "id": "fx.direction.gbp-to-usd",
+      "describes": "£7.90 back to $10.00 through the inverse of the same row",
+      "op": "fx.convertMinor",
+      "input": {
+        "minor": 790,
+        "from": "GBP",
+        "to": "USD",
+        "rates": [
+          {
+            "base": "EUR",
+            "quote": "GBP",
+            "rate": 0.85
+          },
+          {
+            "base": "USD",
+            "quote": "GBP",
+            "rate": 0.79
+          },
+          {
+            "base": "GBP",
+            "quote": "JPY",
+            "rate": 190.5
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "converted",
+        "minor": 1000
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "src/money/money.test.ts"
+    },
+    {
+      "id": "fx.direction.gbp-to-jpy",
+      "describes": "a row stored the other way round: {GBP,JPY,190.5} means 1 GBP = 190.5 JPY, so £10.00 → ¥1905",
+      "op": "fx.convertMinor",
+      "input": {
+        "minor": 1000,
+        "from": "GBP",
+        "to": "JPY",
+        "rates": [
+          {
+            "base": "EUR",
+            "quote": "GBP",
+            "rate": 0.85
+          },
+          {
+            "base": "USD",
+            "quote": "GBP",
+            "rate": 0.79
+          },
+          {
+            "base": "GBP",
+            "quote": "JPY",
+            "rate": 190.5
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "converted",
+        "minor": 1905
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "src/money/money.test.ts"
+    },
+    {
+      "id": "fx.direction.jpy-to-gbp",
+      "describes": "¥1905 → £10.00: the minor-unit factors (0 decimals ↔ 2) are part of the conversion, not of the rate",
+      "op": "fx.convertMinor",
+      "input": {
+        "minor": 1905,
+        "from": "JPY",
+        "to": "GBP",
+        "rates": [
+          {
+            "base": "EUR",
+            "quote": "GBP",
+            "rate": 0.85
+          },
+          {
+            "base": "USD",
+            "quote": "GBP",
+            "rate": 0.79
+          },
+          {
+            "base": "GBP",
+            "quote": "JPY",
+            "rate": 190.5
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "converted",
+        "minor": 1000
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "src/money/money.test.ts"
+    },
+    {
+      "id": "fx.identity.same-currency",
+      "describes": "converting a currency to itself returns the amount untouched — no rate needed, no rounding applied",
+      "op": "fx.convertMinor",
+      "input": {
+        "minor": 1234,
+        "from": "GBP",
+        "to": "GBP",
+        "rates": [
+          {
+            "base": "EUR",
+            "quote": "GBP",
+            "rate": 0.85
+          },
+          {
+            "base": "USD",
+            "quote": "GBP",
+            "rate": 0.79
+          },
+          {
+            "base": "GBP",
+            "quote": "JPY",
+            "rate": 190.5
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "converted",
+        "minor": 1234
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "src/money/money.test.ts"
+    },
+    {
+      "id": "fx.identity.same-currency-unknown",
+      "describes": "and that holds for a currency with no rate rows at all",
+      "op": "fx.convertMinor",
+      "input": {
+        "minor": 999,
+        "from": "CHF",
+        "to": "CHF",
+        "rates": [
+          {
+            "base": "EUR",
+            "quote": "GBP",
+            "rate": 0.85
+          },
+          {
+            "base": "USD",
+            "quote": "GBP",
+            "rate": 0.79
+          },
+          {
+            "base": "GBP",
+            "quote": "JPY",
+            "rate": 190.5
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "converted",
+        "minor": 999
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "fx.rounding.half-up",
+      "describes": "the single rounding is half AWAY from zero: 1 cent × 0.5 = 0.5 minor units → 1",
+      "op": "fx.convertMinor",
+      "input": {
+        "minor": 1,
+        "from": "AAA",
+        "to": "GBP",
+        "rates": [
+          {
+            "base": "AAA",
+            "quote": "GBP",
+            "rate": 0.5
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "converted",
+        "minor": 1
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "fx.rounding.half-down-negative",
+      "describes": "and −1 cent × 0.5 = −0.5 → −1, not 0 and not −0",
+      "op": "fx.convertMinor",
+      "input": {
+        "minor": -1,
+        "from": "AAA",
+        "to": "GBP",
+        "rates": [
+          {
+            "base": "AAA",
+            "quote": "GBP",
+            "rate": 0.5
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "converted",
+        "minor": -1
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "fx.rounding.sub-unit-positive",
+      "describes": "$0.01 at 0.79 is £0.0079, which rounds UP to a penny — small amounts never round to zero silently",
+      "op": "fx.convertMinor",
+      "input": {
+        "minor": 1,
+        "from": "USD",
+        "to": "GBP",
+        "rates": [
+          {
+            "base": "EUR",
+            "quote": "GBP",
+            "rate": 0.85
+          },
+          {
+            "base": "USD",
+            "quote": "GBP",
+            "rate": 0.79
+          },
+          {
+            "base": "GBP",
+            "quote": "JPY",
+            "rate": 190.5
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "converted",
+        "minor": 1
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "src/money/money.test.ts"
+    },
+    {
+      "id": "fx.rounding.sub-unit-negative",
+      "describes": "the same one cent as a refund: −£0.01",
+      "op": "fx.convertMinor",
+      "input": {
+        "minor": -1,
+        "from": "USD",
+        "to": "GBP",
+        "rates": [
+          {
+            "base": "EUR",
+            "quote": "GBP",
+            "rate": 0.85
+          },
+          {
+            "base": "USD",
+            "quote": "GBP",
+            "rate": 0.79
+          },
+          {
+            "base": "GBP",
+            "quote": "JPY",
+            "rate": 190.5
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "converted",
+        "minor": -1
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "src/money/money.test.ts"
+    },
+    {
+      "id": "fx.rounding.once-not-twice",
+      "describes": "£100.00 at 190.5 is ¥19050 exactly; rounding twice (per unit, then per total) would not survive this",
+      "op": "fx.convertMinor",
+      "input": {
+        "minor": 10000,
+        "from": "GBP",
+        "to": "JPY",
+        "rates": [
+          {
+            "base": "EUR",
+            "quote": "GBP",
+            "rate": 0.85
+          },
+          {
+            "base": "USD",
+            "quote": "GBP",
+            "rate": 0.79
+          },
+          {
+            "base": "GBP",
+            "quote": "JPY",
+            "rate": 190.5
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "converted",
+        "minor": 19050
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "fx.rounding.three-decimal-target",
+      "describes": "converting into a 3-decimal currency scales by 1000: £1.00 at 2.0 is 2.000 BHD = 2000 fils",
+      "op": "fx.convertMinor",
+      "input": {
+        "minor": 100,
+        "from": "GBP",
+        "to": "BHD",
+        "rates": [
+          {
+            "base": "GBP",
+            "quote": "BHD",
+            "rate": 2
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "converted",
+        "minor": 2000
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "fx.rounding.zero-amount",
+      "describes": "zero converts to zero in any direction",
+      "op": "fx.convertMinor",
+      "input": {
+        "minor": 0,
+        "from": "EUR",
+        "to": "GBP",
+        "rates": [
+          {
+            "base": "EUR",
+            "quote": "GBP",
+            "rate": 0.85
+          },
+          {
+            "base": "USD",
+            "quote": "GBP",
+            "rate": 0.79
+          },
+          {
+            "base": "GBP",
+            "quote": "JPY",
+            "rate": 190.5
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "converted",
+        "minor": 0
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "fx.missing.no-row",
+      "describes": "a currency with no rate row is an explicit MISSING-RATE outcome — never 0, never the unconverted amount",
+      "op": "fx.convertMinor",
+      "input": {
+        "minor": 1000,
+        "from": "CHF",
+        "to": "GBP",
+        "rates": [
+          {
+            "base": "EUR",
+            "quote": "GBP",
+            "rate": 0.85
+          },
+          {
+            "base": "USD",
+            "quote": "GBP",
+            "rate": 0.79
+          },
+          {
+            "base": "GBP",
+            "quote": "JPY",
+            "rate": 190.5
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "missing-rate"
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "src/money/money.test.ts"
+    },
+    {
+      "id": "fx.missing.no-triangulation",
+      "describes": "EUR→USD is NOT derived from EUR→GBP and USD→GBP: the app never invents a cross rate, it asks for one",
+      "op": "fx.convertMinor",
+      "input": {
+        "minor": 20000,
+        "from": "EUR",
+        "to": "USD",
+        "rates": [
+          {
+            "base": "EUR",
+            "quote": "GBP",
+            "rate": 0.85
+          },
+          {
+            "base": "USD",
+            "quote": "GBP",
+            "rate": 0.79
+          },
+          {
+            "base": "GBP",
+            "quote": "JPY",
+            "rate": 190.5
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "missing-rate"
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "fx.missing.zero-rate-ignored",
+      "describes": "a stored rate of 0 is not a rate — the row is ignored and the outcome is missing, not a division by zero",
+      "op": "fx.convertMinor",
+      "input": {
+        "minor": 1000,
+        "from": "AAA",
+        "to": "GBP",
+        "rates": [
+          {
+            "base": "AAA",
+            "quote": "GBP",
+            "rate": 0
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "missing-rate"
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "fx.missing.negative-rate-ignored",
+      "describes": "a negative stored rate is likewise ignored rather than flipping the sign of the money",
+      "op": "fx.convertMinor",
+      "input": {
+        "minor": 1000,
+        "from": "AAA",
+        "to": "GBP",
+        "rates": [
+          {
+            "base": "AAA",
+            "quote": "GBP",
+            "rate": -2
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "missing-rate"
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "fx.missing.empty-table",
+      "describes": "with no rates at all, any cross-currency conversion is missing",
+      "op": "fx.convertMinor",
+      "input": {
+        "minor": 1,
+        "from": "EUR",
+        "to": "GBP",
+        "rates": []
+      },
+      "expect": {
+        "outcome": "missing-rate"
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "fx.lookup.direct-beats-inverse",
+      "describes": "when both directions are stored, the DIRECT row wins — the inverse is only a fallback, so a deliberately asymmetric pair cannot be silently averaged",
+      "op": "fx.convertMinor",
+      "input": {
+        "minor": 10000,
+        "from": "EUR",
+        "to": "GBP",
+        "rates": [
+          {
+            "base": "EUR",
+            "quote": "GBP",
+            "rate": 0.9
+          },
+          {
+            "base": "GBP",
+            "quote": "EUR",
+            "rate": 2
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "converted",
+        "minor": 9000
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "fx.lookup.inverse-of-that-pair",
+      "describes": "the same table read GBP→EUR takes the direct GBP→EUR row (rate 2), NOT 1/0.9",
+      "op": "fx.convertMinor",
+      "input": {
+        "minor": 10000,
+        "from": "GBP",
+        "to": "EUR",
+        "rates": [
+          {
+            "base": "EUR",
+            "quote": "GBP",
+            "rate": 0.9
+          },
+          {
+            "base": "GBP",
+            "quote": "EUR",
+            "rate": 2
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "converted",
+        "minor": 20000
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "fx.lookup.last-row-wins",
+      "describes": "two rows for the same pair: the later row replaces the earlier one",
+      "op": "fx.convertMinor",
+      "input": {
+        "minor": 10000,
+        "from": "EUR",
+        "to": "GBP",
+        "rates": [
+          {
+            "base": "EUR",
+            "quote": "GBP",
+            "rate": 0.9
+          },
+          {
+            "base": "EUR",
+            "quote": "GBP",
+            "rate": 0.8
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "converted",
+        "minor": 8000
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "fx.rounding.per-contribution-not-per-total",
+      "describes": "three €3.33 lines convert to £2.83 each (sum £8.49); converting their €9.99 total in one go gives £8.49 too, but the general rule is one rounding PER converted contribution — this pair pins both figures so a port cannot pick whichever it finds easier",
+      "op": "fx.convertEach",
+      "input": {
+        "minors": [
+          333,
+          333,
+          333
+        ],
+        "from": "EUR",
+        "to": "GBP",
+        "rates": [
+          {
+            "base": "EUR",
+            "quote": "GBP",
+            "rate": 0.85
+          },
+          {
+            "base": "USD",
+            "quote": "GBP",
+            "rate": 0.79
+          },
+          {
+            "base": "GBP",
+            "quote": "JPY",
+            "rate": 190.5
+          }
+        ]
+      },
+      "expect": {
+        "each": [
+          283,
+          283,
+          283
+        ],
+        "sumOfConverted": 849,
+        "convertedSum": 849
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "fx.rounding.per-contribution-differs-from-total",
+      "describes": "where per-line and per-total rounding actually disagree, the app rounds PER CONTRIBUTION: three $0.07 lines are £0.18 together, not the £0.17 you get by converting $0.21 in one go",
+      "op": "fx.convertEach",
+      "input": {
+        "minors": [
+          7,
+          7,
+          7
+        ],
+        "from": "USD",
+        "to": "GBP",
+        "rates": [
+          {
+            "base": "EUR",
+            "quote": "GBP",
+            "rate": 0.85
+          },
+          {
+            "base": "USD",
+            "quote": "GBP",
+            "rate": 0.79
+          },
+          {
+            "base": "GBP",
+            "quote": "JPY",
+            "rate": 190.5
+          }
+        ]
+      },
+      "expect": {
+        "each": [
+          6,
+          6,
+          6
+        ],
+        "sumOfConverted": 18,
+        "convertedSum": 17
+      },
+      "provenance": "hand-calculated"
+    }
+  ]
+}

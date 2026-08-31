@@ -530,9 +530,14 @@ describe('backup', () => {
 
   it('a backup written WITHOUT the field restores cleanly, exclusions off', async () => {
     // Simulates a file exported by a build that predates the feature: the
-    // account rows have no excludeFromNetWorth key at all.
+    // account rows have no excludeFromNetWorth key at all — and, since that
+    // build also predates self-verifying backups, no manifest either. Keeping
+    // the manifest here would not be a legacy file, it would be a TAMPERED
+    // one: its figures were computed from rows that did have the flag, and a
+    // restore is now required to refuse exactly that (see tests/backup.test.ts,
+    // "an edited row is caught").
     await setAccountExcluded('prop', true);
-    const file = await exportBackup();
+    const { manifest: _noManifestBackThen, ...file } = await exportBackup();
     const legacy: BackupFile = {
       ...file,
       tables: {

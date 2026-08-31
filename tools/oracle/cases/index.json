@@ -1,0 +1,136 @@
+{
+  "oracleVersion": 1,
+  "generator": "tools/oracle/build.ts",
+  "regenerate": "node_modules/.bin/vite-node tools/oracle/write.ts",
+  "verify": "npx vitest run tests/oracle.test.ts",
+  "totalCases": 279,
+  "handCalculated": 267,
+  "carriedFromTests": 81,
+  "derived": 12,
+  "files": [
+    {
+      "file": "money.json",
+      "area": "money",
+      "title": "Money: parsing, formatting, rounding and minor-unit scaling",
+      "caseCount": 71,
+      "handCalculated": 67,
+      "carriedFromTests": 34,
+      "derived": 4,
+      "books": [],
+      "ops": [
+        "money.decimalsFor",
+        "money.formatMinor",
+        "money.formatMinorPlain",
+        "money.minorFactor",
+        "money.parseAmountToMinor",
+        "money.roundHalfAwayFromZero",
+        "money.sumSplits"
+      ]
+    },
+    {
+      "file": "fx.json",
+      "area": "fx",
+      "title": "FX: rate direction, conversion rounding, and the missing-rate outcome",
+      "caseCount": 25,
+      "handCalculated": 25,
+      "carriedFromTests": 8,
+      "derived": 0,
+      "books": [],
+      "ops": [
+        "fx.convertEach",
+        "fx.convertMinor"
+      ]
+    },
+    {
+      "file": "balances.json",
+      "area": "balances",
+      "title": "Balances: per-account, cleared vs pending, and net worth with exclusions",
+      "caseCount": 16,
+      "handCalculated": 14,
+      "carriedFromTests": 2,
+      "derived": 2,
+      "books": [
+        "golden",
+        "exclusions",
+        "exclusions-simple",
+        "rollup"
+      ],
+      "ops": [
+        "balances.accountBalances",
+        "balances.balanceFromAmounts",
+        "balances.countsTowardNetWorth",
+        "balances.netWorth"
+      ]
+    },
+    {
+      "file": "budgets.json",
+      "area": "budgets",
+      "title": "Budgets: period windows (including month-end clamping) and spend against them",
+      "caseCount": 45,
+      "handCalculated": 44,
+      "carriedFromTests": 31,
+      "derived": 1,
+      "books": [
+        "budget"
+      ],
+      "ops": [
+        "budgets.progress",
+        "budgets.shiftWindow",
+        "budgets.shiftWindowRoundTrip",
+        "budgets.windowContaining"
+      ]
+    },
+    {
+      "file": "reports.json",
+      "area": "reports",
+      "title": "Reports: the golden month, category rollup with descendants, and flow classification",
+      "caseCount": 27,
+      "handCalculated": 26,
+      "carriedFromTests": 6,
+      "derived": 1,
+      "books": [
+        "golden",
+        "rollup"
+      ],
+      "ops": [
+        "categories.categoryPathName",
+        "categories.descendantIds",
+        "reports.cashFlowByMonth",
+        "reports.incomeVsExpenseByMonth",
+        "reports.netWorthSeries",
+        "reports.spendingByCategory",
+        "reports.spendingByPayee",
+        "reports.spendingByTag"
+      ]
+    },
+    {
+      "file": "import.json",
+      "area": "import",
+      "title": "Import: dedupe keys, near-duplicate decisions, date and decimal detection, MoneyWiz layouts",
+      "caseCount": 95,
+      "handCalculated": 91,
+      "carriedFromTests": 0,
+      "derived": 4,
+      "books": [],
+      "ops": [
+        "import.checkDuplicate",
+        "import.detectDateFormat",
+        "import.detectDecimalStyle",
+        "import.detectFormat",
+        "import.guessMapping",
+        "import.levenshtein",
+        "import.makeDedupeHash",
+        "import.normalizeForHash",
+        "import.parseDateString",
+        "import.parseImportAmount",
+        "import.parseMoneyWizCsv",
+        "import.parseMoneyWizReportCsv",
+        "import.parseWithMapping",
+        "import.reportCategoryPaths",
+        "import.reportOpeningBalances",
+        "import.reportRows",
+        "import.similarPayee"
+      ]
+    }
+  ]
+}

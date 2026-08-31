@@ -1,5 +1,14 @@
-// Backup export/restore tests (SPEC §8.1.9, §10: backup round-trip equality).
+// Backup export/restore tests (SPEC §8.1.9, §10: backup round-trip equality),
+// and — from the manifest work — the three claims that turn a backup into an
+// ORACLE the Swift port can be checked against:
+//   1. the file SAYS what it contains, and a restore holds it to that;
+//   2. the file is CANONICAL, so an unchanged book always produces the same
+//      bytes and therefore the same fingerprint;
+//   3. a file written before any of this still restores, unchanged.
 import 'fake-indexeddb/auto';
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   ALL_TABLES,
@@ -14,13 +23,16 @@ import {
 } from '../src/db/db';
 import {
   backupNudgeState,
+  bookManifest,
   clearRecoveryStore,
   CURRENT_SCHEMA_VERSION,
   deleteRecoveryRecord,
   downloadBackup,
   downloadBackupFile,
   downloadRecoveryBackup,
+  downloadVerifiedBackup,
   exportBackup,
+  exportVerifiedBackup,
   listRecoveryRecords,
   markBackupSaved,
   pinDeviceLocalSettings,
@@ -36,6 +48,23 @@ import {
   type BackupFile,
   type BackupValidation,
 } from '../src/backup/backup';
+import {
+  backupContentForHash,
+  canonicalBackupHash,
+  canonicalJson,
+  sha256Hex,
+} from '../src/backup/canonical';
+import {
+  compareManifests,
+  computeManifest,
+  manifestSourceFromTables,
+  MANIFEST_VERSION,
+  summariseManifest,
+  validateManifestShape,
+  type BackupManifest,
+} from '../src/backup/manifest';
+import { restoredNote, selfCheckNote } from '../src/ui/settings/RestoreFromBackup';
+import { netWorth } from '../src/domain/balances';
 import { makeDedupeHash } from '../src/import/dedupe';
 import { sumSplits } from '../src/money/money';
 import type {
@@ -363,11 +392,22 @@ describe('backup round trip', () => {
     expect(Date.now() - Date.parse(restored.createdAt)).toBeLessThan(60_000);
   });
 
-  it('serializeBackup is pretty-printed with 2-space indent', async () => {
+  it('serializeBackup is pretty-printed with 2-space indent, keys in canonical order', async () => {
     await seedAll();
     const json = serializeBackup(await exportBackup());
-    expect(json.startsWith('{\n  "app": "MyMoney",\n  "schemaVersion"')).toBe(true);
+    // Top-level keys now come out sorted rather than in the order the object
+    // literal happens to list them (src/backup/canonical.ts) — that is the
+    // whole point: key order stops being an accident and becomes part of the
+    // format, so a second implementation can reproduce the bytes.
+    expect(json.startsWith('{\n  "app": "MyMoney",\n  "exportedAt"')).toBe(true);
     expect(json).toContain('\n    "accounts": [');
+    expect(Object.keys(JSON.parse(json) as Record<string, unknown>)).toEqual([
+      'app',
+      'exportedAt',
+      'manifest',
+      'schemaVersion',
+      'tables',
+    ]);
   });
 
   // E3: pretty-printing costs ~45% of the file size, which matters when the
@@ -1188,5 +1228,904 @@ describe('recovery store', () => {
     await expect(readRecoveryBackup(record.id)).rejects.toThrow(/unreadable/);
     // The book is untouched: nothing was cleared on the way to finding out.
     expect(await db.transactions.count()).toBe(seedTransactions.length);
+  });
+});
+
+// ===========================================================================
+// Canonical serialisation (src/backup/canonical.ts)
+// ===========================================================================
+//
+// The format is the promise here: sorted keys, JSON.stringify's escaping and
+// indentation, a real SHA-256. All three have to be reproducible by a second
+// implementation in another language, so all three are pinned against
+// something outside this codebase — FIPS test vectors, Node's own crypto, and
+// JSON.stringify itself.
+
+const nodeSha = (s: string): string => createHash('sha256').update(s, 'utf8').digest('hex');
+
+describe('sha256Hex', () => {
+  it('matches the published FIPS 180-4 vectors', () => {
+    expect(sha256Hex('')).toBe(
+      'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+    );
+    expect(sha256Hex('abc')).toBe(
+      'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad',
+    );
+    expect(sha256Hex('abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq')).toBe(
+      '248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1',
+    );
+  });
+
+  it('agrees with node:crypto across the block boundaries and beyond ASCII', () => {
+    // 55/56 and 119/120 are where the 64-byte padding block splits in two —
+    // the one place a hand-written SHA-256 goes wrong and still looks fine on
+    // "abc". 100_000 chars is well past anything a single block hides.
+    const cases = [
+      '',
+      'a',
+      'x'.repeat(55),
+      'x'.repeat(56),
+      'x'.repeat(63),
+      'x'.repeat(64),
+      'x'.repeat(65),
+      'x'.repeat(119),
+      'x'.repeat(120),
+      'x'.repeat(128),
+      '£429,327.86 — Tesco • café',
+      '𝄞 clef and an emoji 🧾',
+      JSON.stringify({ a: 1, b: [1, 2, 3] }),
+      'y'.repeat(20_000),
+    ];
+    for (const s of cases) {
+      expect(sha256Hex(s), `length ${s.length}`).toBe(nodeSha(s));
+    }
+  });
+});
+
+describe('canonicalJson', () => {
+  it('sorts object keys at every depth, and leaves array order alone', () => {
+    const value = { b: 1, a: { z: [3, 1, 2], y: 'x' }, A: true };
+    expect(canonicalJson(value)).toBe('{"A":true,"a":{"y":"x","z":[3,1,2]},"b":1}');
+  });
+
+  it('is byte-identical to JSON.stringify once the keys are already in order', () => {
+    // Everything except the ordering must stay JSON.stringify's behaviour:
+    // escaping, number formatting, empty containers, indentation.
+    const sorted = {
+      a: 'quote " backslash \\ newline \n tab \t unicode   £',
+      b: [1, -0, 1e21, 0.1 + 0.2, null, true],
+      c: {},
+      d: [],
+      e: '',
+    };
+    expect(canonicalJson(sorted)).toBe(JSON.stringify(sorted));
+    expect(canonicalJson(sorted, 2)).toBe(JSON.stringify(sorted, null, 2));
+  });
+
+  it('drops undefined from objects and writes it as null in arrays, like JSON.stringify', () => {
+    const value = { keep: 1, gone: undefined, list: [1, undefined, 3] };
+    expect(canonicalJson(value)).toBe('{"keep":1,"list":[1,null,3]}');
+    expect(JSON.parse(canonicalJson(value))).toEqual(JSON.parse(JSON.stringify(value)));
+  });
+
+  it('sorts all-digit keys as strings, which a JS object cannot', () => {
+    // The reason this module has its own emitter. A JS object puts
+    // integer-like keys first in NUMERIC order whatever order they went in, so
+    // "rebuild the object with sorted keys, then JSON.stringify it" produces
+    // 2,10,b — an order no other language would reproduce by sorting keys.
+    // savedMappings is keyed by CSV file signature, so all-digit keys are real.
+    const value = { '10': 'ten', '2': 'two', b: 'bee' };
+    expect(canonicalJson(value)).toBe('{"10":"ten","2":"two","b":"bee"}');
+    expect(JSON.stringify({ ...value })).toBe('{"2":"two","10":"ten","b":"bee"}');
+  });
+
+  it('round-trips a whole backup unchanged apart from key order', async () => {
+    await seedAll();
+    const file = await exportBackup();
+    expect(JSON.parse(canonicalJson(file))).toEqual(JSON.parse(JSON.stringify(file)));
+  });
+});
+
+// ===========================================================================
+// TASK 2 — an unchanged book is the same bytes, and can be fingerprinted
+// ===========================================================================
+
+/** Parse a serialised backup back into a file (deep copy for tamper tests). */
+const reparse = (file: BackupFile): BackupFile => JSON.parse(serializeBackup(file)) as BackupFile;
+
+/**
+ * Wipe the BOOK but leave this device's settings row in place — the state a
+ * real "restore over the top" starts from, and the only state in which two
+ * exports can be compared byte for byte (see the round-trip test below).
+ */
+const clearBook = async () => {
+  await Promise.all(DATA_TABLES.map((name) => db.table(name).clear()));
+};
+
+describe('canonical exports', () => {
+  it('two exports of an unchanged database differ only in the timestamp', async () => {
+    await seedAll();
+    const first = await exportBackup();
+    // Far enough apart that the clock really moves — otherwise the two files
+    // are trivially identical and the test proves nothing.
+    await new Promise((r) => setTimeout(r, 2));
+    const second = await exportBackup();
+
+    expect(second.exportedAt).not.toBe(first.exportedAt); // different moments…
+    const a = serializeBackup(first);
+    const b = serializeBackup(second);
+    expect(a).not.toBe(b);
+    // …and that is the ONLY difference: putting the first timestamp back into
+    // the second file makes the two files the same bytes, everywhere.
+    expect(b.split(second.exportedAt).join(first.exportedAt)).toBe(a);
+    expect(canonicalBackupHash(second)).toBe(canonicalBackupHash(first));
+  });
+
+  it('the fingerprint ignores the timestamp and nothing else', async () => {
+    await seedAll();
+    const file = await exportBackup();
+    const content = backupContentForHash(file) as Record<string, unknown>;
+    expect('exportedAt' in content).toBe(false);
+    expect('exportedAt' in (content.manifest as Record<string, unknown>)).toBe(false);
+    // Everything else is still there to be hashed — including the manifest,
+    // so a file whose claims were edited fingerprints differently.
+    expect(Object.keys(content).sort()).toEqual(['app', 'manifest', 'schemaVersion', 'tables']);
+  });
+
+  it('changes when one penny changes', async () => {
+    await seedAll();
+    const before = canonicalBackupHash(await exportBackup());
+    await db.transactions.update('tx-groc', { amountMinor: -4568 });
+    expect(canonicalBackupHash(await exportBackup())).not.toBe(before);
+  });
+
+  it('is the same whether the file was written pretty or compact', async () => {
+    await seedAll();
+    const file = await exportBackup();
+    const pretty = JSON.parse(canonicalJson(file, 2)) as BackupFile;
+    const compact = JSON.parse(canonicalJson(file, 0)) as BackupFile;
+    expect(canonicalBackupHash(pretty)).toBe(canonicalBackupHash(compact));
+  });
+
+  it('survives a full round trip: export → restore → export is the same content', async () => {
+    await seedAll();
+    const first = await exportBackup();
+    const hash = canonicalBackupHash(first);
+
+    // The BOOK is wiped, the device is not. A restore deliberately keeps this
+    // browser's own half of the settings row (C8) — its theme, its install
+    // date, its sync bookkeeping — so a device that wiped its settings row too
+    // would come back with a different `createdAt` and a different fingerprint,
+    // and would be right to. Byte-for-byte reproduction is a claim about the
+    // book, made by the same device.
+    await clearBook();
+    await restoreBackup(reparse(first));
+    const second = await exportBackup();
+
+    expect(canonicalBackupHash(second)).toBe(hash);
+    expect(serializeBackup(second).split(second.exportedAt).join(first.exportedAt)).toBe(
+      serializeBackup(first),
+    );
+  });
+
+  it('puts the rows in order itself rather than trusting the source', async () => {
+    // Row order is DATA in JSON, so it cannot be left to whatever the storage
+    // engine happens to hand back. IndexedDB does return rows in primary-key
+    // order today — which means only forcing a different order proves the
+    // exporter is deciding rather than getting lucky.
+    await seedAll();
+    const original = await exportBackup();
+    const tableProto = Object.getPrototypeOf(db.table('accounts')) as {
+      toArray: () => Promise<unknown[]>;
+    };
+    const realToArray = tableProto.toArray;
+    const spy = vi
+      .spyOn(tableProto, 'toArray')
+      .mockImplementation(async function (this: unknown) {
+        return (await realToArray.call(this)).reverse();
+      });
+    const backwards = await exportBackup();
+    spy.mockRestore();
+
+    expect(backwards.tables.transactions).toEqual(original.tables.transactions);
+    expect(canonicalBackupHash(backwards)).toBe(canonicalBackupHash(original));
+  });
+
+  it('does not depend on the order the rows arrived in', async () => {
+    // …and the same holds coming back the other way: a hand-shuffled file
+    // restores to the same book, which exports to the same bytes.
+    await seedAll();
+    const original = await exportBackup();
+    const shuffled = reparse(original);
+    shuffled.tables.transactions = [...shuffled.tables.transactions].reverse();
+    shuffled.tables.accounts = [...shuffled.tables.accounts].reverse();
+
+    await clearBook();
+    await restoreBackup(shuffled);
+    expect(canonicalBackupHash(await exportBackup())).toBe(canonicalBackupHash(original));
+  });
+});
+
+// ===========================================================================
+// TASK 1 — the manifest, computed from the rows being written
+// ===========================================================================
+
+/** Hand-calculated from the seed data at the top of this file.
+ *
+ *  acc-gbp (GBP): opening 150,000
+ *      -4,567 (Tesco) -7,845 (split) +250,000 (salary) -10,000 (transfer out)
+ *      -1,250 (imported)          = +226,338  ⇒ closing 376,338  (£3,763.38)
+ *  acc-usd (USD): opening 0, +12,700 (transfer in) ⇒ closing 12,700 ($127.00)
+ *
+ *  Rate row is GBP:USD 1.27, so USD→GBP is its inverse, 1/1.27:
+ *      12,700 × (1/1.27) = 10,000 exactly  (£100.00)
+ *  Net worth = 376,338 + 10,000 = 386,338  (£3,863.38)
+ */
+const SEED_GBP_CLOSING = 376_338;
+const SEED_USD_CLOSING = 12_700;
+const SEED_NET_WORTH = 386_338;
+
+describe('the manifest states what the file contains', () => {
+  it('counts every table and states every account balance in minor units', async () => {
+    await seedAll();
+    const { manifest } = await exportBackup();
+    expect(manifest).toBeDefined();
+    const m = manifest!;
+
+    expect(m.manifestVersion).toBe(MANIFEST_VERSION);
+    expect(m.schemaVersion).toBe(SCHEMA_VERSION);
+    expect(m.rowCounts).toEqual({
+      accounts: 2,
+      accountGroups: 1,
+      transactions: 6,
+      categories: 4,
+      payees: 1,
+      tags: 2,
+      budgets: 1,
+      fxRates: 1,
+      importBatches: 1,
+      settings: 1,
+    });
+    expect(m.accounts).toEqual([
+      {
+        id: 'acc-gbp',
+        name: 'Current',
+        currency: 'GBP',
+        closingBalanceMinor: SEED_GBP_CLOSING,
+        txCount: 5,
+        counted: true,
+      },
+      {
+        id: 'acc-usd',
+        name: 'US Savings',
+        currency: 'USD',
+        closingBalanceMinor: SEED_USD_CLOSING,
+        txCount: 1,
+        counted: true,
+      },
+    ]);
+  });
+
+  it('states net worth with the base currency named and the rate it used', async () => {
+    await seedAll();
+    const m = (await exportBackup()).manifest!;
+    expect(m.netWorth.baseCurrency).toBe('GBP');
+    expect(m.netWorth.totalMinor).toBe(SEED_NET_WORTH);
+    expect(m.netWorth.missingRateCurrencies).toEqual([]);
+    // The rate AS APPLIED — the inverse of the stored GBP:USD row — so the
+    // figure can be recomputed by hand rather than taken on trust.
+    expect(m.netWorth.rates).toEqual([{ from: 'USD', to: 'GBP', rate: 1 / 1.27 }]);
+    // …and it is genuinely recomputable: balance × rate, rounded once.
+    const rate = m.netWorth.rates[0]!.rate;
+    expect(SEED_GBP_CLOSING + Math.round(SEED_USD_CLOSING * rate)).toBe(m.netWorth.totalMinor);
+  });
+
+  it('states the same number the app itself shows', async () => {
+    // The oracle is worthless if it is a second opinion. Same accounts, same
+    // exclusions, same conversion, same rounding — netWorth() and the manifest
+    // must agree by construction, not by coincidence.
+    await seedAll();
+    const m = (await exportBackup()).manifest!;
+    expect(m.netWorth.totalMinor).toBe((await netWorth()).totalBaseMinor);
+  });
+
+  it('is computed from the rows being written, not from a second query', async () => {
+    await seedAll();
+    // A count() taken beside the row arrays describes a DIFFERENT MOMENT: a
+    // write landing between the two makes the manifest describe a book that
+    // never existed. So the export must read each table exactly once and ask
+    // the database nothing else.
+    //
+    // Spied on Dexie's Table PROTOTYPE, not on db.accounts: `db.table(name)`
+    // hands back a different Table object than the `db.accounts` accessor
+    // does, and a spy on one of them watches a door the code does not use.
+    const tableProto = Object.getPrototypeOf(db.table('accounts')) as {
+      count: () => Promise<number>;
+      toArray: () => Promise<unknown[]>;
+    };
+    const count = vi.spyOn(tableProto, 'count');
+    const toArray = vi.spyOn(tableProto, 'toArray');
+    const file = await exportBackup();
+    expect(count).not.toHaveBeenCalled();
+    expect(toArray).toHaveBeenCalledTimes(ALL_TABLES.length); // one read per table
+    count.mockRestore();
+    toArray.mockRestore();
+    // And what it says is exactly the rows in the file.
+    for (const name of ALL_TABLES) {
+      expect({ [name]: file.manifest!.rowCounts[name] }).toEqual({
+        [name]: file.tables[name]!.length,
+      });
+    }
+  });
+
+  it('keeps an archived or excluded account out of the total but still states its balance', async () => {
+    await seedAll();
+    await db.accounts.update('acc-usd', { excludeFromNetWorth: true });
+    const m = (await exportBackup()).manifest!;
+    const usd = m.accounts.find((a) => a.id === 'acc-usd')!;
+    expect(usd.counted).toBe(false);
+    expect(usd.closingBalanceMinor).toBe(SEED_USD_CLOSING); // the balance is a fact
+    expect(m.netWorth.totalMinor).toBe(SEED_GBP_CLOSING); // …the total is a choice
+    expect(m.netWorth.rates).toEqual([]); // no USD in the total, no rate needed
+    expect(m.netWorth.totalMinor).toBe((await netWorth()).totalBaseMinor);
+  });
+
+  it('says which currency it could not convert rather than guessing it', async () => {
+    await seedAll();
+    await db.fxRates.clear(); // the USD account can no longer be converted
+    const m = (await exportBackup()).manifest!;
+    expect(m.netWorth.missingRateCurrencies).toEqual(['USD']);
+    expect(m.netWorth.totalMinor).toBe(SEED_GBP_CLOSING);
+    expect(m.netWorth.rates).toEqual([]);
+    expect(summariseManifest(m)).toContain('USD not counted — no exchange rate');
+  });
+
+  it('describes an empty book without inventing one', async () => {
+    const m = (await exportBackup()).manifest!;
+    expect(m.accounts).toEqual([]);
+    expect(m.netWorth).toEqual({
+      baseCurrency: 'GBP',
+      totalMinor: 0,
+      rates: [],
+      missingRateCurrencies: [],
+    });
+  });
+});
+
+describe('summariseManifest', () => {
+  const base = (over: Partial<BackupManifest> = {}): BackupManifest => ({
+    manifestVersion: MANIFEST_VERSION,
+    schemaVersion: SCHEMA_VERSION,
+    exportedAt: T0,
+    rowCounts: { accounts: 58, transactions: 5127 },
+    accounts: [],
+    netWorth: { baseCurrency: 'GBP', totalMinor: 42_932_786, rates: [], missingRateCurrencies: [] },
+    ...over,
+  });
+
+  it('says it in the owner’s own terms', () => {
+    // The sentence Girish should recognise without opening anything.
+    expect(summariseManifest(base())).toBe(
+      '58 accounts, 5,127 transactions, net worth £429,327.86',
+    );
+  });
+
+  it('uses the singular for one of a thing', () => {
+    expect(summariseManifest(base({ rowCounts: { accounts: 1, transactions: 1 } }))).toBe(
+      '1 account, 1 transaction, net worth £429,327.86',
+    );
+  });
+
+  it('never hides a currency it could not include', () => {
+    const text = summariseManifest(
+      base({
+        netWorth: {
+          baseCurrency: 'GBP',
+          totalMinor: 100,
+          rates: [],
+          missingRateCurrencies: ['JPY', 'USD'],
+        },
+      }),
+    );
+    expect(text).toBe('58 accounts, 5,127 transactions, net worth £1.00 (JPY, USD not counted — no exchange rate)');
+  });
+});
+
+// ===========================================================================
+// TASK 1 — a restore holds the file to what it says
+// ===========================================================================
+
+/** Everything currently in the database, for "nothing changed" assertions. */
+const snapshotAll = async (): Promise<string> => {
+  const out: Record<string, unknown[]> = {};
+  for (const name of ALL_TABLES) out[name] = sortById((await db.table(name).toArray()) as { id: string }[]);
+  return canonicalJson(out);
+};
+
+/**
+ * The message a refused restore gave. A helper rather than `.catch(e => …)` at
+ * every call site so that a restore which SUCCEEDS when it was supposed to be
+ * refused fails the test loudly, instead of quietly returning a report object
+ * nobody looks at.
+ */
+const restoreFailure = async (file: BackupFile): Promise<string> => {
+  try {
+    await restoreBackup(file);
+  } catch (e) {
+    return (e as Error).message;
+  }
+  throw new Error('expected this restore to be refused, but it went through');
+};
+
+describe('restore refuses a file that does not describe its own contents', () => {
+  it('catches an edited amount, names the account, and changes nothing', async () => {
+    await seedAll();
+    const file = reparse(await exportBackup());
+    // The seeded book is still in the database — that is what there is to lose.
+    const before = await snapshotAll();
+
+    // One penny off one transaction — the smallest possible lie.
+    const rows = file.tables.transactions as { id: string; amountMinor: number }[];
+    rows.find((r) => r.id === 'tx-groc')!.amountMinor = -4568;
+
+    await expect(restoreBackup(file)).rejects.toThrow(/Current/);
+    await expect(restoreBackup(file)).rejects.toThrow(/£3,763.37.*£3,763.38/s);
+    expect(await snapshotAll()).toBe(before);
+  });
+
+  it('catches a missing row by both its table and its account', async () => {
+    await seedAll();
+    const file = reparse(await exportBackup());
+    file.tables.transactions = (file.tables.transactions as { id: string }[]).filter(
+      (r) => r.id !== 'tx-salary',
+    );
+    const before = await snapshotAll();
+
+    const failure = await restoreFailure(file);
+    expect(failure).toContain('table “transactions”: 5 rows, but the backup says 6');
+    expect(failure).toContain('account “Current”: 4 transactions, but the backup says 5');
+    expect(failure).toContain('Nothing was changed.');
+    expect(await snapshotAll()).toBe(before);
+  });
+
+  it('catches an edited opening balance through the net-worth total', async () => {
+    await seedAll();
+    const file = reparse(await exportBackup());
+    (file.tables.accounts as { id: string; openingBalanceMinor: number }[]).find(
+      (a) => a.id === 'acc-gbp',
+    )!.openingBalanceMinor = 999_999;
+
+    const failure = await restoreFailure(file);
+    expect(failure).toContain('account “Current”: closing balance is');
+    expect(failure).toContain('net worth is');
+  });
+
+  it('catches a swapped base currency', async () => {
+    await seedAll();
+    const file = reparse(await exportBackup());
+    (file.tables.settings as { baseCurrency: string }[])[0]!.baseCurrency = 'EUR';
+    const failure = await restoreFailure(file);
+    expect(failure).toContain('base currency is EUR, but the backup says GBP');
+  });
+
+  it('catches a deleted exchange rate', async () => {
+    await seedAll();
+    const file = reparse(await exportBackup());
+    file.tables.fxRates = [];
+    const failure = await restoreFailure(file);
+    expect(failure).toContain('table “fxRates”');
+    expect(failure).toContain('currencies with no rate: USD');
+  });
+
+  it('catches an account that was quietly excluded from the total', async () => {
+    await seedAll();
+    const file = reparse(await exportBackup());
+    (file.tables.accounts as { id: string; excludeFromNetWorth?: boolean }[]).find(
+      (a) => a.id === 'acc-usd',
+    )!.excludeFromNetWorth = true;
+    const failure = await restoreFailure(file);
+    expect(failure).toContain('no longer counts toward net worth');
+  });
+
+  it('reports at most a handful of problems and says how many more there are', async () => {
+    await seedAll();
+    const file = reparse(await exportBackup());
+    // Wipe the lot: every table count, both accounts and the total all differ.
+    for (const name of DATA_TABLES) file.tables[name] = [];
+    const failure = await restoreFailure(file);
+    expect(failure).toMatch(/…and \d+ more/);
+    expect(failure.split('\n').length).toBeLessThanOrEqual(11);
+  });
+
+  it('accepts the untouched file and reports what it verified', async () => {
+    await seedAll();
+    const file = reparse(await exportBackup());
+    await clearAll();
+
+    const report = await restoreBackup(file);
+    expect(report.verified).toBe(true);
+    expect(report.claimed).toEqual(file.manifest);
+    // Recomputed from the rows that landed — same figures, arrived at again.
+    expect(report.recomputed!.accounts).toEqual(file.manifest!.accounts);
+    expect(report.recomputed!.netWorth).toEqual(file.manifest!.netWorth);
+    expect(report.recomputed!.rowCounts).toEqual(file.manifest!.rowCounts);
+  });
+
+  it('recomputes from what LANDED, not from the arrays it was handed', async () => {
+    // "bulkAdd resolved" and "the rows are in the database" are different
+    // claims, and only the second one is a backup. So the check re-reads the
+    // table; here the read comes back one row short — a write that reported
+    // success and did not keep everything — and that has to be caught even
+    // though the FILE is perfectly consistent with itself.
+    await seedAll();
+    const file = reparse(await exportBackup());
+    const realOrderBy = db.transactions.orderBy.bind(db.transactions);
+    vi.spyOn(db.transactions, 'orderBy').mockImplementation((index: string | string[]) => {
+      const collection = realOrderBy(index as string);
+      const realToArray = collection.toArray.bind(collection);
+      collection.toArray = (async () => (await realToArray()).slice(1)) as never;
+      return collection;
+    });
+
+    await expect(restoreBackup(file)).rejects.toThrow(/table “transactions”: 5 rows/);
+  });
+
+  it('does not go looking at all when the file makes no claim', async () => {
+    // The read-back costs a pass over the transactions table, so it happens
+    // only when there is something to check. Every sync pull restores a
+    // manifest-less file through here (src/sync/syncEngine.ts applyRemote) and
+    // must not pay for a verification it cannot perform.
+    await seedAll();
+    const { manifest: _none, ...file } = await exportBackup();
+    const orderBy = vi.spyOn(db.transactions, 'orderBy');
+    await clearBook();
+    expect((await restoreBackup(file as BackupFile)).verified).toBe(false);
+    expect(orderBy).not.toHaveBeenCalled();
+  });
+});
+
+// ===========================================================================
+// Validation of the manifest itself, before a single row is written
+// ===========================================================================
+
+describe('validateBackup and the manifest', () => {
+  const withManifest = async (edit: (m: Record<string, unknown>) => void): Promise<BackupFile> => {
+    const file = reparse(await exportBackup());
+    edit(file.manifest as unknown as Record<string, unknown>);
+    return file;
+  };
+
+  it('rejects a manifest that describes a different moment than its own file', async () => {
+    await seedAll();
+    const file = await withManifest((m) => {
+      m.exportedAt = '2001-01-01T00:00:00.000Z';
+    });
+    expectError(validateBackup(file), /different time/);
+    await expect(restoreBackup(file)).rejects.toThrow(/different time/);
+  });
+
+  it('rejects a manifest that claims a different schema version', async () => {
+    await seedAll();
+    expectError(
+      validateBackup(await withManifest((m) => (m.schemaVersion = SCHEMA_VERSION + 1))),
+      /manifest describes schema/,
+    );
+  });
+
+  it('rejects a manifest with a broken shape rather than half-reading it', async () => {
+    await seedAll();
+    expectError(validateBackup(await withManifest((m) => (m.rowCounts = 'lots'))), /row counts/);
+    expectError(
+      validateBackup(await withManifest((m) => ((m.accounts as unknown[])[0] = { id: 'x' }))),
+      /account entry 0 is incomplete/,
+    );
+    expectError(
+      validateBackup(await withManifest((m) => (m.netWorth = { baseCurrency: 'GBP' }))),
+      /net-worth figure/,
+    );
+    expectError(
+      validateBackup(
+        await withManifest((m) => {
+          (m.netWorth as { rates: unknown[] }).rates = [{ from: 'USD', to: 'GBP', rate: 0 }];
+        }),
+      ),
+      /unusable exchange rate/,
+    );
+    expectError(validateBackup(await withManifest((m) => (m.manifestVersion = 0))), /version/);
+  });
+
+  it('does not write anything while rejecting one', async () => {
+    await seedAll();
+    const before = await snapshotAll();
+    const file = await withManifest((m) => (m.rowCounts = null));
+    await expect(restoreBackup(file)).rejects.toThrow();
+    expect(await snapshotAll()).toBe(before);
+  });
+
+  it('restores a manifest from a FUTURE build without checking it, and says so', async () => {
+    // Forward compatibility beats verification here: refusing would make an
+    // older build unable to restore a file a newer one wrote, and the rows are
+    // still fully validated. The report admits nothing was checked.
+    await seedAll();
+    const file = await withManifest((m) => (m.manifestVersion = MANIFEST_VERSION + 1));
+    expect(validateBackup(file).ok).toBe(true);
+    await clearAll();
+    const report = await restoreBackup(file);
+    expect(report.verified).toBe(false);
+    expect(report.recomputed).toBeNull();
+    expect(await db.transactions.count()).toBe(seedTransactions.length);
+  });
+});
+
+describe('validateManifestShape', () => {
+  it('passes a manifest this build wrote', async () => {
+    await seedAll();
+    const file = await exportBackup();
+    expect(
+      validateManifestShape(file.manifest, {
+        schemaVersion: file.schemaVersion,
+        exportedAt: file.exportedAt,
+      }),
+    ).toBeNull();
+  });
+
+  it('says nothing about a version it does not know', () => {
+    expect(
+      validateManifestShape(
+        { manifestVersion: 99, whatever: true },
+        { schemaVersion: SCHEMA_VERSION, exportedAt: T0 },
+      ),
+    ).toBeNull();
+  });
+});
+
+describe('compareManifests', () => {
+  const manifest = (over: Partial<BackupManifest> = {}): BackupManifest =>
+    computeManifest(
+      manifestSourceFromTables({
+        accounts: [seedAccounts[0]!],
+        transactions: [seedTransactions[0]!],
+      }),
+      { schemaVersion: SCHEMA_VERSION, exportedAt: T0, baseCurrency: 'GBP' },
+    ) && {
+      ...computeManifest(
+        manifestSourceFromTables({
+          accounts: [seedAccounts[0]!],
+          transactions: [seedTransactions[0]!],
+        }),
+        { schemaVersion: SCHEMA_VERSION, exportedAt: T0, baseCurrency: 'GBP' },
+      ),
+      ...over,
+    };
+
+  it('finds nothing to say about two identical manifests', () => {
+    expect(compareManifests(manifest(), manifest())).toEqual([]);
+  });
+
+  it('ignores the file-level claims it is not there to check', () => {
+    // manifestVersion/schemaVersion/exportedAt are tied to the file by
+    // validateManifestShape before any write; comparing them here would
+    // report the same problem twice and mask the arithmetic.
+    const other = manifest({ exportedAt: 'much later', schemaVersion: 99 });
+    expect(compareManifests(manifest(), other)).toEqual([]);
+  });
+
+  it('allows exactly one extra settings row when the restore minted this device’s own', () => {
+    const claimed = manifest({ rowCounts: { ...manifest().rowCounts, settings: 0 } });
+    const landed = manifest({ rowCounts: { ...manifest().rowCounts, settings: 1 } });
+    expect(compareManifests(claimed, landed)).toEqual([
+      'table “settings”: 1 rows, but the backup says 0',
+    ]);
+    expect(compareManifests(claimed, landed, { settingsRowMintedLocally: true })).toEqual([]);
+  });
+
+  it('names an account that appears from nowhere and one that vanishes', () => {
+    const extra = manifest({
+      accounts: [
+        ...manifest().accounts,
+        { id: 'ghost', name: 'Ghost', currency: 'GBP', closingBalanceMinor: 1, txCount: 0, counted: true },
+      ],
+    });
+    expect(compareManifests(manifest(), extra)[0]).toContain('“Ghost” is in the restored data');
+    expect(compareManifests(extra, manifest())[0]).toContain('“Ghost” is in the backup’s manifest');
+  });
+});
+
+// ===========================================================================
+// TASK 3 — a file the previous build wrote still restores, unchanged
+// ===========================================================================
+//
+// The fixture was WRITTEN BY THE PREVIOUS BUILD, not hand-typed here: it was
+// generated by running that build's exportBackup() (git HEAD before this
+// change) against a seeded database. It has no manifest, its keys are in
+// insertion order rather than sorted, and every row in it is the shape that
+// build wrote. If any of the new validation ever rejects it, the change is
+// wrong, not the fixture.
+
+const LEGACY_FIXTURE = readFileSync(
+  fileURLToPath(new URL('./fixtures/backup-v1-no-manifest.json', import.meta.url)),
+  'utf8',
+);
+
+/*  Hand-calculated from that fixture:
+ *    acc-gbp  150,000 − 4,567 + 250,000        = 395,433   (£3,954.33)
+ *    acc-usd        0 + 12,700                 =  12,700   ($127.00 → £100.00)
+ *    acc-old   25,000 − 5,000 = 20,000, ARCHIVED ⇒ not counted
+ *    net worth 395,433 + 10,000                = 405,433   (£4,054.33)
+ */
+const LEGACY_NET_WORTH = 405_433;
+
+describe('a backup written before manifests existed', () => {
+  const legacy = (): BackupFile => JSON.parse(LEGACY_FIXTURE) as BackupFile;
+
+  it('has no manifest and its keys are in the old order — this is the old format', () => {
+    const parsed = legacy() as unknown as Record<string, unknown>;
+    expect('manifest' in parsed).toBe(false);
+    expect(Object.keys(parsed)).toEqual(['app', 'schemaVersion', 'exportedAt', 'tables']);
+  });
+
+  it('is still accepted by validation', () => {
+    expectOk(validateBackup(legacy()));
+  });
+
+  it('restores every row exactly, and says it carried no self-check', async () => {
+    await seedAll(); // there is data here to be replaced
+    const file = legacy();
+    const report = await restoreBackup(file);
+
+    expect(report.verified).toBe(false);
+    expect(report.claimed).toBeNull();
+    expect(report.recomputed).toBeNull();
+
+    // Every table matches the file's OWN rows, field for field.
+    for (const name of DATA_TABLES) {
+      expect({ [name]: sortById((await db.table(name).toArray()) as { id: string }[]) }).toEqual({
+        [name]: sortById(file.tables[name] as { id: string }[]),
+      });
+    }
+    // The settings row keeps its one documented exception (C8): the book-level
+    // half comes from the file, the device-local half stays this browser's.
+    expect((await getSettings()).baseCurrency).toBe('GBP');
+  });
+
+  it('can still be described afterwards, recomputed from the restored data', async () => {
+    await restoreBackup(legacy());
+    const m = await bookManifest();
+    expect(m.rowCounts.accounts).toBe(3);
+    expect(m.rowCounts.transactions).toBe(4);
+    expect(m.netWorth.totalMinor).toBe(LEGACY_NET_WORTH);
+    expect(m.netWorth.totalMinor).toBe((await netWorth()).totalBaseMinor);
+    expect(m.accounts.find((a) => a.id === 'acc-old')!.counted).toBe(false);
+    expect(summariseManifest(m)).toBe('3 accounts, 4 transactions, net worth £4,054.33');
+  });
+
+  it('gains a manifest the moment it is exported again', async () => {
+    await restoreBackup(legacy());
+    const file = await exportBackup();
+    expect(file.manifest!.netWorth.totalMinor).toBe(LEGACY_NET_WORTH);
+    // …and that file verifies on the way back in.
+    await clearAll();
+    expect((await restoreBackup(reparse(file))).verified).toBe(true);
+  });
+
+  it('a file with no manifest is exactly as restorable as it ever was', async () => {
+    // The sync engine builds one of these on every pull (it carries no
+    // manifest by construction), so this is not only about old files.
+    await seedAll();
+    const { manifest: _dropped, ...noManifest } = await exportBackup();
+    await clearAll();
+    const report = await restoreBackup(noManifest as BackupFile);
+    expect(report.verified).toBe(false);
+    expect(await db.transactions.count()).toBe(seedTransactions.length);
+  });
+});
+
+// ===========================================================================
+// TASK 4 — what the screen says after an export and after a restore
+// ===========================================================================
+
+describe('exportVerifiedBackup', () => {
+  it('proves the bytes it is about to hand over', async () => {
+    await seedAll();
+    const { file, json, manifest, contentHash } = await exportVerifiedBackup();
+    expect(json).toBe(serializeBackup(file));
+    expect(manifest.netWorth.totalMinor).toBe(SEED_NET_WORTH);
+    expect(contentHash).toBe(canonicalBackupHash(JSON.parse(json) as BackupFile));
+    expect(contentHash).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('refuses to hand over a file whose own figures do not add up', async () => {
+    await seedAll();
+    // Simulate serialisation losing a row: the manifest is computed from the
+    // rows in memory, the check is done on the parsed bytes, so the two
+    // disagree exactly as they would if the write had truncated.
+    const good = await exportBackup();
+    const parse = vi.spyOn(JSON, 'parse').mockImplementationOnce((text: string) => {
+      const f = JSON.parse(text) as BackupFile;
+      f.tables.transactions = (f.tables.transactions as unknown[]).slice(1);
+      return f;
+    });
+    await expect(exportVerifiedBackup()).rejects.toThrow(/does not describe its own contents/);
+    parse.mockRestore();
+    expect(good.manifest).toBeDefined(); // …and the untouched path still works
+  });
+
+  it('downloadVerifiedBackup reports the figures alongside the outcome', async () => {
+    await seedAll();
+    const { result, manifest, contentHash, fileName, written } = await withBrowser(
+      { picker: 'saved' },
+      async (seen) => ({ ...(await downloadVerifiedBackup()), written: seen.written }),
+    );
+    expect(result).toBe('saved');
+    expect(fileName).toMatch(/^mymoney-backup-\d{4}-\d{2}-\d{2}\.json$/);
+    expect(summariseManifest(manifest)).toBe('2 accounts, 6 transactions, net worth £3,863.38');
+    const delivered = JSON.parse(written[0]!) as BackupFile;
+    expect(delivered.manifest).toEqual(manifest);
+    expect(canonicalBackupHash(delivered)).toBe(contentHash);
+  });
+});
+
+describe('bookManifest', () => {
+  it('describes the live database, independently of any file', async () => {
+    await seedAll();
+    const m = await bookManifest();
+    expect(m.netWorth.totalMinor).toBe(SEED_NET_WORTH);
+    expect(m.rowCounts.transactions).toBe(seedTransactions.length);
+    // It is a fresh read, so it moves when the book moves.
+    await db.transactions.delete('tx-groc');
+    expect((await bookManifest()).rowCounts.transactions).toBe(seedTransactions.length - 1);
+  });
+});
+
+describe('what the restore screen says', () => {
+  it('promises a check only when the file can be held to one', async () => {
+    await seedAll();
+    const file = await exportBackup();
+    const said = selfCheckNote(file.manifest);
+    expect(said).toContain('2 accounts, 6 transactions, net worth £3,863.38');
+    expect(said).toContain('refused');
+  });
+
+  it('says plainly when a file carries nothing to check', () => {
+    const said = selfCheckNote(undefined);
+    expect(said).toContain('no figures to check against');
+    expect(said).toContain('restore exactly as it always has');
+    // Nothing in it may read as a promise that the data was checked.
+    expect(said).not.toMatch(/verified|checked out|proved/i);
+  });
+
+  it('does not call an unchecked restore verified', () => {
+    expect(restoredNote(true)).toContain('every one of them agreed');
+    expect(restoredNote(false)).toContain('nothing was verified');
+  });
+});
+
+// The wiring itself (no DOM in this suite — the same source-reading approach
+// tests/onboarding.test.ts uses).
+describe('the Settings screen is wired to the verified paths', () => {
+  const source = (name: string): string =>
+    readFileSync(fileURLToPath(new URL(`../src/ui/settings/${name}`, import.meta.url)), 'utf8');
+
+  it('exports through the path that verifies the bytes', () => {
+    const text = source('BackupSection.tsx');
+    expect(text).toContain('downloadVerifiedBackup');
+    expect(text).not.toMatch(/\bdownloadBackup\b\(/);
+    // …and states what was written, plus the fingerprint of it.
+    expect(text).toContain('summariseManifest(manifest)');
+    expect(text).toContain('written.hash');
+  });
+
+  it('states the recomputed figures after a restore instead of navigating away', () => {
+    const text = source('BackupSection.tsx');
+    expect(text).toContain('summariseManifest(restored.manifest)');
+    expect(text).toContain('restoredNote(restored.verified)');
+  });
+
+  it('warns before restoring a file that cannot check itself', () => {
+    expect(source('RestoreFromBackup.tsx')).toContain('selfCheckNote(pending.manifest)');
+  });
+
+  it('recomputes from the database rather than reporting the file back', () => {
+    expect(source('RestoreFromBackup.tsx')).toContain('await bookManifest()');
   });
 });

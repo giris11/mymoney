@@ -1,0 +1,2915 @@
+{
+  "oracleVersion": 1,
+  "area": "import",
+  "title": "Import: dedupe keys, near-duplicate decisions, date and decimal detection, MoneyWiz layouts",
+  "generatedFrom": [
+    "src/import/dedupe.ts",
+    "src/import/generic.ts",
+    "src/import/moneywiz.ts",
+    "src/import/moneywizReport.ts"
+  ],
+  "notes": [
+    "Date format and decimal style are detected ONCE per file over the whole column — never per row, so one file can never mix interpretations.",
+    "The dedupe key is a readable string, not a digest: accountId|date|amountMinor|normalised-payee-or-description (D10).",
+    "An EXACT duplicate (identical key) is auto-skipped and counted. A NEAR duplicate (same account, same amount, ±1 day, similar payee) is always a human decision.",
+    "An unparseable date or amount makes the ROW an error; it is never rounded, shifted or guessed into shape.",
+    "MoneyWiz Report detection MUST be tested before flat MoneyWiz detection: a Report file passes both.",
+    "In the Report layout the account header row carries the account CURRENCY in its “Account” column, and openingBalance = statedBalance − Σ(rows) — refused (null) when any of that account’s rows will not import.",
+    "Ops named import.reportOpeningBalances / import.reportCategoryPaths / import.reportRows are PROJECTIONS of parseMoneyWizReportCsv’s single result, not separate functions.",
+    "Warning text is English prose for a human; a re-implementation is bound by when a warning is raised, not by its wording."
+  ],
+  "cases": [
+    {
+      "id": "import.normalize.punctuation",
+      "describes": "case folded, punctuation dropped, whitespace collapsed and trimmed",
+      "op": "import.normalizeForHash",
+      "input": {
+        "input": "Tesco Extra #123 "
+      },
+      "expect": {
+        "value": "tesco extra 123"
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.normalize.spacing",
+      "describes": "runs of whitespace collapse to one space",
+      "op": "import.normalizeForHash",
+      "input": {
+        "input": "  CARD   PURCHASE  "
+      },
+      "expect": {
+        "value": "card purchase"
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.normalize.accents",
+      "describes": "letters keep their accents — only punctuation and symbols go",
+      "op": "import.normalizeForHash",
+      "input": {
+        "input": "Café Paris"
+      },
+      "expect": {
+        "value": "café paris"
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.normalize.symbols",
+      "describes": "a reference code loses its symbols but keeps its digits",
+      "op": "import.normalizeForHash",
+      "input": {
+        "input": "AMZN Mktp UK*2K4L9"
+      },
+      "expect": {
+        "value": "amzn mktp uk2k4l9"
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.normalize.digits-only",
+      "describes": "a purely numeric reference keeps every digit",
+      "op": "import.normalizeForHash",
+      "input": {
+        "input": "12345"
+      },
+      "expect": {
+        "value": "12345"
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.normalize.empty",
+      "describes": "whitespace normalises to the empty key",
+      "op": "import.normalizeForHash",
+      "input": {
+        "input": "   "
+      },
+      "expect": {
+        "value": ""
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.dedupe-hash.shape",
+      "describes": "the dedupe key is the readable string accountId|date|amountMinor|normalised-payee (D10) — not a digest, so a mismatch can be read by a human",
+      "op": "import.makeDedupeHash",
+      "input": {
+        "accountId": "acc1",
+        "date": "2026-03-05",
+        "amountMinor": -4567,
+        "payeeOrDescription": "Tesco Extra #123"
+      },
+      "expect": {
+        "value": "acc1|2026-03-05|-4567|tesco extra 123"
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.dedupe-hash.sign-matters",
+      "describes": "the sign is part of the key: a £45.67 refund is not a duplicate of a £45.67 charge",
+      "op": "import.makeDedupeHash",
+      "input": {
+        "accountId": "acc1",
+        "date": "2026-03-05",
+        "amountMinor": 4567,
+        "payeeOrDescription": "Tesco"
+      },
+      "expect": {
+        "value": "acc1|2026-03-05|4567|tesco"
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.dedupe-hash.no-payee",
+      "describes": "with no payee the description takes its place, so a re-import matches a manual entry made the same way",
+      "op": "import.makeDedupeHash",
+      "input": {
+        "accountId": "acc1",
+        "date": "2026-03-05",
+        "amountMinor": -1000,
+        "payeeOrDescription": ""
+      },
+      "expect": {
+        "value": "acc1|2026-03-05|-1000|"
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.levenshtein.classic",
+      "describes": "the textbook kitten/sitting distance of three edits",
+      "op": "import.levenshtein",
+      "input": {
+        "a": "kitten",
+        "b": "sitting"
+      },
+      "expect": {
+        "value": 3
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.levenshtein.identical",
+      "describes": "identical strings are distance 0",
+      "op": "import.levenshtein",
+      "input": {
+        "a": "tesco",
+        "b": "tesco"
+      },
+      "expect": {
+        "value": 0
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.levenshtein.empty-left",
+      "describes": "an empty string is its length away",
+      "op": "import.levenshtein",
+      "input": {
+        "a": "",
+        "b": "abc"
+      },
+      "expect": {
+        "value": 3
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.levenshtein.one-edit",
+      "describes": "one deleted character is one edit away",
+      "op": "import.levenshtein",
+      "input": {
+        "a": "amazon",
+        "b": "amazn"
+      },
+      "expect": {
+        "value": 1
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.levenshtein.transposition",
+      "describes": "a transposition costs TWO edits — this is Levenshtein, not Damerau-Levenshtein",
+      "op": "import.levenshtein",
+      "input": {
+        "a": "ab",
+        "b": "ba"
+      },
+      "expect": {
+        "value": 2
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.similar.case",
+      "describes": "normalised equality — case never distinguishes payees",
+      "op": "import.similarPayee",
+      "input": {
+        "a": "Tesco",
+        "b": "TESCO"
+      },
+      "expect": {
+        "value": true
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.similar.containment",
+      "describes": "the shorter contained in the longer (minimum 3 characters)",
+      "op": "import.similarPayee",
+      "input": {
+        "a": "Tesco Extra",
+        "b": "Tesco"
+      },
+      "expect": {
+        "value": true
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.similar.containment-too-short",
+      "describes": "containment needs at least 3 characters, and “ab” is six edits from “ab store” — well outside the 25% threshold, so these are different payees",
+      "op": "import.similarPayee",
+      "input": {
+        "a": "AB Store",
+        "b": "AB"
+      },
+      "expect": {
+        "value": false
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.similar.typo",
+      "describes": "within max(1, 25% of the longer length) edits",
+      "op": "import.similarPayee",
+      "input": {
+        "a": "Amazon",
+        "b": "Amazn"
+      },
+      "expect": {
+        "value": true
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.similar.different",
+      "describes": "plainly different payees do not match",
+      "op": "import.similarPayee",
+      "input": {
+        "a": "Tesco",
+        "b": "Sainsburys"
+      },
+      "expect": {
+        "value": false
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.similar.punctuation",
+      "describes": "the same payee written with and without symbols",
+      "op": "import.similarPayee",
+      "input": {
+        "a": "AMZN Mktp UK*2K4L9",
+        "b": "AMZN Mktp UK 2K4L9"
+      },
+      "expect": {
+        "value": true
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.similar.both-empty",
+      "describes": "two blank payees are “the same” — the date and amount then carry the decision",
+      "op": "import.similarPayee",
+      "input": {
+        "a": "",
+        "b": ""
+      },
+      "expect": {
+        "value": true
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.similar.one-empty",
+      "describes": "a blank payee never matches a named one",
+      "op": "import.similarPayee",
+      "input": {
+        "a": "Tesco",
+        "b": ""
+      },
+      "expect": {
+        "value": false
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.duplicate.exact",
+      "describes": "an identical dedupe key is an EXACT duplicate — auto-skipped, with a count shown",
+      "op": "import.checkDuplicate",
+      "input": {
+        "candidate": {
+          "accountId": "acc1",
+          "date": "2026-03-05",
+          "amountMinor": -4567,
+          "payeeOrDescription": "Tesco"
+        },
+        "existing": [
+          {
+            "id": "e1",
+            "accountId": "acc1",
+            "date": "2026-03-05",
+            "amountMinor": -4567,
+            "payeeName": "Tesco"
+          },
+          {
+            "id": "e2",
+            "accountId": "acc1",
+            "date": "2026-03-06",
+            "amountMinor": -1200,
+            "payeeName": "Costa Coffee"
+          },
+          {
+            "id": "e3",
+            "accountId": "acc1",
+            "date": "2026-03-07",
+            "amountMinor": -1200,
+            "payeeName": "Costa Coffee"
+          },
+          {
+            "id": "e4",
+            "accountId": "acc2",
+            "date": "2026-03-05",
+            "amountMinor": -4567,
+            "payeeName": "Tesco"
+          }
+        ]
+      },
+      "expect": {
+        "exact": true,
+        "nearDuplicateOfId": null
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.duplicate.exact-differently-written",
+      "describes": "the key is normalised, so “TESCO!” on the same day for the same amount is still exact",
+      "op": "import.checkDuplicate",
+      "input": {
+        "candidate": {
+          "accountId": "acc1",
+          "date": "2026-03-05",
+          "amountMinor": -4567,
+          "payeeOrDescription": "TESCO!"
+        },
+        "existing": [
+          {
+            "id": "e1",
+            "accountId": "acc1",
+            "date": "2026-03-05",
+            "amountMinor": -4567,
+            "payeeName": "Tesco"
+          },
+          {
+            "id": "e2",
+            "accountId": "acc1",
+            "date": "2026-03-06",
+            "amountMinor": -1200,
+            "payeeName": "Costa Coffee"
+          },
+          {
+            "id": "e3",
+            "accountId": "acc1",
+            "date": "2026-03-07",
+            "amountMinor": -1200,
+            "payeeName": "Costa Coffee"
+          },
+          {
+            "id": "e4",
+            "accountId": "acc2",
+            "date": "2026-03-05",
+            "amountMinor": -4567,
+            "payeeName": "Tesco"
+          }
+        ]
+      },
+      "expect": {
+        "exact": true,
+        "nearDuplicateOfId": null
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.duplicate.near-next-day",
+      "describes": "same account, same amount, one day apart, similar payee ⇒ NEAR duplicate: flagged for a human, never dropped and never doubled",
+      "op": "import.checkDuplicate",
+      "input": {
+        "candidate": {
+          "accountId": "acc1",
+          "date": "2026-03-04",
+          "amountMinor": -4567,
+          "payeeOrDescription": "Tesco Extra"
+        },
+        "existing": [
+          {
+            "id": "e1",
+            "accountId": "acc1",
+            "date": "2026-03-05",
+            "amountMinor": -4567,
+            "payeeName": "Tesco"
+          },
+          {
+            "id": "e2",
+            "accountId": "acc1",
+            "date": "2026-03-06",
+            "amountMinor": -1200,
+            "payeeName": "Costa Coffee"
+          },
+          {
+            "id": "e3",
+            "accountId": "acc1",
+            "date": "2026-03-07",
+            "amountMinor": -1200,
+            "payeeName": "Costa Coffee"
+          },
+          {
+            "id": "e4",
+            "accountId": "acc2",
+            "date": "2026-03-05",
+            "amountMinor": -4567,
+            "payeeName": "Tesco"
+          }
+        ]
+      },
+      "expect": {
+        "exact": false,
+        "nearDuplicateOfId": "e1"
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.duplicate.near-prefers-same-day",
+      "describes": "with both a same-day and a next-day candidate, the SAME-DAY one is reported",
+      "op": "import.checkDuplicate",
+      "input": {
+        "candidate": {
+          "accountId": "acc1",
+          "date": "2026-03-07",
+          "amountMinor": -1200,
+          "payeeOrDescription": "Costa"
+        },
+        "existing": [
+          {
+            "id": "e1",
+            "accountId": "acc1",
+            "date": "2026-03-05",
+            "amountMinor": -4567,
+            "payeeName": "Tesco"
+          },
+          {
+            "id": "e2",
+            "accountId": "acc1",
+            "date": "2026-03-06",
+            "amountMinor": -1200,
+            "payeeName": "Costa Coffee"
+          },
+          {
+            "id": "e3",
+            "accountId": "acc1",
+            "date": "2026-03-07",
+            "amountMinor": -1200,
+            "payeeName": "Costa Coffee"
+          },
+          {
+            "id": "e4",
+            "accountId": "acc2",
+            "date": "2026-03-05",
+            "amountMinor": -4567,
+            "payeeName": "Tesco"
+          }
+        ]
+      },
+      "expect": {
+        "exact": false,
+        "nearDuplicateOfId": "e3"
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.duplicate.two-days-apart",
+      "describes": "two days apart is not a near duplicate — the window is ±1 day",
+      "op": "import.checkDuplicate",
+      "input": {
+        "candidate": {
+          "accountId": "acc1",
+          "date": "2026-03-03",
+          "amountMinor": -4567,
+          "payeeOrDescription": "Tesco"
+        },
+        "existing": [
+          {
+            "id": "e1",
+            "accountId": "acc1",
+            "date": "2026-03-05",
+            "amountMinor": -4567,
+            "payeeName": "Tesco"
+          },
+          {
+            "id": "e2",
+            "accountId": "acc1",
+            "date": "2026-03-06",
+            "amountMinor": -1200,
+            "payeeName": "Costa Coffee"
+          },
+          {
+            "id": "e3",
+            "accountId": "acc1",
+            "date": "2026-03-07",
+            "amountMinor": -1200,
+            "payeeName": "Costa Coffee"
+          },
+          {
+            "id": "e4",
+            "accountId": "acc2",
+            "date": "2026-03-05",
+            "amountMinor": -4567,
+            "payeeName": "Tesco"
+          }
+        ]
+      },
+      "expect": {
+        "exact": false,
+        "nearDuplicateOfId": null
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.duplicate.different-amount",
+      "describes": "a penny different is a different transaction",
+      "op": "import.checkDuplicate",
+      "input": {
+        "candidate": {
+          "accountId": "acc1",
+          "date": "2026-03-05",
+          "amountMinor": -4568,
+          "payeeOrDescription": "Tesco"
+        },
+        "existing": [
+          {
+            "id": "e1",
+            "accountId": "acc1",
+            "date": "2026-03-05",
+            "amountMinor": -4567,
+            "payeeName": "Tesco"
+          },
+          {
+            "id": "e2",
+            "accountId": "acc1",
+            "date": "2026-03-06",
+            "amountMinor": -1200,
+            "payeeName": "Costa Coffee"
+          },
+          {
+            "id": "e3",
+            "accountId": "acc1",
+            "date": "2026-03-07",
+            "amountMinor": -1200,
+            "payeeName": "Costa Coffee"
+          },
+          {
+            "id": "e4",
+            "accountId": "acc2",
+            "date": "2026-03-05",
+            "amountMinor": -4567,
+            "payeeName": "Tesco"
+          }
+        ]
+      },
+      "expect": {
+        "exact": false,
+        "nearDuplicateOfId": null
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.duplicate.opposite-sign",
+      "describes": "a refund of the same magnitude is not a duplicate of the charge",
+      "op": "import.checkDuplicate",
+      "input": {
+        "candidate": {
+          "accountId": "acc1",
+          "date": "2026-03-05",
+          "amountMinor": 4567,
+          "payeeOrDescription": "Tesco"
+        },
+        "existing": [
+          {
+            "id": "e1",
+            "accountId": "acc1",
+            "date": "2026-03-05",
+            "amountMinor": -4567,
+            "payeeName": "Tesco"
+          },
+          {
+            "id": "e2",
+            "accountId": "acc1",
+            "date": "2026-03-06",
+            "amountMinor": -1200,
+            "payeeName": "Costa Coffee"
+          },
+          {
+            "id": "e3",
+            "accountId": "acc1",
+            "date": "2026-03-07",
+            "amountMinor": -1200,
+            "payeeName": "Costa Coffee"
+          },
+          {
+            "id": "e4",
+            "accountId": "acc2",
+            "date": "2026-03-05",
+            "amountMinor": -4567,
+            "payeeName": "Tesco"
+          }
+        ]
+      },
+      "expect": {
+        "exact": false,
+        "nearDuplicateOfId": null
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.duplicate.other-account",
+      "describes": "the same purchase on a DIFFERENT account is not a duplicate — acc2 holds an identical row and is ignored",
+      "op": "import.checkDuplicate",
+      "input": {
+        "candidate": {
+          "accountId": "acc1",
+          "date": "2026-03-08",
+          "amountMinor": -4567,
+          "payeeOrDescription": "Tesco"
+        },
+        "existing": [
+          {
+            "id": "e1",
+            "accountId": "acc1",
+            "date": "2026-03-05",
+            "amountMinor": -4567,
+            "payeeName": "Tesco"
+          },
+          {
+            "id": "e2",
+            "accountId": "acc1",
+            "date": "2026-03-06",
+            "amountMinor": -1200,
+            "payeeName": "Costa Coffee"
+          },
+          {
+            "id": "e3",
+            "accountId": "acc1",
+            "date": "2026-03-07",
+            "amountMinor": -1200,
+            "payeeName": "Costa Coffee"
+          },
+          {
+            "id": "e4",
+            "accountId": "acc2",
+            "date": "2026-03-05",
+            "amountMinor": -4567,
+            "payeeName": "Tesco"
+          }
+        ]
+      },
+      "expect": {
+        "exact": false,
+        "nearDuplicateOfId": null
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.duplicate.dissimilar-payee",
+      "describes": "same day and same amount but an unrelated payee is a genuine second transaction",
+      "op": "import.checkDuplicate",
+      "input": {
+        "candidate": {
+          "accountId": "acc1",
+          "date": "2026-03-05",
+          "amountMinor": -4567,
+          "payeeOrDescription": "Sainsburys"
+        },
+        "existing": [
+          {
+            "id": "e1",
+            "accountId": "acc1",
+            "date": "2026-03-05",
+            "amountMinor": -4567,
+            "payeeName": "Tesco"
+          },
+          {
+            "id": "e2",
+            "accountId": "acc1",
+            "date": "2026-03-06",
+            "amountMinor": -1200,
+            "payeeName": "Costa Coffee"
+          },
+          {
+            "id": "e3",
+            "accountId": "acc1",
+            "date": "2026-03-07",
+            "amountMinor": -1200,
+            "payeeName": "Costa Coffee"
+          },
+          {
+            "id": "e4",
+            "accountId": "acc2",
+            "date": "2026-03-05",
+            "amountMinor": -4567,
+            "payeeName": "Tesco"
+          }
+        ]
+      },
+      "expect": {
+        "exact": false,
+        "nearDuplicateOfId": null
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.date.dmy-unambiguous",
+      "describes": "a first component above 12 settles it as dd/mm",
+      "op": "import.parseDateString",
+      "input": {
+        "value": "25/06/2026",
+        "format": "auto"
+      },
+      "expect": {
+        "date": "2026-06-25"
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.date.mdy-unambiguous",
+      "describes": "a middle component above 12 settles it as mm/dd",
+      "op": "import.parseDateString",
+      "input": {
+        "value": "06/25/2026",
+        "format": "auto"
+      },
+      "expect": {
+        "date": "2026-06-25"
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.date.ambiguous-defaults-dmy",
+      "describes": "ambiguous ⇒ en-GB dd/mm (D20) — the 5th of June",
+      "op": "import.parseDateString",
+      "input": {
+        "value": "05/06/2026",
+        "format": "auto"
+      },
+      "expect": {
+        "date": "2026-06-05"
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.date.ambiguous-forced-mdy",
+      "describes": "the caller can override, because an all-ambiguous US export is otherwise unfixable — the 6th of May",
+      "op": "import.parseDateString",
+      "input": {
+        "value": "05/06/2026",
+        "format": "MDY"
+      },
+      "expect": {
+        "date": "2026-05-06"
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.date.iso",
+      "describes": "a 4-digit lead is ISO order",
+      "op": "import.parseDateString",
+      "input": {
+        "value": "2026-06-25",
+        "format": "auto"
+      },
+      "expect": {
+        "date": "2026-06-25"
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.date.slash-ymd",
+      "describes": "a 4-digit lead means ISO order even with slash separators",
+      "op": "import.parseDateString",
+      "input": {
+        "value": "2026/06/25",
+        "format": "auto"
+      },
+      "expect": {
+        "date": "2026-06-25"
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.date.dots",
+      "describes": "dot separators, as continental exports write them",
+      "op": "import.parseDateString",
+      "input": {
+        "value": "25.06.2026",
+        "format": "auto"
+      },
+      "expect": {
+        "date": "2026-06-25"
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.date.dashes",
+      "describes": "dash separators in day-month-year order",
+      "op": "import.parseDateString",
+      "input": {
+        "value": "25-06-2026",
+        "format": "auto"
+      },
+      "expect": {
+        "date": "2026-06-25"
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.date.two-digit-year",
+      "describes": "a 2-digit year is expanded, not treated as year 26",
+      "op": "import.parseDateString",
+      "input": {
+        "value": "25/06/26",
+        "format": "auto"
+      },
+      "expect": {
+        "date": "2026-06-25"
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.date.pivot-49",
+      "describes": "the 2-digit-year pivot: 49 ⇒ 2049",
+      "op": "import.parseDateString",
+      "input": {
+        "value": "01/01/49",
+        "format": "DMY"
+      },
+      "expect": {
+        "date": "2049-01-01"
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.date.pivot-50",
+      "describes": "and the other side of the pivot: 50 becomes 1950",
+      "op": "import.parseDateString",
+      "input": {
+        "value": "01/01/50",
+        "format": "DMY"
+      },
+      "expect": {
+        "date": "1950-01-01"
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.date.with-time",
+      "describes": "a trailing time component is dropped — the calendar date is what is stored",
+      "op": "import.parseDateString",
+      "input": {
+        "value": "25/06/2026 14:30",
+        "format": "auto"
+      },
+      "expect": {
+        "date": "2026-06-25"
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.date.month-name-short",
+      "describes": "a spelled-out short month between day and year",
+      "op": "import.parseDateString",
+      "input": {
+        "value": "3 Jun 2026",
+        "format": "auto"
+      },
+      "expect": {
+        "date": "2026-06-03"
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.date.month-name-long",
+      "describes": "with the month spelled out",
+      "op": "import.parseDateString",
+      "input": {
+        "value": "3 September 2026",
+        "format": "auto"
+      },
+      "expect": {
+        "date": "2026-09-03"
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.date.month-name-first",
+      "describes": "a US-style month-name-first date with a comma",
+      "op": "import.parseDateString",
+      "input": {
+        "value": "Jun 3, 2026",
+        "format": "auto"
+      },
+      "expect": {
+        "date": "2026-06-03"
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.date.leap-day-valid",
+      "describes": "29 February exists in a leap year",
+      "op": "import.parseDateString",
+      "input": {
+        "value": "29/02/2024",
+        "format": "DMY"
+      },
+      "expect": {
+        "date": "2024-02-29"
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.date.leap-day-invalid",
+      "describes": "and does not in a common year — the row is refused, not shifted to 1 March",
+      "op": "import.parseDateString",
+      "input": {
+        "value": "29/02/2023",
+        "format": "DMY"
+      },
+      "expect": {
+        "date": null
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.date.impossible",
+      "describes": "an impossible date is refused",
+      "op": "import.parseDateString",
+      "input": {
+        "value": "31/02/2026",
+        "format": "DMY"
+      },
+      "expect": {
+        "date": null
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.date.three-digit-year",
+      "describes": "a 3-digit year is refused rather than guessed at",
+      "op": "import.parseDateString",
+      "input": {
+        "value": "25/06/226",
+        "format": "auto"
+      },
+      "expect": {
+        "date": null
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.date.rubbish",
+      "describes": "text that is not a date at all yields no date",
+      "op": "import.parseDateString",
+      "input": {
+        "value": "not a date",
+        "format": "auto"
+      },
+      "expect": {
+        "date": null
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.date.empty",
+      "describes": "an empty cell has no date, and the row becomes an error",
+      "op": "import.parseDateString",
+      "input": {
+        "value": "",
+        "format": "auto"
+      },
+      "expect": {
+        "date": null
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.detect-date.dmy",
+      "describes": "ONE value with a first component above 12 settles the WHOLE column as dd/mm",
+      "op": "import.detectDateFormat",
+      "input": {
+        "values": [
+          "05/06/2026",
+          "25/06/2026",
+          "01/02/2026"
+        ]
+      },
+      "expect": {
+        "value": "DMY"
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.detect-date.mdy",
+      "describes": "and one with a middle component above 12 settles it as mm/dd",
+      "op": "import.detectDateFormat",
+      "input": {
+        "values": [
+          "05/06/2026",
+          "06/25/2026",
+          "01/02/2026"
+        ]
+      },
+      "expect": {
+        "value": "MDY"
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.detect-date.ymd",
+      "describes": "a 4-digit lead ANYWHERE in the column wins outright",
+      "op": "import.detectDateFormat",
+      "input": {
+        "values": [
+          "05/06/2026",
+          "2026-06-25"
+        ]
+      },
+      "expect": {
+        "value": "YMD"
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.detect-date.ambiguous",
+      "describes": "a column that stays ambiguous falls back to en-GB dd/mm",
+      "op": "import.detectDateFormat",
+      "input": {
+        "values": [
+          "05/06/2026",
+          "07/08/2026"
+        ]
+      },
+      "expect": {
+        "value": "DMY"
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.detect-date.empty",
+      "describes": "an empty column falls back too",
+      "op": "import.detectDateFormat",
+      "input": {
+        "values": []
+      },
+      "expect": {
+        "value": "DMY"
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.detect-date.ignores-unparseable",
+      "describes": "unreadable values are ignored by the vote rather than derailing it",
+      "op": "import.detectDateFormat",
+      "input": {
+        "values": [
+          "not a date",
+          "25/06/2026"
+        ]
+      },
+      "expect": {
+        "value": "DMY"
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.detect-decimal.comma-file",
+      "describes": "dots group and the comma is the decimal",
+      "op": "import.detectDecimalStyle",
+      "input": {
+        "values": [
+          "-45,67",
+          "1.234,56",
+          "2.500,00"
+        ],
+        "decimals": 2
+      },
+      "expect": {
+        "value": "comma"
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.detect-decimal.dot-file",
+      "describes": "commas group and the dot is the decimal",
+      "op": "import.detectDecimalStyle",
+      "input": {
+        "values": [
+          "1,234.56",
+          "45.67"
+        ],
+        "decimals": 2
+      },
+      "expect": {
+        "value": "dot"
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.detect-decimal.thousands-comma",
+      "describes": "“1,234” with THREE trailing digits is grouping, not a decimal — so the file is dot style",
+      "op": "import.detectDecimalStyle",
+      "input": {
+        "values": [
+          "1,234",
+          "5,678"
+        ],
+        "decimals": 2
+      },
+      "expect": {
+        "value": "dot"
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.detect-decimal.thousands-dot",
+      "describes": "and “1.234” with three trailing digits in a 2-decimal currency is dot-grouping ⇒ comma style",
+      "op": "import.detectDecimalStyle",
+      "input": {
+        "values": [
+          "1.234",
+          "5.678"
+        ],
+        "decimals": 2
+      },
+      "expect": {
+        "value": "comma"
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.detect-decimal.three-decimal-currency",
+      "describes": "the SAME string in a 3-decimal currency is a plain amount ⇒ dot style — the currency decides",
+      "op": "import.detectDecimalStyle",
+      "input": {
+        "values": [
+          "12.345"
+        ],
+        "decimals": 3
+      },
+      "expect": {
+        "value": "dot"
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.detect-decimal.zero-decimal-currency",
+      "describes": "in a 0-decimal currency (JPY) no separator can be a decimal point, so every one is grouping",
+      "op": "import.detectDecimalStyle",
+      "input": {
+        "values": [
+          "1.234"
+        ],
+        "decimals": 0
+      },
+      "expect": {
+        "value": "comma"
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.detect-decimal.no-separators",
+      "describes": "a column with no separators at all defaults to dot",
+      "op": "import.detectDecimalStyle",
+      "input": {
+        "values": [
+          "500",
+          "1200"
+        ],
+        "decimals": 2
+      },
+      "expect": {
+        "value": "dot"
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.detect-decimal.mixed-last-wins",
+      "describes": "when both separators appear in one value, the LAST one is the decimal",
+      "op": "import.detectDecimalStyle",
+      "input": {
+        "values": [
+          "1.234,56"
+        ],
+        "decimals": 2
+      },
+      "expect": {
+        "value": "comma"
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.amount.comma-decimal",
+      "describes": "a decimal comma with no grouping separator",
+      "op": "import.parseImportAmount",
+      "input": {
+        "value": "-45,67",
+        "currency": "EUR",
+        "decimal": "comma"
+      },
+      "expect": {
+        "minor": -4567
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.amount.comma-grouped",
+      "describes": "dot grouping with a decimal comma",
+      "op": "import.parseImportAmount",
+      "input": {
+        "value": "1.234,56",
+        "currency": "EUR",
+        "decimal": "comma"
+      },
+      "expect": {
+        "minor": 123456
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.amount.parens",
+      "describes": "accounting parentheses are negative",
+      "op": "import.parseImportAmount",
+      "input": {
+        "value": "(45.00)",
+        "currency": "GBP",
+        "decimal": "dot"
+      },
+      "expect": {
+        "minor": -4500
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.amount.symbol-grouped",
+      "describes": "symbol and grouping stripped",
+      "op": "import.parseImportAmount",
+      "input": {
+        "value": "£1,234.56",
+        "currency": "GBP",
+        "decimal": "dot"
+      },
+      "expect": {
+        "minor": 123456
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.amount.auto-thousands",
+      "describes": "auto: three trailing digits after a lone comma is GROUPING — £1,234.00, not £12.34",
+      "op": "import.parseImportAmount",
+      "input": {
+        "value": "1,234",
+        "currency": "GBP",
+        "decimal": "auto"
+      },
+      "expect": {
+        "minor": 123400
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.amount.auto-decimal-comma",
+      "describes": "auto: two trailing digits after a lone comma is a DECIMAL — £45.67",
+      "op": "import.parseImportAmount",
+      "input": {
+        "value": "45,67",
+        "currency": "GBP",
+        "decimal": "auto"
+      },
+      "expect": {
+        "minor": 4567
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.amount.jpy-whole",
+      "describes": "a 0-decimal currency takes the digits as they stand",
+      "op": "import.parseImportAmount",
+      "input": {
+        "value": "1200",
+        "currency": "JPY",
+        "decimal": "dot"
+      },
+      "expect": {
+        "minor": 1200
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.amount.jpy-fraction",
+      "describes": "and refuses a fraction rather than rounding it away",
+      "op": "import.parseImportAmount",
+      "input": {
+        "value": "1200.50",
+        "currency": "JPY",
+        "decimal": "dot"
+      },
+      "expect": {
+        "minor": null
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.amount.bhd-three",
+      "describes": "a 3-decimal currency keeps all three",
+      "op": "import.parseImportAmount",
+      "input": {
+        "value": "12.345",
+        "currency": "BHD",
+        "decimal": "dot"
+      },
+      "expect": {
+        "minor": 12345
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.amount.gbp-too-precise",
+      "describes": "more precision than the currency has is refused, so the row surfaces as an error",
+      "op": "import.parseImportAmount",
+      "input": {
+        "value": "12.3456",
+        "currency": "GBP",
+        "decimal": "dot"
+      },
+      "expect": {
+        "minor": null
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.amount.words",
+      "describes": "words in an amount column yield no amount, so the row errors",
+      "op": "import.parseImportAmount",
+      "input": {
+        "value": "twelve pounds",
+        "currency": "GBP",
+        "decimal": "auto"
+      },
+      "expect": {
+        "minor": null
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.amount.empty",
+      "describes": "an empty amount cell is refused rather than read as zero",
+      "op": "import.parseImportAmount",
+      "input": {
+        "value": "",
+        "currency": "GBP",
+        "decimal": "auto"
+      },
+      "expect": {
+        "minor": null
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.amount.stray-sign",
+      "describes": "a sign inside the number is refused",
+      "op": "import.parseImportAmount",
+      "input": {
+        "value": "1-2",
+        "currency": "GBP",
+        "decimal": "auto"
+      },
+      "expect": {
+        "minor": null
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.amount.negative-zero",
+      "describes": "a negative zero amount is plain zero",
+      "op": "import.parseImportAmount",
+      "input": {
+        "value": "-0.00",
+        "currency": "GBP",
+        "decimal": "dot"
+      },
+      "expect": {
+        "minor": 0
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.amount.trailing-code",
+      "describes": "a trailing ISO code is stripped",
+      "op": "import.parseImportAmount",
+      "input": {
+        "value": "45.67 GBP",
+        "currency": "GBP",
+        "decimal": "dot"
+      },
+      "expect": {
+        "minor": 4567
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.detect-format.report-overlaps-flat",
+      "describes": "THE PRECEDENCE TRAP: a Report file answers YES to the flat MoneyWiz test as well, so the Report test MUST be asked first — read with the flat parser, every account header row becomes a dateless transaction and no opening balance is ever derived",
+      "op": "import.detectFormat",
+      "input": {
+        "headers": [
+          "Name",
+          "Current balance",
+          "Account",
+          "Transfers",
+          "Description",
+          "Payee",
+          "Category",
+          "Date",
+          "Memo",
+          "Amount",
+          "Currency",
+          "Cheque N°",
+          "Tags",
+          "Balance"
+        ]
+      },
+      "expect": {
+        "isReport": true,
+        "isFlat": true,
+        "chosen": "moneywiz-report"
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.detect-format.flat",
+      "describes": "a flat MoneyWiz export has neither a Name nor a Current balance column, so the Report test cannot steal it",
+      "op": "import.detectFormat",
+      "input": {
+        "headers": [
+          "Account",
+          "Transfers",
+          "Description",
+          "Payee",
+          "Category",
+          "Date",
+          "Time",
+          "Memo",
+          "Amount",
+          "Currency",
+          "Check #",
+          "Tags",
+          "Balance"
+        ]
+      },
+      "expect": {
+        "isReport": false,
+        "isFlat": true,
+        "chosen": "moneywiz-flat"
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.detect-format.generic-bank",
+      "describes": "an ordinary bank CSV is neither, and goes to the mapped generic importer",
+      "op": "import.detectFormat",
+      "input": {
+        "headers": [
+          "Date",
+          "Description",
+          "Paid Out",
+          "Paid In",
+          "Balance"
+        ]
+      },
+      "expect": {
+        "isReport": false,
+        "isFlat": false,
+        "chosen": "generic-csv"
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.report.opening-balances",
+      "describes": "the reason this parser exists: opening balance = the file’s stated Current balance MINUS the sum of that account’s rows, which is order-independent and so immune to the export’s unreliable running-balance column",
+      "op": "import.reportOpeningBalances",
+      "input": {
+        "csv": "sep=,\n\"Name\",\"Current balance\",\"Account\",\"Transfers\",\"Description\",\"Payee\",\"Category\",\"Date\",\"Memo\",\"Amount\",\"Currency\",\"Cheque N°\",\"Tags\",\"Balance\"\n\"Everyday\",\"1,350.75\",\"GBP\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\"\n\"\",\"\",\"Everyday\",\"\",\"March salary\",\"Payroll\",\"Salary\",\"15/03/2026\",\"\",\"2,400.00\",\"GBP\",\"\",\"work;monthly\",\"2,400.00\"\n\"\",\"\",\"Everyday\",\"\",\"Weekly shop\",\"Grocer\",\"Food & Drink ► Groceries\",\"16/03/2026\",\"\",\"-85.40\",\"GBP\",\"\",\"\",\"2,314.60\"\n\"\",\"\",\"Everyday\",\"Savings\",\"To savings\",\"\",\"\",\"17/03/2026\",\"monthly\",\"-1,000.00\",\"GBP\",\"\",\"\",\"1,314.60\"\n\"Travel Wallet\",\"12,345.67\",\"TRY\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\"\n\"\",\"\",\"Travel Wallet\",\"\",\"Taxi\",\"Taxi Co\",\"Transport ► Taxi\",\"21/03/2026\",\"\",\"-1,234.56\",\"TRY\",\"\",\"travel\",\"11,111.11\"\n\"Yen Pocket\",\"5000\",\"JPY\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\"\n\"\",\"\",\"Yen Pocket\",\"\",\"Ramen\",\"Ramen Shop\",\"Food & Drink ► Dining\",\"22/03/2026\",\"\",\"-1200\",\"JPY\",\"\",\"\",\"3800\"\n"
+      },
+      "expect": {
+        "accounts": [
+          {
+            "name": "Everyday",
+            "currency": "GBP",
+            "currentBalanceMinor": 135075,
+            "openingBalanceMinor": 3615
+          },
+          {
+            "name": "Travel Wallet",
+            "currency": "TRY",
+            "currentBalanceMinor": 1234567,
+            "openingBalanceMinor": 1358023
+          },
+          {
+            "name": "Yen Pocket",
+            "currency": "JPY",
+            "currentBalanceMinor": 5000,
+            "openingBalanceMinor": 6200
+          }
+        ]
+      },
+      "provenance": "hand-calculated",
+      "note": "The account header row carries the account’s CURRENCY in the “Account” column — the trap this layout sets. Yen Pocket proves it: at 2 decimals its balance would be ¥50.00 and every figure a hundredfold wrong."
+    },
+    {
+      "id": "import.report.arrow-separator",
+      "describes": "the Report export separates category levels with “►”, not “>” — a parser that splits on “/” instead mints a top-level category called “Food & Drink ► Groceries”",
+      "op": "import.reportCategoryPaths",
+      "input": {
+        "csv": "sep=,\n\"Name\",\"Current balance\",\"Account\",\"Transfers\",\"Description\",\"Payee\",\"Category\",\"Date\",\"Memo\",\"Amount\",\"Currency\",\"Cheque N°\",\"Tags\",\"Balance\"\n\"Everyday\",\"1,350.75\",\"GBP\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\"\n\"\",\"\",\"Everyday\",\"\",\"March salary\",\"Payroll\",\"Salary\",\"15/03/2026\",\"\",\"2,400.00\",\"GBP\",\"\",\"work;monthly\",\"2,400.00\"\n\"\",\"\",\"Everyday\",\"\",\"Weekly shop\",\"Grocer\",\"Food & Drink ► Groceries\",\"16/03/2026\",\"\",\"-85.40\",\"GBP\",\"\",\"\",\"2,314.60\"\n\"\",\"\",\"Everyday\",\"Savings\",\"To savings\",\"\",\"\",\"17/03/2026\",\"monthly\",\"-1,000.00\",\"GBP\",\"\",\"\",\"1,314.60\"\n\"Travel Wallet\",\"12,345.67\",\"TRY\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\"\n\"\",\"\",\"Travel Wallet\",\"\",\"Taxi\",\"Taxi Co\",\"Transport ► Taxi\",\"21/03/2026\",\"\",\"-1,234.56\",\"TRY\",\"\",\"travel\",\"11,111.11\"\n\"Yen Pocket\",\"5000\",\"JPY\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\"\n\"\",\"\",\"Yen Pocket\",\"\",\"Ramen\",\"Ramen Shop\",\"Food & Drink ► Dining\",\"22/03/2026\",\"\",\"-1200\",\"JPY\",\"\",\"\",\"3800\"\n"
+      },
+      "expect": {
+        "paths": [
+          [
+            "Salary"
+          ],
+          [
+            "Food & Drink",
+            "Groceries"
+          ],
+          [],
+          [
+            "Transport",
+            "Taxi"
+          ],
+          [
+            "Food & Drink",
+            "Dining"
+          ]
+        ]
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.report.rows",
+      "describes": "the rows themselves: dates read as dd/mm, amounts scaled at the ACCOUNT’s currency (¥1200 is 1200 minor units), the transfer row naming its counterpart, and tags split on “;”",
+      "op": "import.reportRows",
+      "input": {
+        "csv": "sep=,\n\"Name\",\"Current balance\",\"Account\",\"Transfers\",\"Description\",\"Payee\",\"Category\",\"Date\",\"Memo\",\"Amount\",\"Currency\",\"Cheque N°\",\"Tags\",\"Balance\"\n\"Everyday\",\"1,350.75\",\"GBP\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\"\n\"\",\"\",\"Everyday\",\"\",\"March salary\",\"Payroll\",\"Salary\",\"15/03/2026\",\"\",\"2,400.00\",\"GBP\",\"\",\"work;monthly\",\"2,400.00\"\n\"\",\"\",\"Everyday\",\"\",\"Weekly shop\",\"Grocer\",\"Food & Drink ► Groceries\",\"16/03/2026\",\"\",\"-85.40\",\"GBP\",\"\",\"\",\"2,314.60\"\n\"\",\"\",\"Everyday\",\"Savings\",\"To savings\",\"\",\"\",\"17/03/2026\",\"monthly\",\"-1,000.00\",\"GBP\",\"\",\"\",\"1,314.60\"\n\"Travel Wallet\",\"12,345.67\",\"TRY\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\"\n\"\",\"\",\"Travel Wallet\",\"\",\"Taxi\",\"Taxi Co\",\"Transport ► Taxi\",\"21/03/2026\",\"\",\"-1,234.56\",\"TRY\",\"\",\"travel\",\"11,111.11\"\n\"Yen Pocket\",\"5000\",\"JPY\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\"\n\"\",\"\",\"Yen Pocket\",\"\",\"Ramen\",\"Ramen Shop\",\"Food & Drink ► Dining\",\"22/03/2026\",\"\",\"-1200\",\"JPY\",\"\",\"\",\"3800\"\n"
+      },
+      "expect": {
+        "rows": [
+          {
+            "index": 2,
+            "date": "2026-03-15",
+            "amountMinor": 240000,
+            "currency": "GBP",
+            "accountName": "Everyday",
+            "payeeName": "Payroll",
+            "tags": [
+              "work",
+              "monthly"
+            ],
+            "transferAccountName": null,
+            "error": null
+          },
+          {
+            "index": 3,
+            "date": "2026-03-16",
+            "amountMinor": -8540,
+            "currency": "GBP",
+            "accountName": "Everyday",
+            "payeeName": "Grocer",
+            "tags": [],
+            "transferAccountName": null,
+            "error": null
+          },
+          {
+            "index": 4,
+            "date": "2026-03-17",
+            "amountMinor": -100000,
+            "currency": "GBP",
+            "accountName": "Everyday",
+            "payeeName": null,
+            "tags": [],
+            "transferAccountName": "Savings",
+            "error": null
+          },
+          {
+            "index": 6,
+            "date": "2026-03-21",
+            "amountMinor": -123456,
+            "currency": "TRY",
+            "accountName": "Travel Wallet",
+            "payeeName": "Taxi Co",
+            "tags": [
+              "travel"
+            ],
+            "transferAccountName": null,
+            "error": null
+          },
+          {
+            "index": 8,
+            "date": "2026-03-22",
+            "amountMinor": -1200,
+            "currency": "JPY",
+            "accountName": "Yen Pocket",
+            "payeeName": "Ramen Shop",
+            "tags": [],
+            "transferAccountName": null,
+            "error": null
+          }
+        ],
+        "warningCount": 0,
+        "detectedDateFormat": "DMY"
+      },
+      "provenance": "hand-calculated",
+      "note": "`index` counts DATA rows of the file including the account header rows, so the numbers a user is shown point at findable lines."
+    },
+    {
+      "id": "import.report.slash-fallback",
+      "describes": "“/” is a level separator ONLY when the column contains no “►” or “>” anywhere: “Home/Repairs” alone becomes two levels…",
+      "op": "import.reportCategoryPaths",
+      "input": {
+        "csv": "\"Name\",\"Current balance\",\"Account\",\"Transfers\",\"Description\",\"Payee\",\"Category\",\"Date\",\"Memo\",\"Amount\",\"Currency\",\"Cheque N°\",\"Tags\",\"Balance\"\n\"Everyday\",\"0.00\",\"GBP\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\"\n\"\",\"\",\"Everyday\",\"\",\"One\",\"Shop\",\"Home/Repairs\",\"01/03/2026\",\"\",\"-10.00\",\"GBP\",\"\",\"\",\"\"\n"
+      },
+      "expect": {
+        "paths": [
+          [
+            "Home",
+            "Repairs"
+          ]
+        ]
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.report.slash-not-split-when-arrow-present",
+      "describes": "…and stays ONE category the moment any row in the column uses “►”, because a file that separates with “►” never means “/” as a level break",
+      "op": "import.reportCategoryPaths",
+      "input": {
+        "csv": "\"Name\",\"Current balance\",\"Account\",\"Transfers\",\"Description\",\"Payee\",\"Category\",\"Date\",\"Memo\",\"Amount\",\"Currency\",\"Cheque N°\",\"Tags\",\"Balance\"\n\"Everyday\",\"0.00\",\"GBP\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\"\n\"\",\"\",\"Everyday\",\"\",\"One\",\"Shop\",\"Home/Repairs\",\"01/03/2026\",\"\",\"-10.00\",\"GBP\",\"\",\"\",\"\"\n\"\",\"\",\"Everyday\",\"\",\"Two\",\"Shop\",\"Bills ► Water\",\"02/03/2026\",\"\",\"-20.00\",\"GBP\",\"\",\"\",\"\"\n"
+      },
+      "expect": {
+        "paths": [
+          [
+            "Home/Repairs"
+          ],
+          [
+            "Bills",
+            "Water"
+          ]
+        ]
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.report.real-export",
+      "describes": "the whole repository fixture — the shape the owner’s real 58-account export arrives in: multi-currency accounts, an unreadable amount, an impossible date, a balance-only account and an account named only by a transaction row",
+      "op": "import.parseMoneyWizReportCsv",
+      "input": {
+        "csv": "sep=,\n\"Name\",\"Current balance\",\"Account\",\"Transfers\",\"Description\",\"Payee\",\"Category\",\"Date\",\"Memo\",\"Amount\",\"Currency\",\"Cheque N°\",\"Tags\",\"Balance\"\n\"Everyday Current\",\"1,350.75\",\"GBP\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\"\n\"\",\"\",\"Everyday Current\",\"\",\"March salary\",\"Northwind Payroll\",\"Salary\",\"15/03/2026\",\"\",\"2,400.00\",\"GBP\",\"\",\"work;monthly\",\"2,400.00\"\n\"\",\"\",\"Everyday Current\",\"\",\"Weekly shop\",\"Sample Grocer\",\"Food & Drink ► Groceries/Market\",\"16/03/2026\",\"\",\"-85.40\",\"GBP\",\"\",\"\",\"2,314.60\"\n\"\",\"\",\"Everyday Current\",\"Rainy Day Savings\",\"Transfer to savings\",\"\",\"\",\"17/03/2026\",\"monthly saving\",\"-1,000.00\",\"GBP\",\"\",\"\",\"1,314.60\"\n\"\",\"\",\"Everyday Current\",\"\",\"Broadband\",\"Sample Broadband\",\"Bills & Utilities ► Internet ► Fibre/Cable\",\"18/03/2026\",\"\",\"-63.85\",\"GBP\",\"\",\"\",\"1,250.75\"\n\"Rainy Day Savings\",\"5,000.00\",\"GBP\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\"\n\"\",\"\",\"Rainy Day Savings\",\"Everyday Current\",\"Transfer from current\",\"\",\"\",\"17/03/2026\",\"monthly saving\",\"1,000.00\",\"GBP\",\"\",\"\",\"5,000.00\"\n\"Platinum Credit Card\",\"-742.19\",\"GBP\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\"\n\"\",\"\",\"Platinum Credit Card\",\"\",\"Fuel\",\"Sample Fuel\",\"Transport ► Fuel\",\"12/03/2026\",\"\",\"-120.00\",\"GBP\",\"\",\"car\",\"-820.00\"\n\"\",\"\",\"Platinum Credit Card\",\"\",\"Flat white\",\"Sample Coffee\",\"Food & Drink ► Coffee & Snacks\",\"14/03/2026\",\"\",\"-22.19\",\"GBP\",\"\",\"\",\"-842.19\"\n\"\",\"\",\"Platinum Credit Card\",\"\",\"Card payment\",\"\",\"\",\"20/03/2026\",\"\",\"100.00\",\"GBP\",\"\",\"\",\"-742.19\"\n\"Startup Float\",\"100.00\",\"GBP\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\"\n\"\",\"\",\"Startup Float\",\"\",\"Crowdfunding payout\",\"Sample Platform\",\"Other Income\",\"05/03/2026\",\"\",\"1,500.00\",\"GBP\",\"\",\"\",\"1,500.00\"\n\"\",\"\",\"Startup Float\",\"\",\"Filing fee\",\"Sample Registry\",\"Finance ► Bank Fees\",\"06/03/2026\",\"\",\"-25.00\",\"GBP\",\"\",\"\",\"1,475.00\"\n\"Travel Wallet\",\"12,345.67\",\"TRY\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\"\n\"\",\"\",\"Travel Wallet\",\"\",\"Taxi to airport\",\"Sample Taxi\",\"Transport ► Taxi & Ride-hailing\",\"21/03/2026\",\"\",\"-1,234.56\",\"TRY\",\"\",\"travel\",\"11,111.11\"\n\"\",\"\",\"Travel Wallet\",\"\",\"Cash top-up\",\"\",\"\",\"22/03/2026\",\"\",\"2,000.00\",\"TRY\",\"\",\"\",\"13,111.11\"\n\"Overseas Savings\",\"250,000.00\",\"LKR\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\"\n\"\",\"\",\"Overseas Savings\",\"\",\"Interest\",\"\",\"Interest & Dividends\",\"23/03/2026\",\"\",\"50,000.00\",\"LKR\",\"\",\"\",\"250,000.00\"\n\"Broken Ledger\",\"500.00\",\"GBP\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\"\n\"\",\"\",\"Broken Ledger\",\"\",\"Mystery amount\",\"Sample Shop\",\"\",\"24/03/2026\",\"\",\"twelve pounds\",\"GBP\",\"\",\"\",\"490.00\"\n\"\",\"\",\"Broken Ledger\",\"\",\"Stationery\",\"Sample Shop\",\"\",\"25/03/2026\",\"\",\"-10.00\",\"GBP\",\"\",\"\",\"480.00\"\n\"Dormant Pot\",\"42.00\",\"GBP\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\"\n\"Faded Diary\",\"80.00\",\"GBP\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\"\n\"\",\"\",\"Faded Diary\",\"\",\"Impossible date\",\"Sample Cafe\",\"\",\"31/02/2026\",\"\",\"-5.00\",\"GBP\",\"\",\"\",\"75.00\"\n\"\",\"\",\"Faded Diary\",\"\",\"Lunch\",\"Sample Cafe\",\"\",\"26/03/2026\",\"\",\"-20.00\",\"GBP\",\"\",\"\",\"55.00\"\n\"\",\"\",\"Ghost Account\",\"\",\"Orphan row\",\"Sample Kiosk\",\"\",\"27/03/2026\",\"\",\"-9.99\",\"GBP\",\"\",\"\",\"-9.99\"\n",
+        "dateFormat": "auto"
+      },
+      "expect": {
+        "rows": [
+          {
+            "index": 2,
+            "date": "2026-03-15",
+            "amountMinor": 240000,
+            "currency": "GBP",
+            "accountName": "Everyday Current",
+            "payeeName": "Northwind Payroll",
+            "description": "March salary",
+            "categoryPath": [
+              "Salary"
+            ],
+            "tags": [
+              "work",
+              "monthly"
+            ],
+            "notes": null,
+            "transferAccountName": null,
+            "amountText": "2,400.00",
+            "amountRule": "as-written",
+            "error": null
+          },
+          {
+            "index": 3,
+            "date": "2026-03-16",
+            "amountMinor": -8540,
+            "currency": "GBP",
+            "accountName": "Everyday Current",
+            "payeeName": "Sample Grocer",
+            "description": "Weekly shop",
+            "categoryPath": [
+              "Food & Drink",
+              "Groceries/Market"
+            ],
+            "tags": [],
+            "notes": null,
+            "transferAccountName": null,
+            "amountText": "-85.40",
+            "amountRule": "as-written",
+            "error": null
+          },
+          {
+            "index": 4,
+            "date": "2026-03-17",
+            "amountMinor": -100000,
+            "currency": "GBP",
+            "accountName": "Everyday Current",
+            "payeeName": null,
+            "description": "Transfer to savings",
+            "categoryPath": [],
+            "tags": [],
+            "notes": "monthly saving",
+            "transferAccountName": "Rainy Day Savings",
+            "amountText": "-1,000.00",
+            "amountRule": "as-written",
+            "error": null
+          },
+          {
+            "index": 5,
+            "date": "2026-03-18",
+            "amountMinor": -6385,
+            "currency": "GBP",
+            "accountName": "Everyday Current",
+            "payeeName": "Sample Broadband",
+            "description": "Broadband",
+            "categoryPath": [
+              "Bills & Utilities",
+              "Internet",
+              "Fibre/Cable"
+            ],
+            "tags": [],
+            "notes": null,
+            "transferAccountName": null,
+            "amountText": "-63.85",
+            "amountRule": "as-written",
+            "error": null
+          },
+          {
+            "index": 7,
+            "date": "2026-03-17",
+            "amountMinor": 100000,
+            "currency": "GBP",
+            "accountName": "Rainy Day Savings",
+            "payeeName": null,
+            "description": "Transfer from current",
+            "categoryPath": [],
+            "tags": [],
+            "notes": "monthly saving",
+            "transferAccountName": "Everyday Current",
+            "amountText": "1,000.00",
+            "amountRule": "as-written",
+            "error": null
+          },
+          {
+            "index": 9,
+            "date": "2026-03-12",
+            "amountMinor": -12000,
+            "currency": "GBP",
+            "accountName": "Platinum Credit Card",
+            "payeeName": "Sample Fuel",
+            "description": "Fuel",
+            "categoryPath": [
+              "Transport",
+              "Fuel"
+            ],
+            "tags": [
+              "car"
+            ],
+            "notes": null,
+            "transferAccountName": null,
+            "amountText": "-120.00",
+            "amountRule": "as-written",
+            "error": null
+          },
+          {
+            "index": 10,
+            "date": "2026-03-14",
+            "amountMinor": -2219,
+            "currency": "GBP",
+            "accountName": "Platinum Credit Card",
+            "payeeName": "Sample Coffee",
+            "description": "Flat white",
+            "categoryPath": [
+              "Food & Drink",
+              "Coffee & Snacks"
+            ],
+            "tags": [],
+            "notes": null,
+            "transferAccountName": null,
+            "amountText": "-22.19",
+            "amountRule": "as-written",
+            "error": null
+          },
+          {
+            "index": 11,
+            "date": "2026-03-20",
+            "amountMinor": 10000,
+            "currency": "GBP",
+            "accountName": "Platinum Credit Card",
+            "payeeName": null,
+            "description": "Card payment",
+            "categoryPath": [],
+            "tags": [],
+            "notes": null,
+            "transferAccountName": null,
+            "amountText": "100.00",
+            "amountRule": "as-written",
+            "error": null
+          },
+          {
+            "index": 13,
+            "date": "2026-03-05",
+            "amountMinor": 150000,
+            "currency": "GBP",
+            "accountName": "Startup Float",
+            "payeeName": "Sample Platform",
+            "description": "Crowdfunding payout",
+            "categoryPath": [
+              "Other Income"
+            ],
+            "tags": [],
+            "notes": null,
+            "transferAccountName": null,
+            "amountText": "1,500.00",
+            "amountRule": "as-written",
+            "error": null
+          },
+          {
+            "index": 14,
+            "date": "2026-03-06",
+            "amountMinor": -2500,
+            "currency": "GBP",
+            "accountName": "Startup Float",
+            "payeeName": "Sample Registry",
+            "description": "Filing fee",
+            "categoryPath": [
+              "Finance",
+              "Bank Fees"
+            ],
+            "tags": [],
+            "notes": null,
+            "transferAccountName": null,
+            "amountText": "-25.00",
+            "amountRule": "as-written",
+            "error": null
+          },
+          {
+            "index": 16,
+            "date": "2026-03-21",
+            "amountMinor": -123456,
+            "currency": "TRY",
+            "accountName": "Travel Wallet",
+            "payeeName": "Sample Taxi",
+            "description": "Taxi to airport",
+            "categoryPath": [
+              "Transport",
+              "Taxi & Ride-hailing"
+            ],
+            "tags": [
+              "travel"
+            ],
+            "notes": null,
+            "transferAccountName": null,
+            "amountText": "-1,234.56",
+            "amountRule": "as-written",
+            "error": null
+          },
+          {
+            "index": 17,
+            "date": "2026-03-22",
+            "amountMinor": 200000,
+            "currency": "TRY",
+            "accountName": "Travel Wallet",
+            "payeeName": null,
+            "description": "Cash top-up",
+            "categoryPath": [],
+            "tags": [],
+            "notes": null,
+            "transferAccountName": null,
+            "amountText": "2,000.00",
+            "amountRule": "as-written",
+            "error": null
+          },
+          {
+            "index": 19,
+            "date": "2026-03-23",
+            "amountMinor": 5000000,
+            "currency": "LKR",
+            "accountName": "Overseas Savings",
+            "payeeName": null,
+            "description": "Interest",
+            "categoryPath": [
+              "Interest & Dividends"
+            ],
+            "tags": [],
+            "notes": null,
+            "transferAccountName": null,
+            "amountText": "50,000.00",
+            "amountRule": "as-written",
+            "error": null
+          },
+          {
+            "index": 21,
+            "date": "2026-03-24",
+            "amountMinor": null,
+            "currency": "GBP",
+            "accountName": "Broken Ledger",
+            "payeeName": "Sample Shop",
+            "description": "Mystery amount",
+            "categoryPath": [],
+            "tags": [],
+            "notes": null,
+            "transferAccountName": null,
+            "amountText": "twelve pounds",
+            "amountRule": "as-written",
+            "error": "Unrecognised amount “twelve pounds”"
+          },
+          {
+            "index": 22,
+            "date": "2026-03-25",
+            "amountMinor": -1000,
+            "currency": "GBP",
+            "accountName": "Broken Ledger",
+            "payeeName": "Sample Shop",
+            "description": "Stationery",
+            "categoryPath": [],
+            "tags": [],
+            "notes": null,
+            "transferAccountName": null,
+            "amountText": "-10.00",
+            "amountRule": "as-written",
+            "error": null
+          },
+          {
+            "index": 25,
+            "date": null,
+            "amountMinor": -500,
+            "currency": "GBP",
+            "accountName": "Faded Diary",
+            "payeeName": "Sample Cafe",
+            "description": "Impossible date",
+            "categoryPath": [],
+            "tags": [],
+            "notes": null,
+            "transferAccountName": null,
+            "amountText": "-5.00",
+            "amountRule": "as-written",
+            "error": "Unrecognised date “31/02/2026”"
+          },
+          {
+            "index": 26,
+            "date": "2026-03-26",
+            "amountMinor": -2000,
+            "currency": "GBP",
+            "accountName": "Faded Diary",
+            "payeeName": "Sample Cafe",
+            "description": "Lunch",
+            "categoryPath": [],
+            "tags": [],
+            "notes": null,
+            "transferAccountName": null,
+            "amountText": "-20.00",
+            "amountRule": "as-written",
+            "error": null
+          },
+          {
+            "index": 27,
+            "date": "2026-03-27",
+            "amountMinor": -999,
+            "currency": "GBP",
+            "accountName": "Ghost Account",
+            "payeeName": "Sample Kiosk",
+            "description": "Orphan row",
+            "categoryPath": [],
+            "tags": [],
+            "notes": null,
+            "transferAccountName": null,
+            "amountText": "-9.99",
+            "amountRule": "as-written",
+            "error": null
+          }
+        ],
+        "accounts": [
+          {
+            "name": "Everyday Current",
+            "currency": "GBP",
+            "currentBalanceMinor": 135075,
+            "openingBalanceMinor": 10000
+          },
+          {
+            "name": "Rainy Day Savings",
+            "currency": "GBP",
+            "currentBalanceMinor": 500000,
+            "openingBalanceMinor": 400000
+          },
+          {
+            "name": "Platinum Credit Card",
+            "currency": "GBP",
+            "currentBalanceMinor": -74219,
+            "openingBalanceMinor": -70000
+          },
+          {
+            "name": "Startup Float",
+            "currency": "GBP",
+            "currentBalanceMinor": 10000,
+            "openingBalanceMinor": -137500
+          },
+          {
+            "name": "Travel Wallet",
+            "currency": "TRY",
+            "currentBalanceMinor": 1234567,
+            "openingBalanceMinor": 1158023
+          },
+          {
+            "name": "Overseas Savings",
+            "currency": "LKR",
+            "currentBalanceMinor": 25000000,
+            "openingBalanceMinor": 20000000
+          },
+          {
+            "name": "Broken Ledger",
+            "currency": "GBP",
+            "currentBalanceMinor": 50000,
+            "openingBalanceMinor": null
+          },
+          {
+            "name": "Dormant Pot",
+            "currency": "GBP",
+            "currentBalanceMinor": 4200,
+            "openingBalanceMinor": 4200
+          },
+          {
+            "name": "Faded Diary",
+            "currency": "GBP",
+            "currentBalanceMinor": 8000,
+            "openingBalanceMinor": null
+          }
+        ],
+        "warnings": [
+          "No opening balance could be derived for “Broken Ledger”, “Faded Diary” — they have rows that cannot be imported, and guessing from the rest would leave every balance and report for those accounts quietly wrong. Fix the rows flagged below and re-import.",
+          "1 account name is used by transactions but never declared by an account row (“Ghost Account”); those transactions import, but with no opening balance.",
+          "1 row have an unreadable date and cannot be imported.",
+          "1 row have an unreadable amount and cannot be imported.",
+          "1 account have a balance but no transactions in this file (“Dormant Pot”)."
+        ],
+        "detectedDateFormat": "DMY"
+      },
+      "provenance": "derived",
+      "advisory": [
+        "warnings"
+      ],
+      "note": "The WARNING TEXT is English prose for a human and a port may word it differently; the COUNT and the conditions that raise one are the contract. Note the accounts whose openingBalanceMinor is null: an account with a row that will not import gets NO opening balance, because balance − Σ(the rows that did parse) is not an opening balance, it is that number plus the missing rows."
+    },
+    {
+      "id": "import.flat.real-export",
+      "describes": "the flat MoneyWiz layout: “>” category paths, a Transfers column, and per-file date/decimal detection",
+      "op": "import.parseMoneyWizCsv",
+      "input": {
+        "csv": "Account,Transfers,Description,Payee,Category,Date,Time,Memo,Amount,Currency,Check #,Tags,Balance\nCurrent Account,,June salary,Acme Ltd,Salary,25/06/2026,09:00,,\"2,650.00\",GBP,,work,\"3,120.45\"\nCurrent Account,,Rent July,Hartley Lettings,Housing > Rent,01/07/2026,08:00,July rent,\"-1,200.00\",GBP,,,\"1,920.45\"\nCurrent Account,,\"Weekly shop, fruit & veg\",Tesco,Food & Drink > Groceries,02/07/2026,18:12,,-54.20,GBP,,food;weekly,\nCurrent Account,,Weekly shop,Sainsbury's,Food & Drink > Groceries,09/07/2026,17:40,,-61.75,GBP,,food,\nCurrent Account,,Netflix subscription,Netflix,Entertainment > Streaming & Subscriptions,03/07/2026,06:00,,-10.99,GBP,,,\nCurrent Account,,Oyster top-up,TfL,Transport > Public Transport,04/07/2026,08:30,,-20.00,GBP,,commute,\nCurrent Account,Savings,Transfer to savings,,,05/07/2026,10:00,monthly saving,-300.00,GBP,,,\nSavings,Current Account,Transfer from current,,,05/07/2026,10:00,monthly saving,300.00,GBP,,,\nCredit Card,,\"Dinner, birthday\",Pizza Express,Food & Drink > Restaurants,06/07/2026,20:15,,-48.30,GBP,,eating-out,\nCredit Card,,Flat white,Caffe Nero,Food & Drink > Coffee & Snacks,07/07/2026,08:05,,-3.85,GBP,,,\nEuro Account,,Hotel Barcelona,Hotel Arts,Travel > Accommodation,10/07/2026,14:00,2 nights,-234.50,EUR,,holiday,\nEuro Account,,Tapas dinner,El Nacional,Food & Drink > Restaurants,11/07/2026,21:00,,-45.80,EUR,,holiday,\nCurrent Account,,Refund - returned trainers,Sports Direct,Shopping > Clothing,12/07/2026,11:00,size didn't fit,55.00,GBP,,,\nCurrent Account,,Morning coffee,Pret A Manger,Food & Drink > Coffee & Snacks,14/07/2026,08:10,,-4.15,GBP,,,\nCurrent Account,,Weekly shop,Tesco,Food & Drink > Groceries,16/07/2026,18:05,,-58.90,GBP,,food,\nCredit Card,,Amazon order,Amazon,Shopping > Household,17/07/2026,13:22,kitchen bits,-32.97,GBP,,,\nCurrent Account,,Phone bill,Vodafone,Bills & Utilities > Mobile,18/07/2026,07:00,,-25.00,GBP,,,\nCurrent Account,,Cinema tickets,Odeon,Entertainment > Cinema & Events,19/07/2026,19:30,,-24.00,GBP,,date-night,\nCurrent Account,,Weekly shop,Sainsbury's,Food & Drink > Groceries,23/07/2026,17:55,,-49.60,GBP,,food,\nCurrent Account,,July salary,Acme Ltd,Salary,25/07/2026,09:00,,\"2,650.00\",GBP,,work,\nCurrent Account,,Rent August,Hartley Lettings,Housing > Rent,01/08/2026,08:00,August rent,\"-1,200.00\",GBP,,,\nCurrent Account,Savings,Transfer to savings,,,05/08/2026,10:00,monthly saving,-300.00,GBP,,,\nSavings,Current Account,Transfer from current,,,05/08/2026,10:00,monthly saving,300.00,GBP,,,\nCredit Card,,Petrol,Shell,Transport > Fuel,07/08/2026,16:45,,-62.40,GBP,,car,\nCurrent Account,,Lunch meeting,Pret A Manger,,08/08/2026,12:30,client lunch,-12.85,GBP,,work,\nCurrent Account,,Weekly shop,Tesco,Food & Drink > Groceries,13/08/2026,18:20,,-63.15,GBP,,food,\nCredit Card,,Board game order,Zatu Games,Hobbies > Board Games,09/08/2026,15:00,,-29.99,GBP,,,\n",
+        "dateFormat": "auto"
+      },
+      "expect": {
+        "rows": [
+          {
+            "index": 1,
+            "date": "2026-06-25",
+            "amountMinor": 265000,
+            "currency": "GBP",
+            "accountName": "Current Account",
+            "payeeName": "Acme Ltd",
+            "description": "June salary",
+            "categoryPath": [
+              "Salary"
+            ],
+            "tags": [
+              "work"
+            ],
+            "notes": null,
+            "transferAccountName": null,
+            "amountText": "2,650.00",
+            "amountRule": "as-written",
+            "error": null
+          },
+          {
+            "index": 2,
+            "date": "2026-07-01",
+            "amountMinor": -120000,
+            "currency": "GBP",
+            "accountName": "Current Account",
+            "payeeName": "Hartley Lettings",
+            "description": "Rent July",
+            "categoryPath": [
+              "Housing",
+              "Rent"
+            ],
+            "tags": [],
+            "notes": "July rent",
+            "transferAccountName": null,
+            "amountText": "-1,200.00",
+            "amountRule": "as-written",
+            "error": null
+          },
+          {
+            "index": 3,
+            "date": "2026-07-02",
+            "amountMinor": -5420,
+            "currency": "GBP",
+            "accountName": "Current Account",
+            "payeeName": "Tesco",
+            "description": "Weekly shop, fruit & veg",
+            "categoryPath": [
+              "Food & Drink",
+              "Groceries"
+            ],
+            "tags": [
+              "food",
+              "weekly"
+            ],
+            "notes": null,
+            "transferAccountName": null,
+            "amountText": "-54.20",
+            "amountRule": "as-written",
+            "error": null
+          },
+          {
+            "index": 4,
+            "date": "2026-07-09",
+            "amountMinor": -6175,
+            "currency": "GBP",
+            "accountName": "Current Account",
+            "payeeName": "Sainsbury's",
+            "description": "Weekly shop",
+            "categoryPath": [
+              "Food & Drink",
+              "Groceries"
+            ],
+            "tags": [
+              "food"
+            ],
+            "notes": null,
+            "transferAccountName": null,
+            "amountText": "-61.75",
+            "amountRule": "as-written",
+            "error": null
+          },
+          {
+            "index": 5,
+            "date": "2026-07-03",
+            "amountMinor": -1099,
+            "currency": "GBP",
+            "accountName": "Current Account",
+            "payeeName": "Netflix",
+            "description": "Netflix subscription",
+            "categoryPath": [
+              "Entertainment",
+              "Streaming & Subscriptions"
+            ],
+            "tags": [],
+            "notes": null,
+            "transferAccountName": null,
+            "amountText": "-10.99",
+            "amountRule": "as-written",
+            "error": null
+          },
+          {
+            "index": 6,
+            "date": "2026-07-04",
+            "amountMinor": -2000,
+            "currency": "GBP",
+            "accountName": "Current Account",
+            "payeeName": "TfL",
+            "description": "Oyster top-up",
+            "categoryPath": [
+              "Transport",
+              "Public Transport"
+            ],
+            "tags": [
+              "commute"
+            ],
+            "notes": null,
+            "transferAccountName": null,
+            "amountText": "-20.00",
+            "amountRule": "as-written",
+            "error": null
+          },
+          {
+            "index": 7,
+            "date": "2026-07-05",
+            "amountMinor": -30000,
+            "currency": "GBP",
+            "accountName": "Current Account",
+            "payeeName": null,
+            "description": "Transfer to savings",
+            "categoryPath": [],
+            "tags": [],
+            "notes": "monthly saving",
+            "transferAccountName": "Savings",
+            "amountText": "-300.00",
+            "amountRule": "as-written",
+            "error": null
+          },
+          {
+            "index": 8,
+            "date": "2026-07-05",
+            "amountMinor": 30000,
+            "currency": "GBP",
+            "accountName": "Savings",
+            "payeeName": null,
+            "description": "Transfer from current",
+            "categoryPath": [],
+            "tags": [],
+            "notes": "monthly saving",
+            "transferAccountName": "Current Account",
+            "amountText": "300.00",
+            "amountRule": "as-written",
+            "error": null
+          },
+          {
+            "index": 9,
+            "date": "2026-07-06",
+            "amountMinor": -4830,
+            "currency": "GBP",
+            "accountName": "Credit Card",
+            "payeeName": "Pizza Express",
+            "description": "Dinner, birthday",
+            "categoryPath": [
+              "Food & Drink",
+              "Restaurants"
+            ],
+            "tags": [
+              "eating-out"
+            ],
+            "notes": null,
+            "transferAccountName": null,
+            "amountText": "-48.30",
+            "amountRule": "as-written",
+            "error": null
+          },
+          {
+            "index": 10,
+            "date": "2026-07-07",
+            "amountMinor": -385,
+            "currency": "GBP",
+            "accountName": "Credit Card",
+            "payeeName": "Caffe Nero",
+            "description": "Flat white",
+            "categoryPath": [
+              "Food & Drink",
+              "Coffee & Snacks"
+            ],
+            "tags": [],
+            "notes": null,
+            "transferAccountName": null,
+            "amountText": "-3.85",
+            "amountRule": "as-written",
+            "error": null
+          },
+          {
+            "index": 11,
+            "date": "2026-07-10",
+            "amountMinor": -23450,
+            "currency": "EUR",
+            "accountName": "Euro Account",
+            "payeeName": "Hotel Arts",
+            "description": "Hotel Barcelona",
+            "categoryPath": [
+              "Travel",
+              "Accommodation"
+            ],
+            "tags": [
+              "holiday"
+            ],
+            "notes": "2 nights",
+            "transferAccountName": null,
+            "amountText": "-234.50",
+            "amountRule": "as-written",
+            "error": null
+          },
+          {
+            "index": 12,
+            "date": "2026-07-11",
+            "amountMinor": -4580,
+            "currency": "EUR",
+            "accountName": "Euro Account",
+            "payeeName": "El Nacional",
+            "description": "Tapas dinner",
+            "categoryPath": [
+              "Food & Drink",
+              "Restaurants"
+            ],
+            "tags": [
+              "holiday"
+            ],
+            "notes": null,
+            "transferAccountName": null,
+            "amountText": "-45.80",
+            "amountRule": "as-written",
+            "error": null
+          },
+          {
+            "index": 13,
+            "date": "2026-07-12",
+            "amountMinor": 5500,
+            "currency": "GBP",
+            "accountName": "Current Account",
+            "payeeName": "Sports Direct",
+            "description": "Refund - returned trainers",
+            "categoryPath": [
+              "Shopping",
+              "Clothing"
+            ],
+            "tags": [],
+            "notes": "size didn't fit",
+            "transferAccountName": null,
+            "amountText": "55.00",
+            "amountRule": "as-written",
+            "error": null
+          },
+          {
+            "index": 14,
+            "date": "2026-07-14",
+            "amountMinor": -415,
+            "currency": "GBP",
+            "accountName": "Current Account",
+            "payeeName": "Pret A Manger",
+            "description": "Morning coffee",
+            "categoryPath": [
+              "Food & Drink",
+              "Coffee & Snacks"
+            ],
+            "tags": [],
+            "notes": null,
+            "transferAccountName": null,
+            "amountText": "-4.15",
+            "amountRule": "as-written",
+            "error": null
+          },
+          {
+            "index": 15,
+            "date": "2026-07-16",
+            "amountMinor": -5890,
+            "currency": "GBP",
+            "accountName": "Current Account",
+            "payeeName": "Tesco",
+            "description": "Weekly shop",
+            "categoryPath": [
+              "Food & Drink",
+              "Groceries"
+            ],
+            "tags": [
+              "food"
+            ],
+            "notes": null,
+            "transferAccountName": null,
+            "amountText": "-58.90",
+            "amountRule": "as-written",
+            "error": null
+          },
+          {
+            "index": 16,
+            "date": "2026-07-17",
+            "amountMinor": -3297,
+            "currency": "GBP",
+            "accountName": "Credit Card",
+            "payeeName": "Amazon",
+            "description": "Amazon order",
+            "categoryPath": [
+              "Shopping",
+              "Household"
+            ],
+            "tags": [],
+            "notes": "kitchen bits",
+            "transferAccountName": null,
+            "amountText": "-32.97",
+            "amountRule": "as-written",
+            "error": null
+          },
+          {
+            "index": 17,
+            "date": "2026-07-18",
+            "amountMinor": -2500,
+            "currency": "GBP",
+            "accountName": "Current Account",
+            "payeeName": "Vodafone",
+            "description": "Phone bill",
+            "categoryPath": [
+              "Bills & Utilities",
+              "Mobile"
+            ],
+            "tags": [],
+            "notes": null,
+            "transferAccountName": null,
+            "amountText": "-25.00",
+            "amountRule": "as-written",
+            "error": null
+          },
+          {
+            "index": 18,
+            "date": "2026-07-19",
+            "amountMinor": -2400,
+            "currency": "GBP",
+            "accountName": "Current Account",
+            "payeeName": "Odeon",
+            "description": "Cinema tickets",
+            "categoryPath": [
+              "Entertainment",
+              "Cinema & Events"
+            ],
+            "tags": [
+              "date-night"
+            ],
+            "notes": null,
+            "transferAccountName": null,
+            "amountText": "-24.00",
+            "amountRule": "as-written",
+            "error": null
+          },
+          {
+            "index": 19,
+            "date": "2026-07-23",
+            "amountMinor": -4960,
+            "currency": "GBP",
+            "accountName": "Current Account",
+            "payeeName": "Sainsbury's",
+            "description": "Weekly shop",
+            "categoryPath": [
+              "Food & Drink",
+              "Groceries"
+            ],
+            "tags": [
+              "food"
+            ],
+            "notes": null,
+            "transferAccountName": null,
+            "amountText": "-49.60",
+            "amountRule": "as-written",
+            "error": null
+          },
+          {
+            "index": 20,
+            "date": "2026-07-25",
+            "amountMinor": 265000,
+            "currency": "GBP",
+            "accountName": "Current Account",
+            "payeeName": "Acme Ltd",
+            "description": "July salary",
+            "categoryPath": [
+              "Salary"
+            ],
+            "tags": [
+              "work"
+            ],
+            "notes": null,
+            "transferAccountName": null,
+            "amountText": "2,650.00",
+            "amountRule": "as-written",
+            "error": null
+          },
+          {
+            "index": 21,
+            "date": "2026-08-01",
+            "amountMinor": -120000,
+            "currency": "GBP",
+            "accountName": "Current Account",
+            "payeeName": "Hartley Lettings",
+            "description": "Rent August",
+            "categoryPath": [
+              "Housing",
+              "Rent"
+            ],
+            "tags": [],
+            "notes": "August rent",
+            "transferAccountName": null,
+            "amountText": "-1,200.00",
+            "amountRule": "as-written",
+            "error": null
+          },
+          {
+            "index": 22,
+            "date": "2026-08-05",
+            "amountMinor": -30000,
+            "currency": "GBP",
+            "accountName": "Current Account",
+            "payeeName": null,
+            "description": "Transfer to savings",
+            "categoryPath": [],
+            "tags": [],
+            "notes": "monthly saving",
+            "transferAccountName": "Savings",
+            "amountText": "-300.00",
+            "amountRule": "as-written",
+            "error": null
+          },
+          {
+            "index": 23,
+            "date": "2026-08-05",
+            "amountMinor": 30000,
+            "currency": "GBP",
+            "accountName": "Savings",
+            "payeeName": null,
+            "description": "Transfer from current",
+            "categoryPath": [],
+            "tags": [],
+            "notes": "monthly saving",
+            "transferAccountName": "Current Account",
+            "amountText": "300.00",
+            "amountRule": "as-written",
+            "error": null
+          },
+          {
+            "index": 24,
+            "date": "2026-08-07",
+            "amountMinor": -6240,
+            "currency": "GBP",
+            "accountName": "Credit Card",
+            "payeeName": "Shell",
+            "description": "Petrol",
+            "categoryPath": [
+              "Transport",
+              "Fuel"
+            ],
+            "tags": [
+              "car"
+            ],
+            "notes": null,
+            "transferAccountName": null,
+            "amountText": "-62.40",
+            "amountRule": "as-written",
+            "error": null
+          },
+          {
+            "index": 25,
+            "date": "2026-08-08",
+            "amountMinor": -1285,
+            "currency": "GBP",
+            "accountName": "Current Account",
+            "payeeName": "Pret A Manger",
+            "description": "Lunch meeting",
+            "categoryPath": [],
+            "tags": [
+              "work"
+            ],
+            "notes": "client lunch",
+            "transferAccountName": null,
+            "amountText": "-12.85",
+            "amountRule": "as-written",
+            "error": null
+          },
+          {
+            "index": 26,
+            "date": "2026-08-13",
+            "amountMinor": -6315,
+            "currency": "GBP",
+            "accountName": "Current Account",
+            "payeeName": "Tesco",
+            "description": "Weekly shop",
+            "categoryPath": [
+              "Food & Drink",
+              "Groceries"
+            ],
+            "tags": [
+              "food"
+            ],
+            "notes": null,
+            "transferAccountName": null,
+            "amountText": "-63.15",
+            "amountRule": "as-written",
+            "error": null
+          },
+          {
+            "index": 27,
+            "date": "2026-08-09",
+            "amountMinor": -2999,
+            "currency": "GBP",
+            "accountName": "Credit Card",
+            "payeeName": "Zatu Games",
+            "description": "Board game order",
+            "categoryPath": [
+              "Hobbies",
+              "Board Games"
+            ],
+            "tags": [],
+            "notes": null,
+            "transferAccountName": null,
+            "amountText": "-29.99",
+            "amountRule": "as-written",
+            "error": null
+          }
+        ],
+        "headers": [
+          "Account",
+          "Transfers",
+          "Description",
+          "Payee",
+          "Category",
+          "Date",
+          "Time",
+          "Memo",
+          "Amount",
+          "Currency",
+          "Check #",
+          "Tags",
+          "Balance"
+        ],
+        "warnings": [],
+        "detectedDateFormat": "DMY"
+      },
+      "provenance": "derived",
+      "advisory": [
+        "warnings"
+      ]
+    },
+    {
+      "id": "import.generic.decimal-comma",
+      "describes": "a German bank export: semicolon-delimited, dd.mm.yyyy dates and decimal commas — every one of those detected from the file, none of them configured",
+      "op": "import.parseWithMapping",
+      "input": {
+        "csv": "Date;Description;Amount\n03.06.2026;EDEKA Markt;-45,67\n15.06.2026;Miete Juni;-1.234,56\n20.06.2026;Gehalt Juni;2.500,00\n28.06.2026;Cafe Milano;-8,90\n",
+        "mapping": {
+          "date": 0,
+          "amount": 2,
+          "debit": -1,
+          "credit": -1,
+          "payee": 1,
+          "description": -1,
+          "category": -1,
+          "account": -1,
+          "currency": -1,
+          "tags": -1,
+          "notes": -1,
+          "dateFormat": "auto",
+          "decimal": "auto",
+          "negate": false,
+          "headerRow": true
+        },
+        "fixedCurrency": "EUR"
+      },
+      "expect": {
+        "rows": [
+          {
+            "index": 1,
+            "date": "2026-06-03",
+            "amountMinor": -4567,
+            "payeeName": "EDEKA Markt",
+            "error": null
+          },
+          {
+            "index": 2,
+            "date": "2026-06-15",
+            "amountMinor": -123456,
+            "payeeName": "Miete Juni",
+            "error": null
+          },
+          {
+            "index": 3,
+            "date": "2026-06-20",
+            "amountMinor": 250000,
+            "payeeName": "Gehalt Juni",
+            "error": null
+          },
+          {
+            "index": 4,
+            "date": "2026-06-28",
+            "amountMinor": -890,
+            "payeeName": "Cafe Milano",
+            "error": null
+          }
+        ]
+      },
+      "provenance": "hand-calculated",
+      "note": "“1.234,56” is €1,234.56 here and would be €1.23 under dot-style parsing — a hundredfold error that no GBP test can catch."
+    },
+    {
+      "id": "import.generic.guess-mapping-comma",
+      "describes": "the column mapping guessed for that file: a lone Description column becomes the PAYEE, since the payee is the primary label",
+      "op": "import.guessMapping",
+      "input": {
+        "headers": [
+          "Date",
+          "Description",
+          "Amount"
+        ],
+        "sampleRows": [
+          [
+            "03.06.2026",
+            "EDEKA Markt",
+            "-45,67"
+          ],
+          [
+            "15.06.2026",
+            "Miete Juni",
+            "-1.234,56"
+          ],
+          [
+            "20.06.2026",
+            "Gehalt Juni",
+            "2.500,00"
+          ],
+          [
+            "28.06.2026",
+            "Cafe Milano",
+            "-8,90"
+          ]
+        ]
+      },
+      "expect": {
+        "mapping": {
+          "date": 0,
+          "amount": 2,
+          "debit": -1,
+          "credit": -1,
+          "payee": 1,
+          "description": -1,
+          "category": -1,
+          "account": -1,
+          "currency": -1,
+          "tags": -1,
+          "notes": -1,
+          "dateFormat": "auto",
+          "decimal": "auto",
+          "negate": false,
+          "headerRow": true
+        }
+      },
+      "provenance": "derived"
+    },
+    {
+      "id": "import.generic.debit-credit",
+      "describes": "a UK bank export with separate “Paid Out” / “Paid In” columns: money out is stored NEGATIVE and money in positive, from two columns only one of which is ever filled",
+      "op": "import.parseWithMapping",
+      "input": {
+        "csv": "Date,Description,Paid Out,Paid In,Balance\n2026-07-01,TESCO STORES 3297,45.60,,1200.00\n2026-07-02,ACME LTD SALARY,,\"2,650.00\",3850.40\n2026-07-03,\"COSTA COFFEE, LEEDS\",3.20,,3847.20\n2026-07-05,TFL TRAVEL CH,8.40,,3838.80\n2026-07-08,NETFLIX.COM,10.99,,3827.81\n2026-07-10,REFUND SPORTS DIRECT,,55.00,3882.81\n",
+        "mapping": {
+          "date": 0,
+          "amount": -1,
+          "debit": 2,
+          "credit": 3,
+          "payee": 1,
+          "description": -1,
+          "category": -1,
+          "account": -1,
+          "currency": -1,
+          "tags": -1,
+          "notes": -1,
+          "dateFormat": "auto",
+          "decimal": "auto",
+          "negate": false,
+          "headerRow": true
+        },
+        "fixedCurrency": "GBP"
+      },
+      "expect": {
+        "rows": [
+          {
+            "index": 1,
+            "date": "2026-07-01",
+            "amountMinor": -4560,
+            "payeeName": "TESCO STORES 3297",
+            "amountRule": "debit",
+            "error": null
+          },
+          {
+            "index": 2,
+            "date": "2026-07-02",
+            "amountMinor": 265000,
+            "payeeName": "ACME LTD SALARY",
+            "amountRule": "as-written",
+            "error": null
+          },
+          {
+            "index": 3,
+            "date": "2026-07-03",
+            "amountMinor": -320,
+            "payeeName": "COSTA COFFEE, LEEDS",
+            "amountRule": "debit",
+            "error": null
+          },
+          {
+            "index": 4,
+            "date": "2026-07-05",
+            "amountMinor": -840,
+            "payeeName": "TFL TRAVEL CH",
+            "amountRule": "debit",
+            "error": null
+          },
+          {
+            "index": 5,
+            "date": "2026-07-08",
+            "amountMinor": -1099,
+            "payeeName": "NETFLIX.COM",
+            "amountRule": "debit",
+            "error": null
+          },
+          {
+            "index": 6,
+            "date": "2026-07-10",
+            "amountMinor": 5500,
+            "payeeName": "REFUND SPORTS DIRECT",
+            "amountRule": "as-written",
+            "error": null
+          }
+        ]
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "import.generic.guess-mapping-bank",
+      "describes": "and the mapping guessed for it, including the debit/credit column pair",
+      "op": "import.guessMapping",
+      "input": {
+        "headers": [
+          "Date",
+          "Description",
+          "Paid Out",
+          "Paid In",
+          "Balance"
+        ],
+        "sampleRows": [
+          [
+            "2026-07-01",
+            "TESCO STORES 3297",
+            "45.60",
+            "",
+            "1200.00"
+          ],
+          [
+            "2026-07-02",
+            "ACME LTD SALARY",
+            "",
+            "2,650.00",
+            "3850.40"
+          ],
+          [
+            "2026-07-03",
+            "COSTA COFFEE, LEEDS",
+            "3.20",
+            "",
+            "3847.20"
+          ],
+          [
+            "2026-07-05",
+            "TFL TRAVEL CH",
+            "8.40",
+            "",
+            "3838.80"
+          ],
+          [
+            "2026-07-08",
+            "NETFLIX.COM",
+            "10.99",
+            "",
+            "3827.81"
+          ]
+        ]
+      },
+      "expect": {
+        "mapping": {
+          "date": 0,
+          "amount": -1,
+          "debit": 2,
+          "credit": 3,
+          "payee": 1,
+          "description": -1,
+          "category": -1,
+          "account": -1,
+          "currency": -1,
+          "tags": -1,
+          "notes": -1,
+          "dateFormat": "auto",
+          "decimal": "auto",
+          "negate": false,
+          "headerRow": true
+        }
+      },
+      "provenance": "derived"
+    }
+  ]
+}

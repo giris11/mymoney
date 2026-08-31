@@ -1,0 +1,1146 @@
+{
+  "oracleVersion": 1,
+  "area": "balances",
+  "title": "Balances: per-account, cleared vs pending, and net worth with exclusions",
+  "generatedFrom": [
+    "src/domain/balances.ts"
+  ],
+  "notes": [
+    "balanceMinor = openingBalanceMinor + Σ(all that account’s transactions), pending included (D15).",
+    "clearedMinor is the same sum over cleared transactions only.",
+    "An account balance is always in the ACCOUNT’s currency and is never converted.",
+    "Net worth counts an account iff it is neither archived nor flagged excludeFromNetWorth; each counted account is converted to base ONCE.",
+    "A currency with no rate to base is named in missingRateCurrencies and contributes nothing — it is never approximated.",
+    "excludedBaseMinor is null when any excluded account cannot be converted: an incomplete “not counted” total would be a wrong number.",
+    "balances.accountBalances rows are ordered by sortOrder, then by name."
+  ],
+  "books": {
+    "golden": {
+      "baseCurrency": "GBP",
+      "fxRates": [
+        {
+          "base": "EUR",
+          "quote": "GBP",
+          "rate": 0.85
+        }
+      ],
+      "accounts": [
+        {
+          "id": "cur",
+          "name": "Current",
+          "type": "current",
+          "currency": "GBP",
+          "openingBalanceMinor": 100000,
+          "archived": false,
+          "excludeFromNetWorth": false,
+          "sortOrder": 0
+        },
+        {
+          "id": "sav",
+          "name": "Savings",
+          "type": "savings",
+          "currency": "GBP",
+          "openingBalanceMinor": 50000,
+          "archived": false,
+          "excludeFromNetWorth": false,
+          "sortOrder": 1
+        },
+        {
+          "id": "hol",
+          "name": "Holiday",
+          "type": "current",
+          "currency": "EUR",
+          "openingBalanceMinor": 20000,
+          "archived": false,
+          "excludeFromNetWorth": false,
+          "sortOrder": 2
+        }
+      ],
+      "categories": [
+        {
+          "id": "food",
+          "name": "Food",
+          "kind": "expense",
+          "parentId": null,
+          "archived": false,
+          "sortOrder": 0
+        },
+        {
+          "id": "groceries",
+          "name": "Groceries",
+          "kind": "expense",
+          "parentId": "food",
+          "archived": false,
+          "sortOrder": 0
+        },
+        {
+          "id": "transport",
+          "name": "Transport",
+          "kind": "expense",
+          "parentId": null,
+          "archived": false,
+          "sortOrder": 1
+        },
+        {
+          "id": "salary",
+          "name": "Salary",
+          "kind": "income",
+          "parentId": null,
+          "archived": false,
+          "sortOrder": 2
+        }
+      ],
+      "payees": [
+        {
+          "id": "p-acme",
+          "name": "Acme Ltd"
+        },
+        {
+          "id": "p-tesco",
+          "name": "Tesco"
+        },
+        {
+          "id": "p-bigshop",
+          "name": "Big Shop"
+        },
+        {
+          "id": "p-uber",
+          "name": "Uber"
+        },
+        {
+          "id": "p-cafe",
+          "name": "Café Paris"
+        }
+      ],
+      "tags": [],
+      "transactions": [
+        {
+          "id": "t1",
+          "accountId": "cur",
+          "date": "2026-08-01",
+          "amountMinor": 250000,
+          "currency": "GBP",
+          "payeeId": "p-acme",
+          "categoryId": "salary",
+          "tagIds": [],
+          "status": "cleared",
+          "splits": [],
+          "transferGroupId": null,
+          "notes": ""
+        },
+        {
+          "id": "t2",
+          "accountId": "cur",
+          "date": "2026-08-03",
+          "amountMinor": -4567,
+          "currency": "GBP",
+          "payeeId": "p-tesco",
+          "categoryId": "groceries",
+          "tagIds": [],
+          "status": "cleared",
+          "splits": [],
+          "transferGroupId": null,
+          "notes": ""
+        },
+        {
+          "id": "t3",
+          "accountId": "cur",
+          "date": "2026-08-10",
+          "amountMinor": -5433,
+          "currency": "GBP",
+          "payeeId": "p-tesco",
+          "categoryId": "groceries",
+          "tagIds": [],
+          "status": "cleared",
+          "splits": [],
+          "transferGroupId": null,
+          "notes": ""
+        },
+        {
+          "id": "t4",
+          "accountId": "cur",
+          "date": "2026-08-12",
+          "amountMinor": -10000,
+          "currency": "GBP",
+          "payeeId": "p-bigshop",
+          "categoryId": null,
+          "tagIds": [],
+          "status": "cleared",
+          "splits": [
+            {
+              "categoryId": "groceries",
+              "amountMinor": -6000
+            },
+            {
+              "categoryId": "transport",
+              "amountMinor": -4000
+            }
+          ],
+          "transferGroupId": null,
+          "notes": ""
+        },
+        {
+          "id": "t5",
+          "accountId": "cur",
+          "date": "2026-08-15",
+          "amountMinor": 1000,
+          "currency": "GBP",
+          "payeeId": "p-tesco",
+          "categoryId": "groceries",
+          "tagIds": [],
+          "status": "cleared",
+          "splits": [],
+          "transferGroupId": null,
+          "notes": ""
+        },
+        {
+          "id": "t6",
+          "accountId": "cur",
+          "date": "2026-08-20",
+          "amountMinor": -20000,
+          "currency": "GBP",
+          "payeeId": null,
+          "categoryId": null,
+          "tagIds": [],
+          "status": "cleared",
+          "splits": [],
+          "transferGroupId": "tg1",
+          "notes": ""
+        },
+        {
+          "id": "t7",
+          "accountId": "sav",
+          "date": "2026-08-20",
+          "amountMinor": 20000,
+          "currency": "GBP",
+          "payeeId": null,
+          "categoryId": null,
+          "tagIds": [],
+          "status": "cleared",
+          "splits": [],
+          "transferGroupId": "tg1",
+          "notes": ""
+        },
+        {
+          "id": "t8",
+          "accountId": "hol",
+          "date": "2026-08-22",
+          "amountMinor": -2000,
+          "currency": "EUR",
+          "payeeId": "p-cafe",
+          "categoryId": "transport",
+          "tagIds": [],
+          "status": "cleared",
+          "splits": [],
+          "transferGroupId": null,
+          "notes": ""
+        },
+        {
+          "id": "t9",
+          "accountId": "cur",
+          "date": "2026-08-25",
+          "amountMinor": -3000,
+          "currency": "GBP",
+          "payeeId": "p-uber",
+          "categoryId": "transport",
+          "tagIds": [],
+          "status": "pending",
+          "splits": [],
+          "transferGroupId": null,
+          "notes": ""
+        }
+      ]
+    },
+    "exclusions": {
+      "baseCurrency": "GBP",
+      "fxRates": [
+        {
+          "base": "USD",
+          "quote": "GBP",
+          "rate": 0.79
+        }
+      ],
+      "accounts": [
+        {
+          "id": "a-main",
+          "name": "Main",
+          "type": "current",
+          "currency": "GBP",
+          "openingBalanceMinor": 100000,
+          "archived": false,
+          "excludeFromNetWorth": false,
+          "sortOrder": 0
+        },
+        {
+          "id": "a-arch",
+          "name": "Old ISA",
+          "type": "current",
+          "currency": "GBP",
+          "openingBalanceMinor": 500000,
+          "archived": true,
+          "excludeFromNetWorth": false,
+          "sortOrder": 1
+        },
+        {
+          "id": "a-excl",
+          "name": "Gift Cards",
+          "type": "current",
+          "currency": "GBP",
+          "openingBalanceMinor": 25000,
+          "archived": false,
+          "excludeFromNetWorth": true,
+          "sortOrder": 2
+        },
+        {
+          "id": "a-usd",
+          "name": "Dollar Pot",
+          "type": "current",
+          "currency": "USD",
+          "openingBalanceMinor": 10000,
+          "archived": false,
+          "excludeFromNetWorth": false,
+          "sortOrder": 3
+        },
+        {
+          "id": "a-chf",
+          "name": "Swiss Pot",
+          "type": "current",
+          "currency": "CHF",
+          "openingBalanceMinor": 20000,
+          "archived": false,
+          "excludeFromNetWorth": false,
+          "sortOrder": 4
+        },
+        {
+          "id": "a-excl-chf",
+          "name": "Lent to Ana",
+          "type": "current",
+          "currency": "CHF",
+          "openingBalanceMinor": 5000,
+          "archived": false,
+          "excludeFromNetWorth": true,
+          "sortOrder": 5
+        }
+      ],
+      "categories": [
+        {
+          "id": "shopping",
+          "name": "Shopping",
+          "kind": "expense",
+          "parentId": null,
+          "archived": false,
+          "sortOrder": 0
+        }
+      ],
+      "payees": [],
+      "tags": [],
+      "transactions": [
+        {
+          "id": "x1",
+          "accountId": "a-excl",
+          "date": "2026-05-04",
+          "amountMinor": -4000,
+          "currency": "GBP",
+          "payeeId": null,
+          "categoryId": "shopping",
+          "tagIds": [],
+          "status": "cleared",
+          "splits": [],
+          "transferGroupId": null,
+          "notes": ""
+        },
+        {
+          "id": "x2",
+          "accountId": "a-arch",
+          "date": "2026-05-04",
+          "amountMinor": -1000,
+          "currency": "GBP",
+          "payeeId": null,
+          "categoryId": "shopping",
+          "tagIds": [],
+          "status": "cleared",
+          "splits": [],
+          "transferGroupId": null,
+          "notes": ""
+        },
+        {
+          "id": "x3",
+          "accountId": "a-main",
+          "date": "2026-05-05",
+          "amountMinor": -2500,
+          "currency": "GBP",
+          "payeeId": null,
+          "categoryId": "shopping",
+          "tagIds": [],
+          "status": "pending",
+          "splits": [],
+          "transferGroupId": null,
+          "notes": ""
+        }
+      ]
+    },
+    "exclusions-simple": {
+      "baseCurrency": "GBP",
+      "fxRates": [],
+      "accounts": [
+        {
+          "id": "a-main",
+          "name": "Main",
+          "type": "current",
+          "currency": "GBP",
+          "openingBalanceMinor": 100000,
+          "archived": false,
+          "excludeFromNetWorth": false,
+          "sortOrder": 0
+        },
+        {
+          "id": "a-arch",
+          "name": "Old ISA",
+          "type": "current",
+          "currency": "GBP",
+          "openingBalanceMinor": 500000,
+          "archived": true,
+          "excludeFromNetWorth": false,
+          "sortOrder": 1
+        },
+        {
+          "id": "a-excl",
+          "name": "Gift Cards",
+          "type": "current",
+          "currency": "GBP",
+          "openingBalanceMinor": 25000,
+          "archived": false,
+          "excludeFromNetWorth": true,
+          "sortOrder": 2
+        }
+      ],
+      "categories": [],
+      "payees": [],
+      "tags": [],
+      "transactions": []
+    },
+    "rollup": {
+      "baseCurrency": "GBP",
+      "fxRates": [
+        {
+          "base": "EUR",
+          "quote": "GBP",
+          "rate": 0.85
+        }
+      ],
+      "accounts": [
+        {
+          "id": "r-cur",
+          "name": "Current",
+          "type": "current",
+          "currency": "GBP",
+          "openingBalanceMinor": 200000,
+          "archived": false,
+          "excludeFromNetWorth": false,
+          "sortOrder": 0
+        },
+        {
+          "id": "r-sav",
+          "name": "Savings",
+          "type": "savings",
+          "currency": "GBP",
+          "openingBalanceMinor": 0,
+          "archived": false,
+          "excludeFromNetWorth": false,
+          "sortOrder": 1
+        },
+        {
+          "id": "r-eur",
+          "name": "Euro Pot",
+          "type": "current",
+          "currency": "EUR",
+          "openingBalanceMinor": 10000,
+          "archived": false,
+          "excludeFromNetWorth": false,
+          "sortOrder": 2
+        },
+        {
+          "id": "r-chf",
+          "name": "Swiss Pot",
+          "type": "current",
+          "currency": "CHF",
+          "openingBalanceMinor": 0,
+          "archived": false,
+          "excludeFromNetWorth": false,
+          "sortOrder": 3
+        }
+      ],
+      "categories": [
+        {
+          "id": "c-food",
+          "name": "Food",
+          "kind": "expense",
+          "parentId": null,
+          "archived": false,
+          "sortOrder": 0
+        },
+        {
+          "id": "c-dining",
+          "name": "Dining",
+          "kind": "expense",
+          "parentId": "c-food",
+          "archived": false,
+          "sortOrder": 0
+        },
+        {
+          "id": "c-coffee",
+          "name": "Coffee",
+          "kind": "expense",
+          "parentId": "c-dining",
+          "archived": false,
+          "sortOrder": 0
+        },
+        {
+          "id": "c-groceries",
+          "name": "Groceries",
+          "kind": "expense",
+          "parentId": "c-food",
+          "archived": false,
+          "sortOrder": 1
+        },
+        {
+          "id": "c-transport",
+          "name": "Transport",
+          "kind": "expense",
+          "parentId": null,
+          "archived": false,
+          "sortOrder": 1
+        },
+        {
+          "id": "c-salary",
+          "name": "Salary",
+          "kind": "income",
+          "parentId": null,
+          "archived": false,
+          "sortOrder": 2
+        }
+      ],
+      "payees": [
+        {
+          "id": "r-p-cafe",
+          "name": "Corner Cafe"
+        },
+        {
+          "id": "r-p-shop",
+          "name": "Corner Shop"
+        },
+        {
+          "id": "r-p-rail",
+          "name": "Rail Co"
+        },
+        {
+          "id": "r-p-work",
+          "name": "Work Ltd"
+        }
+      ],
+      "tags": [
+        {
+          "id": "g-work",
+          "name": "work"
+        },
+        {
+          "id": "g-treat",
+          "name": "treat"
+        }
+      ],
+      "transactions": [
+        {
+          "id": "r1",
+          "accountId": "r-cur",
+          "date": "2026-06-01",
+          "amountMinor": 300000,
+          "currency": "GBP",
+          "payeeId": "r-p-work",
+          "categoryId": "c-salary",
+          "tagIds": [],
+          "status": "cleared",
+          "splits": [],
+          "transferGroupId": null,
+          "notes": ""
+        },
+        {
+          "id": "r2",
+          "accountId": "r-cur",
+          "date": "2026-06-02",
+          "amountMinor": -350,
+          "currency": "GBP",
+          "payeeId": "r-p-cafe",
+          "categoryId": "c-coffee",
+          "tagIds": [
+            "g-treat"
+          ],
+          "status": "cleared",
+          "splits": [],
+          "transferGroupId": null,
+          "notes": ""
+        },
+        {
+          "id": "r3",
+          "accountId": "r-cur",
+          "date": "2026-06-03",
+          "amountMinor": -2400,
+          "currency": "GBP",
+          "payeeId": "r-p-cafe",
+          "categoryId": "c-dining",
+          "tagIds": [],
+          "status": "cleared",
+          "splits": [],
+          "transferGroupId": null,
+          "notes": ""
+        },
+        {
+          "id": "r4",
+          "accountId": "r-cur",
+          "date": "2026-06-04",
+          "amountMinor": -8000,
+          "currency": "GBP",
+          "payeeId": "r-p-shop",
+          "categoryId": "c-groceries",
+          "tagIds": [],
+          "status": "cleared",
+          "splits": [],
+          "transferGroupId": null,
+          "notes": ""
+        },
+        {
+          "id": "r5",
+          "accountId": "r-cur",
+          "date": "2026-06-05",
+          "amountMinor": 1500,
+          "currency": "GBP",
+          "payeeId": "r-p-shop",
+          "categoryId": "c-groceries",
+          "tagIds": [],
+          "status": "cleared",
+          "splits": [],
+          "transferGroupId": null,
+          "notes": ""
+        },
+        {
+          "id": "r6",
+          "accountId": "r-cur",
+          "date": "2026-06-06",
+          "amountMinor": -5000,
+          "currency": "GBP",
+          "payeeId": "r-p-shop",
+          "categoryId": null,
+          "tagIds": [
+            "g-work",
+            "g-treat"
+          ],
+          "status": "cleared",
+          "splits": [
+            {
+              "categoryId": "c-groceries",
+              "amountMinor": -3000
+            },
+            {
+              "categoryId": "c-transport",
+              "amountMinor": -2000
+            }
+          ],
+          "transferGroupId": null,
+          "notes": ""
+        },
+        {
+          "id": "r7",
+          "accountId": "r-cur",
+          "date": "2026-06-07",
+          "amountMinor": -1100,
+          "currency": "GBP",
+          "payeeId": null,
+          "categoryId": null,
+          "tagIds": [],
+          "status": "cleared",
+          "splits": [],
+          "transferGroupId": null,
+          "notes": ""
+        },
+        {
+          "id": "r8",
+          "accountId": "r-cur",
+          "date": "2026-06-08",
+          "amountMinor": 900,
+          "currency": "GBP",
+          "payeeId": null,
+          "categoryId": null,
+          "tagIds": [],
+          "status": "cleared",
+          "splits": [],
+          "transferGroupId": null,
+          "notes": ""
+        },
+        {
+          "id": "r9",
+          "accountId": "r-cur",
+          "date": "2026-06-09",
+          "amountMinor": -10000,
+          "currency": "GBP",
+          "payeeId": "r-p-work",
+          "categoryId": "c-salary",
+          "tagIds": [],
+          "status": "cleared",
+          "splits": [],
+          "transferGroupId": null,
+          "notes": ""
+        },
+        {
+          "id": "r10",
+          "accountId": "r-cur",
+          "date": "2026-06-10",
+          "amountMinor": -50000,
+          "currency": "GBP",
+          "payeeId": null,
+          "categoryId": null,
+          "tagIds": [],
+          "status": "cleared",
+          "splits": [],
+          "transferGroupId": "r-tg1",
+          "notes": ""
+        },
+        {
+          "id": "r11",
+          "accountId": "r-sav",
+          "date": "2026-06-10",
+          "amountMinor": 50000,
+          "currency": "GBP",
+          "payeeId": null,
+          "categoryId": null,
+          "tagIds": [],
+          "status": "cleared",
+          "splits": [],
+          "transferGroupId": "r-tg1",
+          "notes": ""
+        },
+        {
+          "id": "r12",
+          "accountId": "r-eur",
+          "date": "2026-06-11",
+          "amountMinor": -4000,
+          "currency": "EUR",
+          "payeeId": "r-p-rail",
+          "categoryId": "c-transport",
+          "tagIds": [
+            "g-work"
+          ],
+          "status": "cleared",
+          "splits": [],
+          "transferGroupId": null,
+          "notes": ""
+        },
+        {
+          "id": "r13",
+          "accountId": "r-chf",
+          "date": "2026-06-12",
+          "amountMinor": -7000,
+          "currency": "CHF",
+          "payeeId": "r-p-shop",
+          "categoryId": "c-groceries",
+          "tagIds": [],
+          "status": "cleared",
+          "splits": [],
+          "transferGroupId": null,
+          "notes": ""
+        },
+        {
+          "id": "r14",
+          "accountId": "r-cur",
+          "date": "2026-07-01",
+          "amountMinor": 300000,
+          "currency": "GBP",
+          "payeeId": "r-p-work",
+          "categoryId": "c-salary",
+          "tagIds": [],
+          "status": "cleared",
+          "splits": [],
+          "transferGroupId": null,
+          "notes": ""
+        },
+        {
+          "id": "r15",
+          "accountId": "r-cur",
+          "date": "2026-07-15",
+          "amountMinor": -12000,
+          "currency": "GBP",
+          "payeeId": "r-p-shop",
+          "categoryId": "c-groceries",
+          "tagIds": [],
+          "status": "cleared",
+          "splits": [],
+          "transferGroupId": null,
+          "notes": ""
+        }
+      ]
+    }
+  },
+  "cases": [
+    {
+      "id": "balances.sum.plain",
+      "describes": "opening plus the signed amounts, nothing else",
+      "op": "balances.balanceFromAmounts",
+      "input": {
+        "openingMinor": 100000,
+        "amounts": [
+          -4567,
+          -5433
+        ]
+      },
+      "expect": {
+        "value": 90000
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "balances.sum.empty",
+      "describes": "an account with no transactions is worth its opening balance",
+      "op": "balances.balanceFromAmounts",
+      "input": {
+        "openingMinor": 50000,
+        "amounts": []
+      },
+      "expect": {
+        "value": 50000
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "balances.sum.negative",
+      "describes": "a balance may be negative (a credit card)",
+      "op": "balances.balanceFromAmounts",
+      "input": {
+        "openingMinor": 0,
+        "amounts": [
+          -1000,
+          -2000
+        ]
+      },
+      "expect": {
+        "value": -3000
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "balances.sum.back-to-zero",
+      "describes": "exact cancellation is exactly zero",
+      "op": "balances.balanceFromAmounts",
+      "input": {
+        "openingMinor": 1000,
+        "amounts": [
+          -1000
+        ]
+      },
+      "expect": {
+        "value": 0
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "balances.counts.plain",
+      "describes": "an ordinary account counts",
+      "op": "balances.countsTowardNetWorth",
+      "input": {
+        "account": {
+          "archived": false,
+          "excludeFromNetWorth": false
+        }
+      },
+      "expect": {
+        "value": true
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "balances.counts.archived",
+      "describes": "an archived (retired) account does not",
+      "op": "balances.countsTowardNetWorth",
+      "input": {
+        "account": {
+          "archived": true,
+          "excludeFromNetWorth": false
+        }
+      },
+      "expect": {
+        "value": false
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "balances.counts.excluded",
+      "describes": "a “show it, don’t count it” account does not",
+      "op": "balances.countsTowardNetWorth",
+      "input": {
+        "account": {
+          "archived": false,
+          "excludeFromNetWorth": true
+        }
+      },
+      "expect": {
+        "value": false
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "balances.counts.both",
+      "describes": "the two reasons compose — either one is enough to leave it out",
+      "op": "balances.countsTowardNetWorth",
+      "input": {
+        "account": {
+          "archived": true,
+          "excludeFromNetWorth": true
+        }
+      },
+      "expect": {
+        "value": false
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "balances.counts.flag-absent",
+      "describes": "a row written before the exclusion flag existed (the key is simply absent) counts — undefined resolves to false",
+      "op": "balances.countsTowardNetWorth",
+      "input": {
+        "account": {
+          "archived": false
+        }
+      },
+      "expect": {
+        "value": true
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "balances.golden.accounts",
+      "describes": "the golden month’s three account balances, hand-calculated: £3,080.00 current (the £30 pending included), £700.00 savings, €180.00 holiday in its OWN currency",
+      "op": "balances.accountBalances",
+      "input": {
+        "book": "golden"
+      },
+      "expect": {
+        "rows": [
+          {
+            "accountId": "cur",
+            "name": "Current",
+            "currency": "GBP",
+            "balanceMinor": 308000,
+            "clearedMinor": 311000,
+            "txCount": 7,
+            "excludedFromNetWorth": false
+          },
+          {
+            "accountId": "sav",
+            "name": "Savings",
+            "currency": "GBP",
+            "balanceMinor": 70000,
+            "clearedMinor": 70000,
+            "txCount": 1,
+            "excludedFromNetWorth": false
+          },
+          {
+            "accountId": "hol",
+            "name": "Holiday",
+            "currency": "EUR",
+            "balanceMinor": 18000,
+            "clearedMinor": 18000,
+            "txCount": 1,
+            "excludedFromNetWorth": false
+          }
+        ]
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "tests/golden.test.ts",
+      "note": "clearedMinor excludes the £30.00 pending Uber: 308000 + 3000 = 311000. A balance is NEVER converted — the holiday account is €180.00."
+    },
+    {
+      "id": "balances.golden.net-worth",
+      "describes": "net worth converts the EUR account once, at 0.85, and totals £3,933.00",
+      "op": "balances.netWorth",
+      "input": {
+        "book": "golden"
+      },
+      "expect": {
+        "totalBaseMinor": 393300,
+        "baseCurrency": "GBP",
+        "missingRateCurrencies": [],
+        "excludedCount": 0,
+        "excludedBaseMinor": 0
+      },
+      "provenance": "hand-calculated",
+      "carriedFrom": "tests/golden.test.ts"
+    },
+    {
+      "id": "balances.exclusions.accounts",
+      "describes": "every account keeps its own real balance — archiving and excluding change what the TOTAL counts, never what an account is worth",
+      "op": "balances.accountBalances",
+      "input": {
+        "book": "exclusions"
+      },
+      "expect": {
+        "rows": [
+          {
+            "accountId": "a-main",
+            "name": "Main",
+            "currency": "GBP",
+            "balanceMinor": 97500,
+            "clearedMinor": 100000,
+            "txCount": 1,
+            "excludedFromNetWorth": false
+          },
+          {
+            "accountId": "a-arch",
+            "name": "Old ISA",
+            "currency": "GBP",
+            "balanceMinor": 499000,
+            "clearedMinor": 499000,
+            "txCount": 1,
+            "excludedFromNetWorth": false
+          },
+          {
+            "accountId": "a-excl",
+            "name": "Gift Cards",
+            "currency": "GBP",
+            "balanceMinor": 21000,
+            "clearedMinor": 21000,
+            "txCount": 1,
+            "excludedFromNetWorth": true
+          },
+          {
+            "accountId": "a-usd",
+            "name": "Dollar Pot",
+            "currency": "USD",
+            "balanceMinor": 10000,
+            "clearedMinor": 10000,
+            "txCount": 0,
+            "excludedFromNetWorth": false
+          },
+          {
+            "accountId": "a-chf",
+            "name": "Swiss Pot",
+            "currency": "CHF",
+            "balanceMinor": 20000,
+            "clearedMinor": 20000,
+            "txCount": 0,
+            "excludedFromNetWorth": false
+          },
+          {
+            "accountId": "a-excl-chf",
+            "name": "Lent to Ana",
+            "currency": "CHF",
+            "balanceMinor": 5000,
+            "clearedMinor": 5000,
+            "txCount": 0,
+            "excludedFromNetWorth": true
+          }
+        ]
+      },
+      "provenance": "hand-calculated",
+      "note": "Rows come back in sortOrder, then name. Main is £1,000.00 minus a £25.00 PENDING charge, so balanceMinor and clearedMinor differ."
+    },
+    {
+      "id": "balances.exclusions.net-worth",
+      "describes": "the total is £975.00 + $100.00×0.79 = £1,054.00; CHF is named as missing rather than dropped in silence, and the “not counted” total REFUSES to be a number because one excluded account cannot be converted",
+      "op": "balances.netWorth",
+      "input": {
+        "book": "exclusions"
+      },
+      "expect": {
+        "totalBaseMinor": 105400,
+        "baseCurrency": "GBP",
+        "missingRateCurrencies": [
+          "CHF"
+        ],
+        "excludedCount": 2,
+        "excludedBaseMinor": null
+      },
+      "provenance": "hand-calculated",
+      "note": "excludedBaseMinor null is the honest answer, not an error: a partial “not counted” figure would silently omit an account. Archived accounts are not in excludedCount even when flagged — they are already out for an older reason."
+    },
+    {
+      "id": "balances.exclusions-simple.net-worth",
+      "describes": "with every excluded account convertible, the “not counted” figure is a real number: £250.00 sitting outside a £1,000.00 total",
+      "op": "balances.netWorth",
+      "input": {
+        "book": "exclusions-simple"
+      },
+      "expect": {
+        "totalBaseMinor": 100000,
+        "baseCurrency": "GBP",
+        "missingRateCurrencies": [],
+        "excludedCount": 1,
+        "excludedBaseMinor": 25000
+      },
+      "provenance": "hand-calculated"
+    },
+    {
+      "id": "balances.rollup.accounts",
+      "describes": "the reports book’s balances: both legs of a transfer move real money, and a transaction in an unrated currency still changes its own account’s balance",
+      "op": "balances.accountBalances",
+      "input": {
+        "book": "rollup"
+      },
+      "expect": {
+        "rows": [
+          {
+            "accountId": "r-cur",
+            "name": "Current",
+            "currency": "GBP",
+            "balanceMinor": 713550,
+            "clearedMinor": 713550,
+            "txCount": 12,
+            "excludedFromNetWorth": false
+          },
+          {
+            "accountId": "r-sav",
+            "name": "Savings",
+            "currency": "GBP",
+            "balanceMinor": 50000,
+            "clearedMinor": 50000,
+            "txCount": 1,
+            "excludedFromNetWorth": false
+          },
+          {
+            "accountId": "r-eur",
+            "name": "Euro Pot",
+            "currency": "EUR",
+            "balanceMinor": 6000,
+            "clearedMinor": 6000,
+            "txCount": 1,
+            "excludedFromNetWorth": false
+          },
+          {
+            "accountId": "r-chf",
+            "name": "Swiss Pot",
+            "currency": "CHF",
+            "balanceMinor": -7000,
+            "clearedMinor": -7000,
+            "txCount": 1,
+            "excludedFromNetWorth": false
+          }
+        ]
+      },
+      "provenance": "derived"
+    },
+    {
+      "id": "balances.rollup.net-worth",
+      "describes": "net worth over that book: the CHF account has no rate, so CHF is named and its money is left out of the total entirely",
+      "op": "balances.netWorth",
+      "input": {
+        "book": "rollup"
+      },
+      "expect": {
+        "totalBaseMinor": 768650,
+        "baseCurrency": "GBP",
+        "missingRateCurrencies": [
+          "CHF"
+        ],
+        "excludedCount": 0,
+        "excludedBaseMinor": 0
+      },
+      "provenance": "derived"
+    }
+  ]
+}
