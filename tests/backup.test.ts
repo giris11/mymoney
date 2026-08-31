@@ -16,6 +16,7 @@ import {
   DATA_TABLES,
   DEVICE_LOCAL_SETTING_KEYS,
   db,
+  flushLocalRevision,
   getSettings,
   SCHEMA_VERSION,
   updateSettings,
@@ -1018,14 +1019,31 @@ describe('restoreBackup keeps this device (C8)', () => {
     const incoming = otherDevice();
 
     await restoreBackup(fileWith([incoming]));
+    // A restore IS a local change, so the tracker's debounced bump is in
+    // flight. Settle it before reading, or what this test observes depends on
+    // whether a timer happened to fire — which is exactly how it passed here
+    // and failed on CI (expected 5, got 6). Never assert on a counter that is
+    // still moving.
+    await flushLocalRevision();
 
     const after = await getSettings();
     for (const key of BOOK_LEVEL_SETTING_KEYS) {
       expect({ [key]: after[key] }).toEqual({ [key]: incoming[key] });
     }
     for (const key of DEVICE_LOCAL_SETTING_KEYS) {
+      // syncLocalRevision is device-local but it is a COUNTER, not an
+      // identity: replacing the book is a change this device now owes the
+      // remote, so it is SUPPOSED to advance. What matters is that it did not
+      // come from the file. Checked explicitly below.
+      if (key === 'syncLocalRevision') continue;
       expect({ [key]: after[key] }).toEqual({ [key]: thisDevice()[key] });
     }
+    // Not the other device's 2, and strictly ahead of where this device was —
+    // a restored book is unsynced work, and a device that looked clean here
+    // would let the next pull quietly overwrite what was just restored.
+    expect(after.syncLocalRevision).toBeGreaterThan(thisDevice().syncLocalRevision);
+    expect(after.syncLocalRevision).not.toBe(incoming.syncLocalRevision);
+    expect(after.syncSyncedLocalRevision).toBe(thisDevice().syncSyncedLocalRevision);
     // Spelled out, because these are the ones that corrupt the conflict dialog
     // and the sync decision table rather than merely annoying the user.
     expect(after.syncDeviceName).toBe('iPhone');
