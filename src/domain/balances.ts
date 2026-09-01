@@ -199,24 +199,54 @@ export async function netWorth(balances?: AccountBalance[]): Promise<NetWorth> {
     rateLookup(),
   ]);
   const base = settings.baseCurrency;
-  let total = 0;
   const missing = new Set<string>();
   let excludedCount = 0;
-  // Starts at 0 and latches to null the moment one excluded account cannot be
+
+  // SUM PER CURRENCY FIRST, CONVERT ONCE — matching netWorthSeries() exactly.
+  //
+  // This used to convert once per ACCOUNT, and that made the headline figure
+  // disagree with the right-hand end of the net-worth chart whenever two
+  // counted accounts shared a non-base currency: two €7.05 accounts at 0.85
+  // round to 599 + 599 = 1198 per account, but 1410 × 0.85 = 1198.5 → 1199
+  // per currency. Both are defensible in isolation; showing BOTH, in two
+  // places, for the same book, is not.
+  //
+  // Per currency is the one to keep: it rounds once instead of once per
+  // account, so the error cannot grow with the number of accounts, and it is
+  // the ordinary accounting treatment — total in the source currency, then
+  // convert. It is also what the chart already did, so the chart's history
+  // stays truthful rather than being retroactively re-rounded.
+  //
+  // Found by porting this file to Swift: the oracle fixtures could not catch
+  // it because every fixture book has exactly one account per currency.
+  const counted = new Map<string, number>();
+  const excludedByCcy = new Map<string, number>();
+  for (const b of resolved) {
+    if (b.account.archived) continue;
+    const ccy = b.account.currency;
+    if (b.excludedFromNetWorth) {
+      excludedCount += 1;
+      excludedByCcy.set(ccy, (excludedByCcy.get(ccy) ?? 0) + b.balanceMinor);
+      continue;
+    }
+    counted.set(ccy, (counted.get(ccy) ?? 0) + b.balanceMinor);
+  }
+
+  let total = 0;
+  for (const [ccy, minor] of counted) {
+    const converted = convertMinor(minor, ccy, base, lookup);
+    if (converted === null) missing.add(ccy);
+    else total += converted;
+  }
+
+  // Starts at 0 and latches to null the moment one excluded currency cannot be
   // converted — a partial "not counted" total would be a wrong number, and a
   // wrong number is worse than an honest gap (SPEC §6).
   let excludedBaseMinor: number | null = 0;
-  for (const b of resolved) {
-    if (b.account.archived) continue;
-    const converted = convertMinor(b.balanceMinor, b.account.currency, base, lookup);
-    if (b.excludedFromNetWorth) {
-      excludedCount += 1;
-      if (converted === null) excludedBaseMinor = null;
-      else if (excludedBaseMinor !== null) excludedBaseMinor += converted;
-      continue;
-    }
-    if (converted === null) missing.add(b.account.currency);
-    else total += converted;
+  for (const [ccy, minor] of excludedByCcy) {
+    const converted = convertMinor(minor, ccy, base, lookup);
+    if (converted === null) excludedBaseMinor = null;
+    else if (excludedBaseMinor !== null) excludedBaseMinor += converted;
   }
   return {
     totalBaseMinor: total,

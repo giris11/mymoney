@@ -4,6 +4,45 @@ Status of every Phase 1 spec feature. Updated as work lands. (Phase 2/3 items ar
 
 **Legend:** ✅ done · 🟡 partial · ⬜ not started
 
+## Where this project is now (2026-09-01)
+
+**The PWA is unchanged, live, and still the only thing holding the real book.**
+1,130 tests pass, `tsc` is clean, nothing has been migrated, moved or turned
+off. Sync remains **HELD in code** (`src/sync/held.ts`) four rounds in — it has
+never run against real data and still awaits a review pass over the Dropbox
+rebuild.
+
+**A native iOS/macOS rewrite is being attempted alongside it** (D46). It has its
+own phase numbering — **native Phase 0, 1, 2 — which is NOT SPEC §8's Phase
+1/2/3.** Status of its gates:
+
+| native phase | what it was | gate | result |
+|---|---|---|---|
+| 0 | freeze a real backup that proves itself; build an oracle a port can be held to | 279 fixture cases exist, 267 hand-calculated; the frozen file's manifest and content hash are pinned | **passed** |
+| 1 | find out whether CloudKit can sync a ledger without silently losing rows, **before** any port begins | "no silent loss in any scripted scenario, and every conflict surfaces with all three record versions" | **FAILED**, on the delete path |
+| 2 | restate the money rules in Swift and hold them to the oracle and the frozen file | all 279 oracle cases pass; every account balance recomputed from the rows; a re-export byte-identical to the frozen file | **passed** |
+
+**The native Phase 1 gate failed, and the failure is worth stating plainly.**
+Three of eleven scripted CloudKit scenarios destroyed data with **no error, no
+event, no throw and no log line** — a stale delete overwrote an unseen edit, a
+three-generations-stale delete was indistinguishable from a current one, and a
+stale edit *resurrected* a deleted record. All three are delete-adjacent, and
+none is reachable by handling errors better, because CloudKit produces no error:
+`deleteRecord` carries a record id and nothing else, so there is no
+optimistic-concurrency check to fail. This is fixable above CloudKit — a ledger
+must never hard-delete, and deletion becomes a save of a tombstone (D48) — but
+it is app-level work CloudKit does not do for you, it is invisible until it
+costs a transaction, and **CloudKit's conflict handling does not count as solved
+until tombstones exist and are under permanent automated test.** The second half
+of the gate did pass, conditionally: every *edit* conflict surfaced with client,
+server and a correctly populated ancestor, provided the whole `CKRecord` is
+cached rather than its system fields (D47).
+
+Nothing about the native work has touched the real data. The frozen backup was
+opened read-only and is byte-identical afterwards, still `chmod 444`. The Swift
+package is untracked (`native/`, not committed), and no account name, payee,
+balance, total or hash from the real book appears in it or in these docs.
+
 ## Build plan (Phase 1)
 
 1. ✅ SPEC.md saved verbatim, git init, spec committed
@@ -218,18 +257,173 @@ Google's own consent window (that click is yours, not mine), then a first
   device"** button behind a confirmation — the choice is yours to make
   explicitly, never one the app makes for you.
 
+## The native rewrite (Swift, iOS/macOS) — 2026-09-01
+
+Why this is being attempted at all, what it buys and what it costs is D46. The
+short version: replication becomes the platform's problem instead of ours,
+storage stops being a cache the browser may evict, and four pieces of
+hand-written security code (PKCE flow, refresh-token store, compare-and-swap
+write discipline, causal-ancestry conflict engine — 4,078 lines under
+`src/sync/`) stop existing. Against that: Apple-only forever, and every bit of
+the reconciliation that proves the money correct has to be earned again from
+zero. **And the honest counter-argument is that the PWA works and the storage
+risk has not materialised.**
+
+### Native Phase 0 — the frozen file and the oracle · **done**
+
+- A backup of the real book was taken, verified, and frozen **read-only**
+  (`chmod 444`) outside the repository. Its manifest and canonical content hash
+  are recorded outside the file itself, so it can be proved unchanged rather
+  than assumed unchanged.
+- `tools/oracle/cases/*.json` — **279 cases, 267 of them hand-calculated** (not
+  generated from our own code) across money, fx, balances, budgets, reports and
+  import. `tools/oracle/README.md` documents the format and is explicit about
+  what it does **not** cover.
+- The web app's own suite regenerates and byte-compares those cases, so they
+  cannot drift from the TypeScript unnoticed.
+
+### Native Phase 1 — the CloudKit probe · **gate FAILED (delete path)**
+
+Throwaway app at `~/CloudKitProbe` driving a real CloudKit container with **50
+fabricated rows**. No real financial data was read; nothing under
+`/Users/gs/MyMoney/` was opened by it. Full log: `~/CloudKitProbe/results.log`.
+
+| scenario | question | result |
+|---|---|---|
+| S1 / S1b | 50 records land intact; does money survive? | **not lost** — 50/50 identical; `Int64` exact at 2^53+1, −(2^53+1) and `Int64.max`, `objCType 'q'` (D50) |
+| S2 | concurrent edit, same field | **not lost (loud)** — code 14 with client, server *and* a fully populated ancestor |
+| S2c | concurrent edit, different fields | **not lost** — true three-way merge, both edits kept, no user involvement |
+| S3a | remote delete vs local edit (tag cached) | **not lost** — refused and surfaced |
+| S3b | local delete vs remote edit | ***LOST*** — peer's edit destroyed, zero errors, zero events |
+| S3c | stale edit onto a deleted record, no cached tag | ***LOST*** — silent **resurrection** of a deleted row |
+| S3d | 3-generations-stale delete vs current delete | ***LOST*** — identical outcomes, indistinguishable |
+| S4a/S4b | `SIGKILL` mid-sync, then relaunch | **not lost** — 20/20 recovered, but as 20 *phantom self-conflicts* (D49) |
+| S5 | rolled-back device | **not lost** — heals, provided rows and state serialization roll back together |
+| S6 / S6b | 50 at once, then 600 | **not lost** — batches self-cap at 250; capping in the app was slower, not safer (D51) |
+| anc / 2X | 13-variant ancestor matrix, three runs | the rule in D47: cache the whole record, not `encodeSystemFields` |
+
+**Gate:** *"no silent loss in any scripted scenario, and every conflict surfaces
+with all three record versions."*
+
+- **Second clause: PASS**, conditionally — every edit conflict surfaced with
+  client, server and a correctly populated ancestor, including after 12
+  intervening generations, **provided the whole `CKRecord` is cached**. With
+  `encodeSystemFields` the ancestor arrives with zero data keys and the merge
+  silently degrades to a coin flip (D47).
+- **First clause: FAIL.** S3b, S3c and S3d lost data with no signal of any kind.
+- **Overall: FAIL, on the delete path.** Fixable above CloudKit with tombstones
+  (D48), not by better error handling — there is no error to handle.
+
+**What remains before this phase can be called passed:** tombstone records so
+every delete is a save; the same three scenarios re-run against them; a
+permanent test for the populated ancestor (Apple promises nothing about it);
+phantom-self-conflict suppression after a crash; and `atomicByZone` /
+state-serialization persistence handled for a first sync measured in minutes.
+
+Incidentally established, because it cost an afternoon: the Team ID is
+**AQ5Z6U57L5** (`D9URF77Y76` is the certificate's per-person identifier, not a
+team id), and `CKContainer(identifier:)` **SIGTRAPs** the process if it is not
+entitled for that container rather than throwing or returning nil.
+
+### Native Phase 2 — `MyMoneyKit`, the money rules in Swift · **gate PASSED**
+
+`/Users/gs/MyMoney/native/` — a dependency-free Swift 6 package (macOS 14+ /
+iOS 17+, strict concurrency). **142 tests in 19 suites**, clean `swift build`
+and `swift test` from a `rm -rf .build` rebuild, zero warnings. Library and
+tests only: no app, no UI, no persistence, no sync.
+
+| check | result |
+|---|---|
+| all 279 oracle cases, read from `tools/oracle/cases/` at test time, nothing copied | **279/279 pass** — money 71, fx 25, balances 16, budgets 45, reports 27, import 95 |
+| coverage asserted, not assumed (a new TypeScript case turns the Swift suite red rather than going unrun) | in place |
+| every account's closing balance recomputed **from the transaction rows** vs the file's own per-account figures | **58 of 58 exact**, zero mismatches |
+| net worth recomputed from those balances at the file's own rates | equals the manifest; no missing-rate currencies |
+| **re-export**: parsed document discarded, file rebuilt from the decoded Swift records, canonical content hash compared | **equal to the hash the browser computed** |
+| stronger than the hash: whole-file **byte-for-byte** comparison | **identical**, every byte |
+| the gate can go red: three deliberate sabotages | each produced its own distinct, named failure |
+
+The gate is **env-gated and skips without the frozen file** (and on a stale
+path), because this repository is public — every expectation is read out of the
+file's own manifest, so the test states no balance, no total and no hash. The
+frozen file was opened read-only and is byte-identical afterwards.
+
+Two findings from driving the real book that are not in the oracle:
+- **No amount in the book exceeds 2^53, and every split sums exactly to its
+  parent.** Both were checked, not assumed.
+- **`netWorth()` and `netWorthSeries()` round at different granularity**, so the
+  headline figure and the right-hand end of the chart disagree by pennies on a
+  book with two accounts in one foreign currency. The oracle cannot see it —
+  its fixture books have one account per currency. Swift reproduces both
+  behaviours faithfully rather than reconciling them (D54). **Open question for
+  Girish; not a decision taken.**
+
+**Judgement calls that a port silently gets wrong** are D53: JS-vs-Swift string
+comparison *and equality*, sort stability, locale tiebreaks (a flagged guess —
+the oracle does not exercise them), spelled-out character classes instead of
+ICU regex, UTF-16 code-unit lengths, and preserved float operand order. Three
+deliberate departures: the 2^53 parse ceiling is `Int64.max` instead (3 of 171
+parity inputs differ, and the count is asserted), overflow refuses rather than
+wraps, and duplicate ids are refused while non-summing splits are only warned.
+
+### What is NOT built, and what each would take
+
+| missing | note |
+|---|---|
+| **Tombstones and the delete path** | the native Phase 1 gate failure. Must exist and be tested before CloudKit counts as solved (D48) |
+| **Persistence (SQLite)** | must keep the tri-state on optional fields, or the app cannot write a byte-identical file for a book the browser wrote (D52) |
+| **Sync** | nothing is ported. The probe is a throwaway, not a foundation |
+| `buildImportPlan` / `commitImport` / `undoImport` | the biggest gap, ~900 lines of TypeScript, and it has a live consequence: the parsers scale amounts at a *guessed* currency, so a 0- or 3-decimal currency read through the Swift parsers alone is only provisionally scaled until the plan builder lands |
+| Write paths (`saveTransaction`, `saveTransfer`, `saveBudget`, `saveCategory`, `findOrCreateByPath`, `deleteCategory`) | the oracle states what the arithmetic *produces*, not what the app *accepts*; these need their own tests for split-must-sum, transfer-legs-in-step and undo |
+| Backup **writing** to a destination | the writer exists and is hash-exact; what is missing is a file picker and share sheet |
+| `allBudgetProgress`, `buildTree`, `categoryTree`, `fileSignature` | small, unused by the oracle, omitted rather than written untested |
+| UI, charts, migration of the real book | out of scope for these phases by design |
+
+**Not committed.** `native/` is untracked. `npm test` (1,130) and
+`npx tsc --noEmit` still pass; nothing outside `native/` was modified by the
+native work.
+
 ## Open items for Girish
 
-- **Drive sync is reviewed, fixed and not yet connected.** Press Connect on
-  Settings → Sync, approve in Google's window (it will warn the app is
-  "unverified" — it is yours, and the warning is what Google shows for any app
-  it has not reviewed), then Sync now.
+**On the PWA:**
+
+- **Sync is HELD in code and has never run.** The bullet that used to sit here
+  told you to connect Google Drive; that is out of date — Drive was abandoned
+  for Dropbox (D44/D45), and the hold (`src/sync/held.ts`) stays until a review
+  pass over the *new* design comes back empty. It is green, which is exactly
+  what the three previous rounds were.
 - **No test drives the engine and the real transport together.** Engine tests
   fake the transport; transport tests fake `fetch`. The seam between them is the
   one place a defect could still hide.
-- **Net-worth exclusion is built but nothing is excluded yet.** 68 Saint's Mary
-  Drive (£90,000), the gift cards and Money Lent & Owed are all still counted
-  inside the £429,327.86. Tell me which should come out and I'll apply it —
-  it changes only the total, never a balance or a transaction.
+- **Net-worth exclusion is built but nothing is excluded yet.** The property,
+  the gift cards and the Money Lent & Owed group are all still counted in the
+  headline figure. Tell me which should come out and I'll apply it — it changes
+  only the total, never a balance or a transaction. (Names and amounts that used
+  to be spelled out in this bullet have been removed: this repository is public.
+  They are still in the git history, which is worth knowing about.)
+- **`netWorth()` and `netWorthSeries()` disagree by pennies** on your book,
+  because one rounds per account and the other per currency (D54). Neither
+  number is stored and both are defensible, so this is your call, not mine —
+  but the dashboard total and the right-hand end of the chart do not match, and
+  it gets worse as more accounts share a currency.
+
+**On the native rewrite:**
+
+- **The native direction itself is the open question.** D46 lays out the case
+  both ways, including the strongest argument against: the PWA works and the
+  storage risk has not materialised. Nothing has been migrated and nothing is
+  committed; saying no costs only the Swift package.
+- **Tombstones are the gate the native work has not passed.** CloudKit deletes
+  are unprotected and lose data silently (D48). No port should go further until
+  soft-delete tombstones exist and the three losing scenarios are re-run green
+  against them.
+- **The `localeCompare` tiebreak in the Swift port is a guess.** It is pinned to
+  `en_GB` where the browser supplies its own locale, the oracle does not
+  exercise it, and it is flagged as a guess in the code rather than presented as
+  a port (D53).
+- **`~/CloudKitProbe` is a throwaway.** Delete it when it stops being useful;
+  `results.log` is the part worth keeping, and its conclusions are recorded as
+  D47–D51 so the log itself is not load-bearing.
+**Standing flags:**
+
 - `fake-indexeddb` added as a dev-only dependency for the mandated Dexie round-trip tests (D8) — flag per §11.7; say the word to remove.
 - Node.js was installed user-locally (D1) since the Mac had none.

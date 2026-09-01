@@ -11,7 +11,10 @@
 //    fingerprint the CONTENT;
 //  * restoreBackup RECOMPUTES every manifest figure from the rows that landed
 //    and refuses — aborting the transaction, changing nothing — if any of them
-//    disagrees, naming the account or table that does. A file with no manifest
+//    disagrees, naming the account or table that does. The recomputation uses
+//    the net-worth rule THE FILE'S OWN manifestVersion names (./manifest.ts
+//    NetWorthRule), so a file written under the older per-account rule is still
+//    checked the way it was written and still restores. A file with no manifest
 //    (every backup written before this existed, and every sync snapshot)
 //    restores exactly as it always did, and says it carries no self-check;
 //  * validateBackup fully validates shape/version BEFORE any write;
@@ -59,8 +62,11 @@ import {
   baseCurrencyFromRows,
   compareManifests,
   computeManifest,
+  CURRENT_NET_WORTH_RULE,
   isCheckableManifest,
+  MANIFEST_VERSION,
   manifestSourceFromTables,
+  netWorthRuleOfManifest,
   validateManifestShape,
   type BackupManifest,
   type ManifestSource,
@@ -133,6 +139,10 @@ export async function exportBackup(): Promise<BackupFile> {
         schemaVersion: SCHEMA_VERSION,
         exportedAt,
         baseCurrency: baseCurrencyFromRows(out, fallbackBaseCurrency()),
+        // New files state the rule the app itself now totals by, and the
+        // manifestVersion that names it (./manifest.ts NetWorthRule). Older
+        // files keep saying what they always said.
+        netWorthRule: CURRENT_NET_WORTH_RULE,
       }),
     };
   });
@@ -400,6 +410,18 @@ export async function restoreBackup(file: BackupFile): Promise<RestoreReport> {
       schemaVersion: claimed.schemaVersion,
       exportedAt: claimed.exportedAt,
       baseCurrency,
+      // THE FILE'S OWN VERSION CHOOSES THE ARITHMETIC — never this build's
+      // preference. The claim was computed by whichever build wrote the file,
+      // under the rule its manifestVersion names, and the only question a
+      // restore may ask is "do these rows still produce THAT". Recomputing an
+      // old file the new way would refuse a backup that is perfectly sound,
+      // over a penny of rounding, and refusing a sound backup is the one
+      // failure this whole subsystem exists to prevent.
+      // Unreachable as a throw — `claimed` is only set when
+      // isCheckableManifest agreed, which is exactly "this version has a known
+      // rule" — but stated as one anyway, because the alternative to throwing
+      // here is verifying under the wrong rule and calling it verified.
+      netWorthRule: netWorthRuleOfManifest(claimed),
     });
     const problems = compareManifests(claimed, landed, { settingsRowMintedLocally });
     if (problems.length > 0) throw new Error(refusalMessage(problems));
@@ -467,6 +489,10 @@ export async function bookManifest(): Promise<BackupManifest> {
       schemaVersion: SCHEMA_VERSION,
       exportedAt: nowISO(),
       baseCurrency: settings?.baseCurrency || fallbackBaseCurrency(),
+      // A statement about the book as it stands NOW, so it uses the rule the
+      // app's own headline figure uses — this is the number that must match
+      // what the screen says, not the number some older file said.
+      netWorthRule: CURRENT_NET_WORTH_RULE,
     });
   });
 }
@@ -628,6 +654,17 @@ export async function exportVerifiedBackup(): Promise<VerifiedExport> {
   if (!isCheckableManifest(claimed)) {
     throw new Error('The backup this app just wrote carries no manifest — nothing was saved.');
   }
+  if (claimed.manifestVersion !== MANIFEST_VERSION) {
+    // This build just wrote this file a few lines ago; it must be the version
+    // this build writes. Anything else means the export path and the manifest
+    // rule have come apart, and the check below would then be performed under
+    // whichever rule the file happened to claim — grading the work by the
+    // answer sheet it wrote itself.
+    throw new Error(
+      `The backup this app just wrote states manifest version ${claimed.manifestVersion}` +
+        `, but this build writes version ${MANIFEST_VERSION} — nothing was saved.`,
+    );
+  }
   const recomputed = computeManifest(manifestSourceFromTables(checked.file.tables), {
     schemaVersion: checked.file.schemaVersion,
     exportedAt: checked.file.exportedAt,
@@ -635,6 +672,10 @@ export async function exportVerifiedBackup(): Promise<VerifiedExport> {
     // settings row that failed to serialise must show up as a disagreement,
     // not be quietly papered over by the figure we are checking.
     baseCurrency: baseCurrencyFromRows(checked.file.tables, fallbackBaseCurrency()),
+    // Stated, not read off the claim — see the version check above. Verifying
+    // a FOUND file follows that file's version; verifying the bytes we just
+    // wrote follows the rule we meant to write.
+    netWorthRule: CURRENT_NET_WORTH_RULE,
   });
   const problems = compareManifests(claimed, recomputed);
   if (problems.length > 0) {

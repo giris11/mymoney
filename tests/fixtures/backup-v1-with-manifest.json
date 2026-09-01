@@ -1,0 +1,121 @@
+{
+  "app": "MyMoney",
+  "exportedAt": "2026-08-28T09:15:00.000Z",
+  "manifest": {
+    "accounts": [
+      {
+        "closingBalanceMinor": 705,
+        "counted": true,
+        "currency": "EUR",
+        "id": "acc-eur-a",
+        "name": "Euro Pot A",
+        "txCount": 0
+      },
+      {
+        "closingBalanceMinor": 705,
+        "counted": true,
+        "currency": "EUR",
+        "id": "acc-eur-b",
+        "name": "Euro Pot B",
+        "txCount": 0
+      }
+    ],
+    "exportedAt": "2026-08-28T09:15:00.000Z",
+    "manifestVersion": 1,
+    "netWorth": {
+      "baseCurrency": "GBP",
+      "missingRateCurrencies": [],
+      "rates": [
+        {
+          "from": "EUR",
+          "rate": 0.85,
+          "to": "GBP"
+        }
+      ],
+      "totalMinor": 1198
+    },
+    "rowCounts": {
+      "accountGroups": 0,
+      "accounts": 2,
+      "budgets": 0,
+      "categories": 0,
+      "fxRates": 1,
+      "importBatches": 0,
+      "payees": 0,
+      "settings": 1,
+      "tags": 0,
+      "transactions": 0
+    },
+    "schemaVersion": 1
+  },
+  "schemaVersion": 1,
+  "tables": {
+    "accountGroups": [],
+    "accounts": [
+      {
+        "archived": false,
+        "colour": "#22c55e",
+        "currency": "EUR",
+        "groupId": null,
+        "id": "acc-eur-a",
+        "name": "Euro Pot A",
+        "openingBalanceMinor": 705,
+        "sortOrder": 0,
+        "type": "savings"
+      },
+      {
+        "archived": false,
+        "colour": "#22c55e",
+        "currency": "EUR",
+        "groupId": null,
+        "id": "acc-eur-b",
+        "name": "Euro Pot B",
+        "openingBalanceMinor": 705,
+        "sortOrder": 1,
+        "type": "savings"
+      }
+    ],
+    "budgets": [],
+    "categories": [],
+    "fxRates": [
+      {
+        "asOf": "2026-08-01T08:00:00.000Z",
+        "base": "EUR",
+        "id": "EUR:GBP",
+        "quote": "GBP",
+        "rate": 0.85,
+        "source": "manual"
+      }
+    ],
+    "importBatches": [],
+    "payees": [],
+    "settings": [
+      {
+        "autoFxEnabled": true,
+        "baseCurrency": "GBP",
+        "createdAt": "2026-08-01T08:00:00.000Z",
+        "id": "app",
+        "lastBackupAt": null,
+        "lastFxSyncAt": null,
+        "lastFxSyncSource": null,
+        "lastUsedAccountId": null,
+        "onboarded": true,
+        "savedMappings": {},
+        "schemaVersion": 1,
+        "syncAncestry": [],
+        "syncClientId": null,
+        "syncDeviceId": "",
+        "syncDeviceName": "",
+        "syncEnabled": false,
+        "syncLastPulledRevision": 0,
+        "syncLastPulledSnapshotId": null,
+        "syncLastSyncedAt": null,
+        "syncLocalRevision": 0,
+        "syncSyncedLocalRevision": 0,
+        "theme": "system"
+      }
+    ],
+    "tags": [],
+    "transactions": []
+  }
+}

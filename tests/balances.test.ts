@@ -137,6 +137,43 @@ describe('accountBalances', () => {
 
 // ------------------------------------------------------------------- netWorth
 describe('netWorth', () => {
+  // The headline figure and the chart must agree, and until this test they did
+  // not. netWorth() converted once per ACCOUNT; netWorthSeries() sums per
+  // currency and converts once per currency per point. Two accounts sharing a
+  // non-base currency therefore produced two different net worths for one book.
+  //
+  // 705 + 705 = 1410 minor units at 0.85:
+  //     per account  → round(599.25) + round(599.25) = 599 + 599 = 1198
+  //     per currency → round(1198.5)                            = 1199
+  // Both are defensible alone. Showing both, for the same book, is not.
+  it('sums per currency before converting, so two accounts in one currency round once', async () => {
+    await updateSettings({ baseCurrency: 'GBP' });
+    await setManualRate('EUR', 'GBP', 0.85);
+    await makeAccount({ currency: 'EUR', openingBalanceMinor: 705 });
+    await makeAccount({ currency: 'EUR', openingBalanceMinor: 705 });
+
+    const nw = await netWorth();
+
+    // 1198 is the old per-account answer and is what fails without the fix.
+    expect(nw.totalBaseMinor).toBe(1199);
+    expect(nw.missingRateCurrencies).toEqual([]);
+  });
+
+  // Same rounding rule has to hold for the "not counted" total, which is shown
+  // beside the headline: an excluded pair must not drift from it either.
+  it('applies the same one-rounding-per-currency rule to the excluded total', async () => {
+    await updateSettings({ baseCurrency: 'GBP' });
+    await setManualRate('EUR', 'GBP', 0.85);
+    await makeAccount({ currency: 'EUR', openingBalanceMinor: 705, excludeFromNetWorth: true });
+    await makeAccount({ currency: 'EUR', openingBalanceMinor: 705, excludeFromNetWorth: true });
+
+    const nw = await netWorth();
+
+    expect(nw.totalBaseMinor).toBe(0);
+    expect(nw.excludedCount).toBe(2);
+    expect(nw.excludedBaseMinor).toBe(1199);
+  });
+
   it('empty database → zero in default base currency GBP', async () => {
     // excludedCount/excludedBaseMinor: nothing to exclude, and 0 (not null) —
     // null means "an excluded account could not be converted" (SPEC §6).

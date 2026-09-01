@@ -58,14 +58,20 @@ import {
 import {
   compareManifests,
   computeManifest,
+  CURRENT_NET_WORTH_RULE,
+  isCheckableManifest,
   manifestSourceFromTables,
   MANIFEST_VERSION,
+  manifestVersionForNetWorthRule,
+  netWorthRuleForManifestVersion,
   summariseManifest,
   validateManifestShape,
   type BackupManifest,
+  type NetWorthRule,
 } from '../src/backup/manifest';
 import { restoredNote, selfCheckNote } from '../src/ui/settings/RestoreFromBackup';
 import { netWorth } from '../src/domain/balances';
+import { netWorthSeries } from '../src/reports/aggregate';
 import { makeDedupeHash } from '../src/import/dedupe';
 import { sumSplits } from '../src/money/money';
 import type {
@@ -1904,14 +1910,14 @@ describe('compareManifests', () => {
         accounts: [seedAccounts[0]!],
         transactions: [seedTransactions[0]!],
       }),
-      { schemaVersion: SCHEMA_VERSION, exportedAt: T0, baseCurrency: 'GBP' },
+      { schemaVersion: SCHEMA_VERSION, exportedAt: T0, baseCurrency: 'GBP', netWorthRule: CURRENT_NET_WORTH_RULE },
     ) && {
       ...computeManifest(
         manifestSourceFromTables({
           accounts: [seedAccounts[0]!],
           transactions: [seedTransactions[0]!],
         }),
-        { schemaVersion: SCHEMA_VERSION, exportedAt: T0, baseCurrency: 'GBP' },
+        { schemaVersion: SCHEMA_VERSION, exportedAt: T0, baseCurrency: 'GBP', netWorthRule: CURRENT_NET_WORTH_RULE },
       ),
       ...over,
     };
@@ -2035,6 +2041,221 @@ describe('a backup written before manifests existed', () => {
     const report = await restoreBackup(noManifest as BackupFile);
     expect(report.verified).toBe(false);
     expect(await db.transactions.count()).toBe(seedTransactions.length);
+  });
+});
+
+// ===========================================================================
+// TASK 5 — ONE net-worth rule, and a version so old files keep theirs
+// ===========================================================================
+//
+// Net worth is computed in three places — domain/balances.ts netWorth() (the
+// headline), reports/aggregate.ts netWorthSeries() (the chart) and
+// backup/manifest.ts computeManifest() (the file). They disagreed about WHEN
+// to round: per account, or per currency. They now all sum per currency and
+// convert once.
+//
+// The manifest is the one that could not simply be changed. restoreBackup
+// recomputes it and REFUSES the restore on a disagreement, so re-rounding the
+// arithmetic would have made every backup already written unrestorable — a
+// data-loss bug introduced while fixing a cosmetic one. So the rule is carried
+// by manifestVersion: v1 means per-account and is frozen, v2 means
+// per-currency and is what new exports write, and a file is always verified
+// under the rule ITS OWN version names.
+//
+// THE FIXTURE BELOW WAS WRITTEN BY THE BUILD BEFORE THIS CHANGE — commit
+// 732ff57, its exportBackup(), against a seeded database, not hand-typed here.
+// Its book is the smallest one where the two rules genuinely differ: two
+// counted EUR accounts of 705 minor units each, one rate, EUR→GBP 0.85.
+//
+//     per account   round(705 × 0.85) × 2 = 599 + 599 = 1198   ← what it says
+//     per currency  round(1410 × 0.85 = 1198.5)       = 1199   ← what v2 says
+//
+// One penny, and it is the whole point: if the version did not select the
+// rule, restoring this file would be refused.
+
+const V1_MANIFEST_FIXTURE = readFileSync(
+  fileURLToPath(new URL('./fixtures/backup-v1-with-manifest.json', import.meta.url)),
+  'utf8',
+);
+
+const PER_ACCOUNT_TOTAL = 1198;
+const PER_CURRENCY_TOTAL = 1199;
+
+const v1File = (): BackupFile => JSON.parse(V1_MANIFEST_FIXTURE) as BackupFile;
+const v1Source = () => manifestSourceFromTables(v1File().tables);
+const v1Opts = (netWorthRule: NetWorthRule) => ({
+  schemaVersion: v1File().schemaVersion,
+  exportedAt: v1File().exportedAt,
+  baseCurrency: 'GBP',
+  netWorthRule,
+});
+
+describe('the version of a manifest is what selects its net-worth rule', () => {
+  it('maps every version this build knows, and admits the ones it does not', () => {
+    expect(netWorthRuleForManifestVersion(1)).toBe('per-account');
+    expect(netWorthRuleForManifestVersion(2)).toBe('per-currency');
+    expect(netWorthRuleForManifestVersion(MANIFEST_VERSION + 1)).toBeNull();
+    // The pairing is what keeps a file honest about its own arithmetic.
+    expect(manifestVersionForNetWorthRule('per-account')).toBe(1);
+    expect(manifestVersionForNetWorthRule('per-currency')).toBe(2);
+    expect(manifestVersionForNetWorthRule(CURRENT_NET_WORTH_RULE)).toBe(MANIFEST_VERSION);
+  });
+
+  it('gives 1198 under the v1 rule and 1199 under the v2 rule, on the same rows', () => {
+    const perAccount = computeManifest(v1Source(), v1Opts('per-account'));
+    const perCurrency = computeManifest(v1Source(), v1Opts('per-currency'));
+    expect(perAccount.netWorth.totalMinor).toBe(PER_ACCOUNT_TOTAL);
+    expect(perCurrency.netWorth.totalMinor).toBe(PER_CURRENCY_TOTAL);
+    expect(perAccount.manifestVersion).toBe(1);
+    expect(perCurrency.manifestVersion).toBe(2);
+  });
+
+  it('changes that one integer and NOTHING else', () => {
+    // The rule chooses when to round a TOTAL. Every other figure is a fact
+    // about the rows — including each account's own closing balance, which is
+    // a per-account figure and legitimately rounds per account.
+    const blank = (m: BackupManifest) => ({
+      ...m,
+      manifestVersion: 0,
+      netWorth: { ...m.netWorth, totalMinor: 0 },
+    });
+    expect(blank(computeManifest(v1Source(), v1Opts('per-account')))).toEqual(
+      blank(computeManifest(v1Source(), v1Opts('per-currency'))),
+    );
+  });
+
+  it('holds a v1 file to the v1 rule — the check that keeps it restorable', () => {
+    const claimed = v1File().manifest!;
+    expect(claimed.manifestVersion).toBe(1);
+    expect(claimed.netWorth.totalMinor).toBe(PER_ACCOUNT_TOTAL);
+    const byItsOwnVersion = computeManifest(
+      v1Source(),
+      v1Opts(netWorthRuleForManifestVersion(claimed.manifestVersion)!),
+    );
+    expect(compareManifests(claimed, byItsOwnVersion)).toEqual([]);
+  });
+
+  it('would refuse that same file if the new rule were applied to it', () => {
+    // This is the data-loss bug the versioning exists to prevent, spelled out:
+    // the naive change turns every backup Girish holds into this message.
+    const naive = computeManifest(v1Source(), v1Opts(CURRENT_NET_WORTH_RULE));
+    expect(compareManifests(v1File().manifest!, naive)).toEqual([
+      'net worth is £11.99, but the backup says £11.98',
+    ]);
+  });
+
+  // -------------------------------------------------------------------------
+  // A KNOWN VERSION IS STILL SHAPE-CHECKED, NOT JUST THE CURRENT ONE.
+  //
+  // validateManifestShape was widened alongside isCheckableManifest: it used to
+  // wave through anything that was not MANIFEST_VERSION, and now waves through
+  // only versions whose RULE is unknown. Both halves of that widening matter,
+  // and only one of them was pinned. Narrow this half back — `manifestVersion
+  // !== MANIFEST_VERSION → return null` — and a v1 file's manifest stops being
+  // shape-checked at all, while isCheckableManifest still says "check this",
+  // so restoreBackup goes on to compare against a manifest nothing validated.
+  // The whole 1,142-test suite stays green while it does. What that costs:
+  //
+  //   * a manifest claiming a DIFFERENT schema version, or a different export
+  //     instant, from the file it sits in restores and reports verified: true;
+  //   * a manifest with no rowCounts at all reaches compareManifests and dies
+  //     there with a raw "Cannot read properties of undefined", instead of the
+  //     plain refusal validateBackup exists to give.
+  //
+  // v1 is not a legacy corner: it is every backup written before this change,
+  // which is every backup that exists.
+  // -------------------------------------------------------------------------
+  const corruptV1 = (mutate: (m: BackupManifest) => void): unknown => {
+    const file = v1File();
+    mutate(file.manifest!);
+    return file;
+  };
+
+  it('rejects a v1 manifest that disagrees with its own file, before any write', () => {
+    expectError(
+      validateBackup(corruptV1((m) => { m.schemaVersion = 99; })),
+      /^Invalid backup: the manifest describes schema 99 but the file says 1$/,
+    );
+    expectError(
+      validateBackup(corruptV1((m) => { m.exportedAt = '1999-01-01T00:00:00.000Z'; })),
+      /^Invalid backup: the manifest was taken at a different time from the file it is in$/,
+    );
+  });
+
+  it('rejects a v1 manifest that is structurally incomplete, before any write', () => {
+    expectError(
+      validateBackup(corruptV1((m) => { delete (m as { rowCounts?: unknown }).rowCounts; })),
+      /^Invalid backup: the manifest has no row counts$/,
+    );
+    expectError(
+      validateBackup(
+        corruptV1((m) => { delete (m.accounts[0] as { counted?: unknown }).counted; }),
+      ),
+      /^Invalid backup: the manifest's account entry 0 is incomplete$/,
+    );
+    expectError(
+      validateBackup(
+        corruptV1((m) => { (m.netWorth as { totalMinor: unknown }).totalMinor = '1198'; }),
+      ),
+      /^Invalid backup: the manifest has no usable net-worth figure$/,
+    );
+  });
+});
+
+describe('a backup written under the old per-account rule', () => {
+  it('is a real v1 file: a manifest, version 1, totalled per account', () => {
+    const file = v1File();
+    expect(file.manifest!.manifestVersion).toBe(1);
+    expect(file.manifest!.netWorth.totalMinor).toBe(PER_ACCOUNT_TOTAL);
+    expect(file.manifest!.accounts.every((a) => a.counted && a.currency === 'EUR')).toBe(true);
+    expectOk(validateBackup(file));
+    // …and it is still a manifest this build will check, not one it shrugs at.
+    expect(isCheckableManifest(file.manifest)).toBe(true);
+  });
+
+  it('restores AND verifies, exactly as it did before the rule changed', async () => {
+    await seedAll(); // there is data here to be replaced
+    const report = await restoreBackup(v1File());
+    expect(report.verified).toBe(true);
+    expect(report.claimed!.manifestVersion).toBe(1);
+    // Recomputed under the file's own rule, so it states the file's own total.
+    expect(report.recomputed!.manifestVersion).toBe(1);
+    expect(report.recomputed!.netWorth.totalMinor).toBe(PER_ACCOUNT_TOTAL);
+    expect(await db.accounts.count()).toBe(2);
+  });
+
+  it('is described to the user as checkable, not as pre-manifest', () => {
+    const said = selfCheckNote(v1File().manifest);
+    expect(said).toContain('2 accounts, 0 transactions, net worth £11.98');
+    expect(said).toContain('refused');
+    expect(said).not.toContain('no self-check');
+  });
+
+  it('reads back as 1199 in the app — the figure MOVES, and that is the fix', async () => {
+    // The three computations that used to disagree, on the one book where the
+    // disagreement is visible: headline, chart, and the file's own manifest.
+    await clearAll();
+    await restoreBackup(v1File());
+    expect((await netWorth()).totalBaseMinor).toBe(PER_CURRENCY_TOTAL);
+    const series = await netWorthSeries({ from: '2026-08-01', to: '2026-08-31' });
+    expect(series.points.at(-1)!.totalBaseMinor).toBe(PER_CURRENCY_TOTAL);
+    const live = await bookManifest();
+    expect(live.manifestVersion).toBe(MANIFEST_VERSION);
+    expect(live.netWorth.totalMinor).toBe(PER_CURRENCY_TOTAL);
+  });
+
+  it('is not upgraded in place: exporting again writes v2, and that file verifies', async () => {
+    await clearAll();
+    await restoreBackup(v1File());
+    const again = await exportBackup();
+    expect(again.manifest!.manifestVersion).toBe(MANIFEST_VERSION);
+    expect(again.manifest!.netWorth.totalMinor).toBe(PER_CURRENCY_TOTAL);
+    // The rows are untouched by the re-rounding — only the stated total moved.
+    expect(again.tables.accounts).toEqual(v1File().tables.accounts);
+    await clearAll();
+    const report = await restoreBackup(reparse(again));
+    expect(report.verified).toBe(true);
+    expect(report.recomputed!.netWorth.totalMinor).toBe(PER_CURRENCY_TOTAL);
   });
 });
 

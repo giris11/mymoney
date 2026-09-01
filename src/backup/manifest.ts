@@ -40,13 +40,105 @@ import { convertMinor, formatMinor, makeRateLookup } from '../money/money';
  * Manifest format version — independent of the database SCHEMA_VERSION,
  * because the manifest can gain a claim without any row changing shape.
  *
- * A file whose manifestVersion is not this one is not checked (and says so):
- * an older build must still be able to restore a file a newer build wrote, and
- * the rows themselves are fully validated either way. Refusing would turn a
- * forward-compatible file into an unrestorable one, which is a worse failure
- * than an unverified restore that admits it is unverified.
+ * A file whose manifestVersion this build does not KNOW is not checked (and
+ * says so): an older build must still be able to restore a file a newer build
+ * wrote, and the rows themselves are fully validated either way. Refusing
+ * would turn a forward-compatible file into an unrestorable one, which is a
+ * worse failure than an unverified restore that admits it is unverified.
+ *
+ * EVERY VERSION THIS BUILD KNOWS IS STILL CHECKED — EACH BY ITS OWN RULE.
+ * The version is not "how new is this file"; it is WHICH ARITHMETIC PRODUCED
+ * THE NET-WORTH FIGURE INSIDE IT (see NetWorthRule). v1 files are recomputed
+ * the v1 way, forever.
  */
-export const MANIFEST_VERSION = 1;
+export const MANIFEST_VERSION = 2;
+
+/**
+ * HOW A MANIFEST'S NET-WORTH TOTAL WAS ARRIVED AT.
+ *
+ * Two counted accounts in the same non-base currency can be totalled two ways,
+ * and the two do not always agree, because conversion rounds:
+ *
+ *     705 + 705 EUR at 0.85 → per account:  round(599.25) + round(599.25) = 1198
+ *                             per currency: round(1410 x 0.85 = 1198.5)   = 1199
+ *
+ *  * 'per-account'  — convert each counted account's closing balance, then
+ *    add. This is what MANIFEST_VERSION 1 means. Every backup file already in
+ *    existence says it, and that meaning is now FROZEN. A v1 manifest is a
+ *    record of arithmetic that was already performed, by a build that no
+ *    longer exists; reinterpreting it would not make the old file wrong, it
+ *    would make it UNRESTORABLE — restoreBackup recomputes every figure and
+ *    refuses the restore on a disagreement, so "recompute it the new way"
+ *    means "refuse every backup Girish is holding". Fixing a rounding
+ *    cosmetic by making the safety net reject the files it exists to accept is
+ *    not a fix.
+ *  * 'per-currency' — add each currency's counted balances up IN that
+ *    currency, then convert each subtotal exactly once. MANIFEST_VERSION 2,
+ *    and what this build exports.
+ *
+ * WHY PER-CURRENCY IS THE RULE GOING FORWARD: it rounds once per currency
+ * instead of once per account, so the error cannot grow with the number of
+ * accounts; it is the ordinary accounting treatment (total in the source
+ * currency, then convert); and it is what reports/aggregate.ts netWorthSeries()
+ * has always done, so adopting it leaves the chart's history truthful instead
+ * of retroactively re-rounding it. domain/balances.ts netWorth() — the
+ * headline figure — now does the same. This manifest is the THIRD place that
+ * number is computed, and a file whose stated net worth disagrees with the
+ * screen is a file that cannot be used to check anything.
+ *
+ * A v1 FILE IS NEVER SILENTLY UPGRADED. Restore a v1 backup and export again
+ * and the new file carries a v2 manifest whose totalMinor may differ from the
+ * v1 one by a penny or two. That is correct and expected — one book, stated
+ * under a better rule — and it is NOT corruption, however much a figure that
+ * moves across a round trip looks like it. The version beside it is what says
+ * which of the two it is.
+ */
+export type NetWorthRule = 'per-account' | 'per-currency';
+
+/** The rule new exports are written under. Pairs with MANIFEST_VERSION. */
+export const CURRENT_NET_WORTH_RULE: NetWorthRule = 'per-currency';
+
+/**
+ * The rule a manifest of this version was computed under — null when this
+ * build has never heard of the version, the one case where a manifest cannot
+ * be checked at all (isCheckableManifest).
+ *
+ * APPEND-ONLY. Changing what an existing number means would un-restore every
+ * file already carrying it.
+ */
+export function netWorthRuleForManifestVersion(version: number): NetWorthRule | null {
+  if (version === 1) return 'per-account';
+  if (version === 2) return 'per-currency';
+  return null;
+}
+
+/** The other direction: a manifest computed under this rule states this version. */
+export function manifestVersionForNetWorthRule(rule: NetWorthRule): number {
+  return rule === 'per-account' ? 1 : 2;
+}
+
+/**
+ * The rule a manifest that is about to be CHECKED was computed under.
+ *
+ * Separate from netWorthRuleForManifestVersion so that no caller on the
+ * verifying path has to write `!` over a nullable rule. An `undefined` that
+ * slipped through would compare unequal to 'per-currency', fall through to the
+ * per-account arithmetic, and verify the file under the WRONG rule — silently,
+ * with a plausible answer. That is precisely the failure this whole change
+ * exists to remove, so it throws instead: inside restoreBackup's transaction a
+ * throw aborts and changes nothing, which is the right answer to "I do not know
+ * how to check this".
+ */
+export function netWorthRuleOfManifest(manifest: BackupManifest): NetWorthRule {
+  const rule = netWorthRuleForManifestVersion(manifest.manifestVersion);
+  if (rule === null) {
+    throw new Error(
+      `This backup states manifest version ${manifest.manifestVersion}, which this build ` +
+        'does not know how to check.',
+    );
+  }
+  return rule;
+}
 
 /** What one account was worth when the backup was taken. */
 export interface ManifestAccount {
@@ -169,24 +261,54 @@ export interface ManifestOptions {
    * the two disagree instead of silently using a different divisor.
    */
   baseCurrency: string;
+  /**
+   * Which net-worth arithmetic to use — and therefore which manifestVersion
+   * the result is stamped with. Explicit and required, never defaulted:
+   * exporting passes CURRENT_NET_WORTH_RULE, and every VERIFYING caller passes
+   * the rule THE MANIFEST IT IS CHECKING declares, via
+   * netWorthRuleForManifestVersion(). A default here would quietly hold an old
+   * file to a rule it was never computed under, and the restore would refuse
+   * a backup that is perfectly sound.
+   */
+  netWorthRule: NetWorthRule;
 }
 
 /**
- * The manifest for a set of rows.
+ * The manifest for a set of rows, computed under the rule the caller names.
  *
  * The net-worth arithmetic is deliberately the same as domain/balances.ts
  * netWorth(): archived or excluded accounts are out of the total (but keep
  * their real closing balance here, because that is a fact about the account),
- * conversion happens once per account through convertMinor — integer minor
- * units in, integer minor units out, rounded half away from zero exactly once —
- * and a currency with no rate to base is named rather than guessed at.
+ * conversion goes through convertMinor — integer minor units in, integer minor
+ * units out, rounded half away from zero exactly once — and a currency with no
+ * rate to base is named rather than guessed at.
+ *
+ * WHAT opts.netWorthRule CHANGES, AND WHAT IT CANNOT. It chooses only WHEN the
+ * rounding happens: once per counted account ('per-account', v1) or once per
+ * currency ('per-currency', v2). Everything else in this manifest is a fact
+ * about the rows and is identical either way — the per-account closing
+ * balances (a per-account figure legitimately rounds per account: it IS one
+ * account), the row counts, the rates that were applied, and the currencies
+ * that had none. So a v1 file and a v2 file of the same book differ in exactly
+ * one integer, and only when two counted accounts share a non-base currency.
+ *
+ * The stamped manifestVersion comes FROM the rule, never from a parameter of
+ * its own: a manifest that said v1 while holding a per-currency total would be
+ * a file that lies about its own arithmetic, and every later verification of
+ * it would be checked the wrong way round.
  */
 export function computeManifest(src: ManifestSource, opts: ManifestOptions): BackupManifest {
   const lookup = makeRateLookup(src.fxRates);
   const accounts: ManifestAccount[] = [];
   const rates = new Map<string, ManifestRate>();
   const missing = new Set<string>();
-  let totalMinor = 0;
+  // Both totals are accumulated in one pass over the accounts, and the rule
+  // picks which one is stated. They are gathered together rather than in two
+  // branches so that the rates applied and the currencies with no rate — facts
+  // about the book, not about the rule — cannot come out differently for a v1
+  // file and a v2 file of the same rows.
+  let perAccountTotal = 0;
+  const countedByCurrency = new Map<string, number>();
 
   // Sorted by id so the manifest is byte-stable regardless of how the rows
   // arrived (canonical.ts fixes key order; row order is fixed here and in the
@@ -205,6 +327,10 @@ export function computeManifest(src: ManifestSource, opts: ManifestOptions): Bac
       counted,
     });
     if (!counted) continue;
+    countedByCurrency.set(
+      account.currency,
+      (countedByCurrency.get(account.currency) ?? 0) + closingBalanceMinor,
+    );
     const converted = convertMinor(
       closingBalanceMinor,
       account.currency,
@@ -212,10 +338,13 @@ export function computeManifest(src: ManifestSource, opts: ManifestOptions): Bac
       lookup,
     );
     if (converted === null) {
+      // A currency with no rate to base cannot be converted at either
+      // granularity — convertMinor returns null on the missing RATE, not on
+      // the amount — so this list is the same under both rules.
       missing.add(account.currency);
       continue;
     }
-    totalMinor += converted;
+    perAccountTotal += converted;
     if (account.currency !== opts.baseCurrency && !rates.has(account.currency)) {
       // The rate as USED, which may be the reciprocal of the stored row
       // (makeRateLookup inverts when only the other direction exists). Writing
@@ -228,8 +357,20 @@ export function computeManifest(src: ManifestSource, opts: ManifestOptions): Bac
     }
   }
 
+  let totalMinor = perAccountTotal;
+  if (opts.netWorthRule === 'per-currency') {
+    // Sum in the source currency, convert the subtotal once. The nulls are the
+    // currencies already named in `missing` above; skipping them here keeps
+    // the total honest about what it does not include (SPEC §6).
+    totalMinor = 0;
+    for (const [currency, minor] of countedByCurrency) {
+      const converted = convertMinor(minor, currency, opts.baseCurrency, lookup);
+      if (converted !== null) totalMinor += converted;
+    }
+  }
+
   return {
-    manifestVersion: MANIFEST_VERSION,
+    manifestVersion: manifestVersionForNetWorthRule(opts.netWorthRule),
     schemaVersion: opts.schemaVersion,
     exportedAt: opts.exportedAt,
     rowCounts: { ...src.rowCounts },
@@ -269,7 +410,11 @@ export function validateManifestShape(
   if (!isInt(manifest.manifestVersion) || manifest.manifestVersion < 1) {
     return 'Invalid backup: the manifest has no version number';
   }
-  if (manifest.manifestVersion !== MANIFEST_VERSION) return null; // not ours to judge
+  // Not ours to judge — a version whose net-worth RULE this build does not
+  // know (a future one). Every version it does know is shape-checked here and
+  // arithmetic-checked later against its own rule; v1 and v2 have the same
+  // shape, and only the meaning of netWorth.totalMinor differs.
+  if (netWorthRuleForManifestVersion(manifest.manifestVersion) === null) return null;
 
   if (manifest.schemaVersion !== file.schemaVersion) {
     return `Invalid backup: the manifest describes schema ${String(
@@ -326,9 +471,22 @@ export function validateManifestShape(
   return null;
 }
 
-/** Is this a manifest this build knows how to check? */
+/**
+ * Is this a manifest this build knows how to check?
+ *
+ * "Knows how to check" means "knows which net-worth rule produced it", which
+ * is every version in netWorthRuleForManifestVersion — NOT only the current
+ * one. Narrowing this to MANIFEST_VERSION would silently drop the self-check
+ * on every backup written before the rule changed, which is most of the files
+ * that exist: they would still restore, but unverified, and the whole point of
+ * the manifest is that a restore is held to the file's own figures.
+ */
 export function isCheckableManifest(manifest: unknown): manifest is BackupManifest {
-  return isRow(manifest) && manifest.manifestVersion === MANIFEST_VERSION;
+  return (
+    isRow(manifest) &&
+    typeof manifest.manifestVersion === 'number' &&
+    netWorthRuleForManifestVersion(manifest.manifestVersion) !== null
+  );
 }
 
 const count = (n: number): string => n.toLocaleString('en-GB');
