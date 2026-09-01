@@ -1,6 +1,6 @@
 // The oracle, run against Swift. EVERY case, in every file.
 //
-// tools/oracle/cases/*.json is 279 cases -- 267 of them HAND-CALCULATED, not
+// tools/oracle/cases/*.json is 284 cases -- 272 of them HAND-CALCULATED, not
 // captured from any implementation -- that state what this app's arithmetic
 // produces, in a form that has nothing to do with TypeScript. tools/oracle/
 // README.md says why it exists: the 1,100-odd tests in tests/ are the most
@@ -744,9 +744,9 @@ struct OracleTests {
     static let census: [(file: String, area: String, count: Int)] = [
         ("money.json", "money", 71),
         ("fx.json", "fx", 25),
-        ("balances.json", "balances", 16),
+        ("balances.json", "balances", 19),
         ("budgets.json", "budgets", 45),
-        ("reports.json", "reports", 27),
+        ("reports.json", "reports", 29),
         ("import.json", "import", 95),
     ]
 
@@ -756,13 +756,13 @@ struct OracleTests {
     @Test("oracle: fx.json (25 cases)")
     func fx() throws { try run(try Self.load("fx.json")) }
 
-    @Test("oracle: balances.json (16 cases)")
+    @Test("oracle: balances.json (19 cases)")
     func balances() throws { try run(try Self.load("balances.json")) }
 
     @Test("oracle: budgets.json (45 cases)")
     func budgets() throws { try run(try Self.load("budgets.json")) }
 
-    @Test("oracle: reports.json (27 cases)")
+    @Test("oracle: reports.json (29 cases)")
     func reports() throws { try run(try Self.load("reports.json")) }
 
     @Test("oracle: import.json (95 cases)")
@@ -808,11 +808,11 @@ struct OracleTests {
 
     /// The oracle is the size and shape this harness thinks it is.
     ///
-    /// Six files, 279 cases, none of them skipped and none of them missing. If
+    /// Six files, 284 cases, none of them skipped and none of them missing. If
     /// this fails, the answer is never to edit the numbers: it is that the
     /// fixtures moved, and somebody has to decide whether the money rules were
     /// meant to move with them.
-    @Test("oracle: all six files are driven, and all 279 cases")
+    @Test("oracle: all six files are driven, and all 284 cases")
     func theOracleIsWhatWeThinkItIs() throws {
         let present = Set(
             try FileManager.default.contentsOfDirectory(atPath: Self.casesDirectory.path)
@@ -827,7 +827,51 @@ struct OracleTests {
             #expect(Set(file.cases.map(\.id)).count == file.cases.count, "\(entry.file) has a duplicate id")
             total += file.cases.count
         }
-        #expect(total == 279, "the oracle is no longer 279 cases")
+        #expect(total == 284, "the oracle is no longer 284 cases")
+    }
+
+    /// THE INVARIANT THE ORIGINAL DEFECT VIOLATED: the headline figure and the
+    /// right-hand end of the chart are the SAME NUMBER for the SAME BOOK.
+    ///
+    /// `netWorth` (balances.json) and `netWorthSeries` (reports.json) are
+    /// different functions in different files, and they used to round
+    /// differently -- one per account, one per currency -- so the dashboard
+    /// headline and the last point of the net-worth chart disagreed by a penny
+    /// on the owner's real book. Nothing could catch it while every fixture
+    /// book had at most one counted account per currency, because there the
+    /// two rules are the same arithmetic.
+    ///
+    /// The two books named here have several counted accounts sharing a
+    /// currency, and each one's series range ends after its last transaction,
+    /// so the final point is the whole book -- exactly what the headline
+    /// states. Comparing the two FIXTURES (not two Swift results) is
+    /// deliberate: it means "fixing" one file's expectation without the other
+    /// is a red suite rather than a quietly restored bug.
+    @Test("oracle: the headline figure and the last point of the chart agree")
+    func headlineMatchesChart() throws {
+        let balances = try Self.load("balances.json")
+        let reports = try Self.load("reports.json")
+        for book in ["rounding-pair", "shared-currency"] {
+            let headline = try #require(
+                balances.cases.first {
+                    $0.op == "balances.netWorth" && $0.input["book"]?.stringValue == book
+                },
+                "balances.json no longer carries a netWorth case for the \(book) book"
+            )
+            let chart = try #require(
+                reports.cases.first {
+                    $0.op == "reports.netWorthSeries" && $0.input["book"]?.stringValue == book
+                },
+                "reports.json no longer carries a netWorthSeries case for the \(book) book"
+            )
+            let lastPoint = try #require(chart.expect["points"]?.arrayValue?.last)
+            #expect(
+                headline.expect["totalBaseMinor"]?.intValue == lastPoint["totalBaseMinor"]?.intValue,
+                """
+                \(book): \(headline.id) says \(headline.expect["totalBaseMinor"]?.intValue ?? -1)                 and the last point of \(chart.id) says \(lastPoint["totalBaseMinor"]?.intValue ?? -1).                 Two figures for one book, and that disagreement IS the defect these books exist to catch.
+                """
+            )
+        }
     }
 
     /// The hand-calculated cases are the ones that state what the money SHOULD
@@ -844,7 +888,7 @@ struct OracleTests {
                 if c.provenance == "hand-calculated" { hand += 1 } else { derived += 1 }
             }
         }
-        #expect(hand == 267, "the hand-calculated count moved")
+        #expect(hand == 272, "the hand-calculated count moved")
         #expect(derived == 12, "the derived count moved")
     }
 }

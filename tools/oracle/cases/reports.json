@@ -9,6 +9,7 @@
   "notes": [
     "Date ranges are inclusive of both endpoints. An inverted range yields nothing.",
     "Every figure is in the BASE currency; each contribution is converted ONCE.",
+    "netWorthSeries totals PER CURRENCY and converts each currency’s running subtotal once per sample point — the same rule as netWorth(), so the chart’s last point and the headline figure are the same integer for the same book (reports.rounding-pair.net-worth-series and balances.rounding-pair.net-worth state it twice on purpose).",
     "A transaction whose currency has no rate to base is excluded from the whole report and counted once in missingRateCount.",
     "Transfer legs (transferGroupId non-null) are excluded from every flow report but are real to balances and net worth (D13).",
     "A split transaction contributes each split under the SPLIT’s category, carrying the parent’s payee, tags, date and currency.",
@@ -605,6 +606,378 @@
           "currency": "GBP",
           "payeeId": "r-p-shop",
           "categoryId": "c-groceries",
+          "tagIds": [],
+          "status": "cleared",
+          "splits": [],
+          "transferGroupId": null,
+          "notes": ""
+        }
+      ]
+    },
+    "rounding-pair": {
+      "baseCurrency": "GBP",
+      "fxRates": [
+        {
+          "base": "EUR",
+          "quote": "GBP",
+          "rate": 0.85
+        }
+      ],
+      "accounts": [
+        {
+          "id": "rp-cur",
+          "name": "Current",
+          "type": "current",
+          "currency": "GBP",
+          "openingBalanceMinor": 0,
+          "archived": false,
+          "excludeFromNetWorth": false,
+          "sortOrder": 0
+        },
+        {
+          "id": "rp-eur-1",
+          "name": "Euro One",
+          "type": "current",
+          "currency": "EUR",
+          "openingBalanceMinor": 705,
+          "archived": false,
+          "excludeFromNetWorth": false,
+          "sortOrder": 1
+        },
+        {
+          "id": "rp-eur-2",
+          "name": "Euro Two",
+          "type": "current",
+          "currency": "EUR",
+          "openingBalanceMinor": 705,
+          "archived": false,
+          "excludeFromNetWorth": false,
+          "sortOrder": 2
+        }
+      ],
+      "categories": [],
+      "payees": [],
+      "tags": [],
+      "transactions": []
+    },
+    "shared-currency": {
+      "baseCurrency": "GBP",
+      "fxRates": [
+        {
+          "base": "EUR",
+          "quote": "GBP",
+          "rate": 0.75
+        },
+        {
+          "base": "JPY",
+          "quote": "GBP",
+          "rate": 0.0078125
+        },
+        {
+          "base": "BHD",
+          "quote": "GBP",
+          "rate": 2.25
+        }
+      ],
+      "accounts": [
+        {
+          "id": "s-cur",
+          "name": "Current",
+          "type": "current",
+          "currency": "GBP",
+          "openingBalanceMinor": 150000,
+          "archived": false,
+          "excludeFromNetWorth": false,
+          "sortOrder": 0
+        },
+        {
+          "id": "s-sav",
+          "name": "Savings",
+          "type": "savings",
+          "currency": "GBP",
+          "openingBalanceMinor": 50000,
+          "archived": false,
+          "excludeFromNetWorth": false,
+          "sortOrder": 1
+        },
+        {
+          "id": "s-eur-a",
+          "name": "Euro Current",
+          "type": "current",
+          "currency": "EUR",
+          "openingBalanceMinor": 53050,
+          "archived": false,
+          "excludeFromNetWorth": false,
+          "sortOrder": 2
+        },
+        {
+          "id": "s-eur-b",
+          "name": "Euro Savings",
+          "type": "savings",
+          "currency": "EUR",
+          "openingBalanceMinor": 12050,
+          "archived": false,
+          "excludeFromNetWorth": false,
+          "sortOrder": 3
+        },
+        {
+          "id": "s-eur-c",
+          "name": "Euro Cash",
+          "type": "cash",
+          "currency": "EUR",
+          "openingBalanceMinor": 9050,
+          "archived": false,
+          "excludeFromNetWorth": false,
+          "sortOrder": 4
+        },
+        {
+          "id": "s-eur-x1",
+          "name": "Euro Voucher",
+          "type": "cash",
+          "currency": "EUR",
+          "openingBalanceMinor": 6500,
+          "archived": false,
+          "excludeFromNetWorth": true,
+          "sortOrder": 5
+        },
+        {
+          "id": "s-eur-x2",
+          "name": "Euro Deposit Held",
+          "type": "cash",
+          "currency": "EUR",
+          "openingBalanceMinor": 3050,
+          "archived": false,
+          "excludeFromNetWorth": true,
+          "sortOrder": 6
+        },
+        {
+          "id": "s-eur-old",
+          "name": "Euro Account (closed)",
+          "type": "savings",
+          "currency": "EUR",
+          "openingBalanceMinor": 10000,
+          "archived": true,
+          "excludeFromNetWorth": false,
+          "sortOrder": 7
+        },
+        {
+          "id": "s-jpy-a",
+          "name": "Yen Card",
+          "type": "credit_card",
+          "currency": "JPY",
+          "openingBalanceMinor": 0,
+          "archived": false,
+          "excludeFromNetWorth": false,
+          "sortOrder": 8
+        },
+        {
+          "id": "s-jpy-b",
+          "name": "Yen Loan",
+          "type": "loan",
+          "currency": "JPY",
+          "openingBalanceMinor": -50000,
+          "archived": false,
+          "excludeFromNetWorth": false,
+          "sortOrder": 9
+        },
+        {
+          "id": "s-bhd-a",
+          "name": "Dinar Current",
+          "type": "current",
+          "currency": "BHD",
+          "openingBalanceMinor": 13500,
+          "archived": false,
+          "excludeFromNetWorth": false,
+          "sortOrder": 10
+        },
+        {
+          "id": "s-bhd-b",
+          "name": "Dinar Savings",
+          "type": "savings",
+          "currency": "BHD",
+          "openingBalanceMinor": 11500,
+          "archived": false,
+          "excludeFromNetWorth": false,
+          "sortOrder": 11
+        },
+        {
+          "id": "s-chf-a",
+          "name": "Franc Current",
+          "type": "current",
+          "currency": "CHF",
+          "openingBalanceMinor": 20000,
+          "archived": false,
+          "excludeFromNetWorth": false,
+          "sortOrder": 12
+        },
+        {
+          "id": "s-chf-b",
+          "name": "Franc Savings",
+          "type": "savings",
+          "currency": "CHF",
+          "openingBalanceMinor": 5000,
+          "archived": false,
+          "excludeFromNetWorth": false,
+          "sortOrder": 13
+        },
+        {
+          "id": "s-gbp-x",
+          "name": "Gift Cards",
+          "type": "cash",
+          "currency": "GBP",
+          "openingBalanceMinor": 2500,
+          "archived": false,
+          "excludeFromNetWorth": true,
+          "sortOrder": 14
+        }
+      ],
+      "categories": [
+        {
+          "id": "sc-shopping",
+          "name": "Shopping",
+          "kind": "expense",
+          "parentId": null,
+          "archived": false,
+          "sortOrder": 0
+        }
+      ],
+      "payees": [],
+      "tags": [],
+      "transactions": [
+        {
+          "id": "sc1",
+          "accountId": "s-cur",
+          "date": "2026-05-10",
+          "amountMinor": -5000,
+          "currency": "GBP",
+          "payeeId": null,
+          "categoryId": "sc-shopping",
+          "tagIds": [],
+          "status": "pending",
+          "splits": [],
+          "transferGroupId": null,
+          "notes": ""
+        },
+        {
+          "id": "sc2",
+          "accountId": "s-cur",
+          "date": "2026-05-15",
+          "amountMinor": -20000,
+          "currency": "GBP",
+          "payeeId": null,
+          "categoryId": null,
+          "tagIds": [],
+          "status": "cleared",
+          "splits": [],
+          "transferGroupId": "sc-tg1",
+          "notes": ""
+        },
+        {
+          "id": "sc3",
+          "accountId": "s-sav",
+          "date": "2026-05-15",
+          "amountMinor": 20000,
+          "currency": "GBP",
+          "payeeId": null,
+          "categoryId": null,
+          "tagIds": [],
+          "status": "cleared",
+          "splits": [],
+          "transferGroupId": "sc-tg1",
+          "notes": ""
+        },
+        {
+          "id": "sc4",
+          "accountId": "s-eur-a",
+          "date": "2026-05-20",
+          "amountMinor": -5000,
+          "currency": "EUR",
+          "payeeId": null,
+          "categoryId": "sc-shopping",
+          "tagIds": [],
+          "status": "cleared",
+          "splits": [],
+          "transferGroupId": null,
+          "notes": ""
+        },
+        {
+          "id": "sc5",
+          "accountId": "s-bhd-a",
+          "date": "2026-05-22",
+          "amountMinor": -1000,
+          "currency": "BHD",
+          "payeeId": null,
+          "categoryId": "sc-shopping",
+          "tagIds": [],
+          "status": "cleared",
+          "splits": [],
+          "transferGroupId": null,
+          "notes": ""
+        },
+        {
+          "id": "sc6",
+          "accountId": "s-eur-a",
+          "date": "2026-06-05",
+          "amountMinor": -3000,
+          "currency": "EUR",
+          "payeeId": null,
+          "categoryId": "sc-shopping",
+          "tagIds": [],
+          "status": "pending",
+          "splits": [],
+          "transferGroupId": null,
+          "notes": ""
+        },
+        {
+          "id": "sc7",
+          "accountId": "s-eur-c",
+          "date": "2026-06-10",
+          "amountMinor": -1000,
+          "currency": "EUR",
+          "payeeId": null,
+          "categoryId": "sc-shopping",
+          "tagIds": [],
+          "status": "cleared",
+          "splits": [],
+          "transferGroupId": null,
+          "notes": ""
+        },
+        {
+          "id": "sc8",
+          "accountId": "s-jpy-a",
+          "date": "2026-06-12",
+          "amountMinor": -18000,
+          "currency": "JPY",
+          "payeeId": null,
+          "categoryId": "sc-shopping",
+          "tagIds": [],
+          "status": "cleared",
+          "splits": [],
+          "transferGroupId": null,
+          "notes": ""
+        },
+        {
+          "id": "sc9",
+          "accountId": "s-eur-old",
+          "date": "2026-06-15",
+          "amountMinor": -1000,
+          "currency": "EUR",
+          "payeeId": null,
+          "categoryId": "sc-shopping",
+          "tagIds": [],
+          "status": "cleared",
+          "splits": [],
+          "transferGroupId": null,
+          "notes": ""
+        },
+        {
+          "id": "sc10",
+          "accountId": "s-eur-x1",
+          "date": "2026-06-18",
+          "amountMinor": -450,
+          "currency": "EUR",
+          "payeeId": null,
+          "categoryId": "sc-shopping",
           "tagIds": [],
           "status": "cleared",
           "splits": [],
@@ -1456,6 +1829,58 @@
         "missingRateCount": 0
       },
       "provenance": "hand-calculated"
+    },
+    {
+      "id": "reports.rounding-pair.net-worth-series",
+      "describes": "the chart over two counted €7.05 accounts ends at £11.99 — the SAME integer balances.rounding-pair.net-worth states for the headline over the same book, because both round the €14.10 subtotal once",
+      "op": "reports.netWorthSeries",
+      "input": {
+        "book": "rounding-pair",
+        "from": "2026-01-01",
+        "to": "2026-01-31"
+      },
+      "expect": {
+        "points": [
+          {
+            "date": "2026-01-31",
+            "totalBaseMinor": 1199
+          }
+        ],
+        "missingRateCurrencies": []
+      },
+      "provenance": "hand-calculated",
+      "note": "Hand-calculated: (705 + 705) × 0.85 = 1198.5 → 1199, half away from zero, once. A port that converts per account gets 599 + 599 = 1198 here or in balances.rounding-pair.net-worth — and if it gets 1198 in only ONE of them it has reproduced the original defect exactly: a headline and a chart that disagree about the same book."
+    },
+    {
+      "id": "reports.shared-currency.net-worth-series",
+      "describes": "five currencies and eleven counted accounts sampled at three month ends: £2,132.00 at May end, £1,961.38 at June end — the same figure balances.shared-currency.net-worth states — and July unchanged because nothing happened",
+      "op": "reports.netWorthSeries",
+      "input": {
+        "book": "shared-currency",
+        "from": "2026-05-01",
+        "to": "2026-07-31"
+      },
+      "expect": {
+        "points": [
+          {
+            "date": "2026-05-31",
+            "totalBaseMinor": 213200
+          },
+          {
+            "date": "2026-06-30",
+            "totalBaseMinor": 196138
+          },
+          {
+            "date": "2026-07-31",
+            "totalBaseMinor": 196138
+          }
+        ],
+        "missingRateCurrencies": [
+          "CHF"
+        ]
+      },
+      "provenance": "hand-calculated",
+      "note": "Hand-calculated. Running totals are kept PER CURRENCY in integer minor units and converted once per currency per point. Seeded from the counted, rated openings: GBP 150000 + 50000 = 200000; EUR 53050 + 12050 + 9050 = 74150; JPY 0 + −50000 = −50000; BHD 13500 + 11500 = 25000; CHF has no rate so its two accounts are dropped up front and CHF is named once. 31 MAY, after −5000 and −20000 and +20000 (GBP), −5000 (EUR), −1000 (BHD): GBP 195000; EUR 69150 → 51862.5 → 51863; JPY −50000 → −39062.5 → −39063; BHD 24000 → 5400; total 213200. 30 JUNE, after −3000 and −1000 (EUR) and −18000 (JPY): EUR 65150 → 48863; JPY −68000 → −53125; total 196138. 31 JULY: no further rows, unchanged. The archived account’s −1000 and the excluded account’s −450, both in June, move NEITHER point: they are real to those accounts and invisible to the total. The pending −5000 in May DOES move it (D15)."
     }
   ]
 }

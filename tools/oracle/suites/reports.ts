@@ -30,7 +30,7 @@ import {
 } from '../../../src/reports/aggregate';
 import type { Category } from '../../../src/db/types';
 import { loadBook, materialiseBook, type Book } from '../book';
-import { GOLDEN_BOOK, ROLLUP_BOOK } from '../books';
+import { GOLDEN_BOOK, ROLLUP_BOOK, ROUNDING_PAIR_BOOK, SHARED_CURRENCY_BOOK } from '../books';
 import { Cases, ORACLE_VERSION, type OracleFile } from '../oracle';
 
 const AUG = { from: '2026-08-01', to: '2026-08-31' };
@@ -42,6 +42,8 @@ export async function reportsSuite(): Promise<OracleFile> {
   const books: Record<string, Book> = {
     golden: materialiseBook(GOLDEN_BOOK),
     rollup: materialiseBook(ROLLUP_BOOK),
+    'rounding-pair': materialiseBook(ROUNDING_PAIR_BOOK),
+    'shared-currency': materialiseBook(SHARED_CURRENCY_BOOK),
   };
 
   // ====================================================== category rollup
@@ -398,6 +400,50 @@ export async function reportsSuite(): Promise<OracleFile> {
     },
   );
 
+  // ============================ the chart must agree with the headline
+  // These two cases are the other half of balances.rounding-pair.net-worth and
+  // balances.shared-currency.net-worth: the SAME books, the SAME totals, read
+  // by the OTHER function. netWorth() draws the headline and netWorthSeries()
+  // draws the chart, and the defect that hid behind 279 green cases was that
+  // they rounded differently — one per account, one per currency — so the two
+  // figures on one screen, for one book, disagreed by a penny. Stating the
+  // same integer in both files is what makes that unable to happen quietly.
+  await loadBook(books['rounding-pair']);
+  c.hand(
+    'reports.rounding-pair.net-worth-series',
+    'the chart over two counted €7.05 accounts ends at £11.99 — the SAME integer balances.rounding-pair.net-worth states for the headline over the same book, because both round the €14.10 subtotal once',
+    'reports.netWorthSeries',
+    { book: 'rounding-pair', from: '2026-01-01', to: '2026-01-31' },
+    await netWorthSeries({ from: '2026-01-01', to: '2026-01-31' }),
+    {
+      points: [{ date: '2026-01-31', totalBaseMinor: 1_199 }],
+      missingRateCurrencies: [],
+    },
+    {
+      note: 'Hand-calculated: (705 + 705) × 0.85 = 1198.5 → 1199, half away from zero, once. A port that converts per account gets 599 + 599 = 1198 here or in balances.rounding-pair.net-worth — and if it gets 1198 in only ONE of them it has reproduced the original defect exactly: a headline and a chart that disagree about the same book.',
+    },
+  );
+
+  await loadBook(books['shared-currency']);
+  c.hand(
+    'reports.shared-currency.net-worth-series',
+    'five currencies and eleven counted accounts sampled at three month ends: £2,132.00 at May end, £1,961.38 at June end — the same figure balances.shared-currency.net-worth states — and July unchanged because nothing happened',
+    'reports.netWorthSeries',
+    { book: 'shared-currency', from: '2026-05-01', to: '2026-07-31' },
+    await netWorthSeries({ from: '2026-05-01', to: '2026-07-31' }),
+    {
+      points: [
+        { date: '2026-05-31', totalBaseMinor: 213_200 },
+        { date: '2026-06-30', totalBaseMinor: 196_138 },
+        { date: '2026-07-31', totalBaseMinor: 196_138 },
+      ],
+      missingRateCurrencies: ['CHF'],
+    },
+    {
+      note: 'Hand-calculated. Running totals are kept PER CURRENCY in integer minor units and converted once per currency per point. Seeded from the counted, rated openings: GBP 150000 + 50000 = 200000; EUR 53050 + 12050 + 9050 = 74150; JPY 0 + −50000 = −50000; BHD 13500 + 11500 = 25000; CHF has no rate so its two accounts are dropped up front and CHF is named once. 31 MAY, after −5000 and −20000 and +20000 (GBP), −5000 (EUR), −1000 (BHD): GBP 195000; EUR 69150 → 51862.5 → 51863; JPY −50000 → −39062.5 → −39063; BHD 24000 → 5400; total 213200. 30 JUNE, after −3000 and −1000 (EUR) and −18000 (JPY): EUR 65150 → 48863; JPY −68000 → −53125; total 196138. 31 JULY: no further rows, unchanged. The archived account’s −1000 and the excluded account’s −450, both in June, move NEITHER point: they are real to those accounts and invisible to the total. The pending −5000 in May DOES move it (D15).',
+    },
+  );
+
   return {
     oracleVersion: ORACLE_VERSION,
     area: 'reports',
@@ -406,6 +452,7 @@ export async function reportsSuite(): Promise<OracleFile> {
     notes: [
       'Date ranges are inclusive of both endpoints. An inverted range yields nothing.',
       'Every figure is in the BASE currency; each contribution is converted ONCE.',
+      'netWorthSeries totals PER CURRENCY and converts each currency’s running subtotal once per sample point — the same rule as netWorth(), so the chart’s last point and the headline figure are the same integer for the same book (reports.rounding-pair.net-worth-series and balances.rounding-pair.net-worth state it twice on purpose).',
       'A transaction whose currency has no rate to base is excluded from the whole report and counted once in missingRateCount.',
       'Transfer legs (transferGroupId non-null) are excluded from every flow report but are real to balances and net worth (D13).',
       'A split transaction contributes each split under the SPLIT’s category, carrying the parent’s payee, tags, date and currency.',

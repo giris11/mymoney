@@ -15,7 +15,14 @@
 import { accountBalances, balanceFromAmounts, countsTowardNetWorth, netWorth } from '../../../src/domain/balances';
 import type { Account } from '../../../src/db/types';
 import { loadBook, materialiseBook, type Book } from '../book';
-import { EXCLUSIONS_BOOK, EXCLUSIONS_SIMPLE_BOOK, GOLDEN_BOOK, ROLLUP_BOOK } from '../books';
+import {
+  EXCLUSIONS_BOOK,
+  EXCLUSIONS_SIMPLE_BOOK,
+  GOLDEN_BOOK,
+  ROLLUP_BOOK,
+  ROUNDING_PAIR_BOOK,
+  SHARED_CURRENCY_BOOK,
+} from '../books';
 import { Cases, ORACLE_VERSION, type OracleFile } from '../oracle';
 
 /**
@@ -59,6 +66,8 @@ export async function balancesSuite(): Promise<OracleFile> {
     exclusions: materialiseBook(EXCLUSIONS_BOOK),
     'exclusions-simple': materialiseBook(EXCLUSIONS_SIMPLE_BOOK),
     rollup: materialiseBook(ROLLUP_BOOK),
+    'rounding-pair': materialiseBook(ROUNDING_PAIR_BOOK),
+    'shared-currency': materialiseBook(SHARED_CURRENCY_BOOK),
   };
 
   // ------------------------------------------------------------ pure core
@@ -190,6 +199,81 @@ export async function balancesSuite(): Promise<OracleFile> {
     },
   );
 
+  // ----------------------------------- several accounts in one currency
+  // THE BLIND SPOT THIS SECTION EXISTS TO CLOSE. Every book above has at most
+  // ONE counted account per currency, and with one account "convert each
+  // balance then add" and "add the balances then convert once" are the same
+  // arithmetic. So the fixtures could not distinguish them — while the app's
+  // headline figure and its net-worth chart really did disagree, because one
+  // rounded each way. Both books below have several counted accounts sharing a
+  // currency, chosen so the two rules give different integers.
+  await loadBook(books['rounding-pair']);
+  c.hand(
+    'balances.rounding-pair.net-worth',
+    'two counted accounts of €7.05 total €14.10, and £14.10 × 0.85 = 1198.5 rounds ONCE, half away from zero, to £11.99 — converting each account first gives 599 + 599 = £11.98, a penny less',
+    'balances.netWorth',
+    { book: 'rounding-pair' },
+    await netWorthShape(),
+    {
+      totalBaseMinor: 1_199,
+      baseCurrency: 'GBP',
+      missingRateCurrencies: [],
+      excludedCount: 0,
+      excludedBaseMinor: 0,
+    },
+    {
+      note: 'Hand-calculated. 705 × 0.85 = 599.25 → 599 per account, twice, = 1198; (705 + 705) × 0.85 = 1198.5 → 1199 per currency. Two quarters that each round DOWN alone and together make a half that rounds UP. 1198 is the exact signature of rounding per account; the rule is per currency (SPEC §6 rounds once, at the end), and reports.rounding-pair.net-worth-series states the SAME 1199 for the chart over the SAME book.',
+    },
+  );
+
+  await loadBook(books['shared-currency']);
+  c.hand(
+    'balances.shared-currency.accounts',
+    'fifteen accounts across five currencies keep their own balances: pending included (D15), the archived and the excluded ones as real as the rest, and not one of them converted',
+    'balances.accountBalances',
+    { book: 'shared-currency' },
+    { rows: await balanceRows() },
+    {
+      rows: [
+        { accountId: 's-cur', name: 'Current', currency: 'GBP', balanceMinor: 125_000, clearedMinor: 130_000, txCount: 2, excludedFromNetWorth: false },
+        { accountId: 's-sav', name: 'Savings', currency: 'GBP', balanceMinor: 70_000, clearedMinor: 70_000, txCount: 1, excludedFromNetWorth: false },
+        { accountId: 's-eur-a', name: 'Euro Current', currency: 'EUR', balanceMinor: 45_050, clearedMinor: 48_050, txCount: 2, excludedFromNetWorth: false },
+        { accountId: 's-eur-b', name: 'Euro Savings', currency: 'EUR', balanceMinor: 12_050, clearedMinor: 12_050, txCount: 0, excludedFromNetWorth: false },
+        { accountId: 's-eur-c', name: 'Euro Cash', currency: 'EUR', balanceMinor: 8_050, clearedMinor: 8_050, txCount: 1, excludedFromNetWorth: false },
+        { accountId: 's-eur-x1', name: 'Euro Voucher', currency: 'EUR', balanceMinor: 6_050, clearedMinor: 6_050, txCount: 1, excludedFromNetWorth: true },
+        { accountId: 's-eur-x2', name: 'Euro Deposit Held', currency: 'EUR', balanceMinor: 3_050, clearedMinor: 3_050, txCount: 0, excludedFromNetWorth: true },
+        { accountId: 's-eur-old', name: 'Euro Account (closed)', currency: 'EUR', balanceMinor: 9_000, clearedMinor: 9_000, txCount: 1, excludedFromNetWorth: false },
+        { accountId: 's-jpy-a', name: 'Yen Card', currency: 'JPY', balanceMinor: -18_000, clearedMinor: -18_000, txCount: 1, excludedFromNetWorth: false },
+        { accountId: 's-jpy-b', name: 'Yen Loan', currency: 'JPY', balanceMinor: -50_000, clearedMinor: -50_000, txCount: 0, excludedFromNetWorth: false },
+        { accountId: 's-bhd-a', name: 'Dinar Current', currency: 'BHD', balanceMinor: 12_500, clearedMinor: 12_500, txCount: 1, excludedFromNetWorth: false },
+        { accountId: 's-bhd-b', name: 'Dinar Savings', currency: 'BHD', balanceMinor: 11_500, clearedMinor: 11_500, txCount: 0, excludedFromNetWorth: false },
+        { accountId: 's-chf-a', name: 'Franc Current', currency: 'CHF', balanceMinor: 20_000, clearedMinor: 20_000, txCount: 0, excludedFromNetWorth: false },
+        { accountId: 's-chf-b', name: 'Franc Savings', currency: 'CHF', balanceMinor: 5_000, clearedMinor: 5_000, txCount: 0, excludedFromNetWorth: false },
+        { accountId: 's-gbp-x', name: 'Gift Cards', currency: 'GBP', balanceMinor: 2_500, clearedMinor: 2_500, txCount: 0, excludedFromNetWorth: true },
+      ],
+    },
+    {
+      note: 'Hand-calculated, opening + Σ its own rows: Current 150000 −5000 −20000 = 125000 (cleared 130000, the £50.00 charge still pending); Savings 50000 +20000 = 70000; Euro Current 53050 −5000 −3000 = 45050 (cleared 48050); Euro Cash 9050 −1000 = 8050; Euro Voucher 6500 −450 = 6050 — excluded and still spent from; Euro Account (closed) 10000 −1000 = 9000 — archived and still worth something; Yen Card 0 −18000 = −18000. Rows are in sortOrder. A BHD balance of 12500 is 12.500 dinars and a JPY balance of −18000 is −¥18,000: the minor unit is the currency’s, not two decimal places.',
+    },
+  );
+  c.hand(
+    'balances.shared-currency.net-worth',
+    'net worth totals each currency IN THAT CURRENCY and converts the subtotal exactly once: GBP 195000 + EUR 65150×0.75 = 48863 + JPY −68000×0.78125 = −53125 + BHD 24000×0.225 = 5400 = £1,961.38, with CHF named once and left out',
+    'balances.netWorth',
+    { book: 'shared-currency' },
+    await netWorthShape(),
+    {
+      totalBaseMinor: 196_138,
+      baseCurrency: 'GBP',
+      missingRateCurrencies: ['CHF'],
+      excludedCount: 3,
+      excludedBaseMinor: 9_325,
+    },
+    {
+      note: 'Hand-calculated, and every rate is a dyadic rational (3/4, 1/128, 9/4) so each product below is EXACT in a Double and the halves are facts about the money, not floating-point artefacts. COUNTED: GBP 125000 + 70000 = 195000 (base, unconverted); EUR 45050 + 12050 + 8050 = 65150 → 48862.5 → 48863; JPY −18000 + −50000 = −68000 → −53125 exactly; BHD 12500 + 11500 = 24000 → 5400 exactly; CHF 20000 + 5000 = 25000 has no rate, so CHF is named ONCE for two accounts and contributes nothing. Total 195000 + 48863 − 53125 + 5400 = 196138. ROUNDING PER ACCOUNT INSTEAD GIVES 196139: EUR 33788 + 9038 + 6038 = 48864, JPY −14063 + −39063 = −53126, BHD 2813 + 2588 = 5401. NOT COUNTED follows the same rule because it sits beside the headline: EUR 6050 + 3050 = 9100 → 6825 exactly, plus GBP 2500 = 9325 (per account it would be 4538 + 2288 + 2500 = 9326). excludedCount is 3, not 4: the archived EUR account is out for an older reason and is in neither total.',
+    },
+  );
+
   // ------------------------------------------------------- wider scenario
   await loadBook(books.rollup);
   c.derived(
@@ -216,8 +300,10 @@ export async function balancesSuite(): Promise<OracleFile> {
       'balanceMinor = openingBalanceMinor + Σ(all that account’s transactions), pending included (D15).',
       'clearedMinor is the same sum over cleared transactions only.',
       'An account balance is always in the ACCOUNT’s currency and is never converted.',
-      'Net worth counts an account iff it is neither archived nor flagged excludeFromNetWorth; each counted account is converted to base ONCE.',
-      'A currency with no rate to base is named in missingRateCurrencies and contributes nothing — it is never approximated.',
+      'Net worth counts an account iff it is neither archived nor flagged excludeFromNetWorth.',
+      'Counted balances are totalled PER CURRENCY, in that currency, and each subtotal is converted to base exactly ONCE — never once per account. With several accounts sharing a currency the two differ by a penny (balances.rounding-pair.net-worth), and rounding once is what keeps the headline figure equal to the last point of the net-worth chart.',
+      'The “not counted” total obeys the same per-currency rule: it is a total, it sits on screen beside the headline, and two totals rounded two different ways is the defect.',
+      'A currency with no rate to base is named ONCE in missingRateCurrencies however many accounts hold it, and contributes nothing — it is never approximated.',
       'excludedBaseMinor is null when any excluded account cannot be converted: an incomplete “not counted” total would be a wrong number.',
       'balances.accountBalances rows are ordered by sortOrder, then by name.',
     ],

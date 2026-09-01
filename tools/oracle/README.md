@@ -21,13 +21,13 @@ export.
 |---|---|---|---|
 | `money.json` | money | 71 | parsing, formatting, half-away-from-zero rounding, minor-unit scaling per currency |
 | `fx.json` | fx | 25 | rate direction, per-contribution rounding, the missing-rate outcome |
-| `balances.json` | balances | 16 | per-account balances, cleared vs pending, net worth with exclusions and archived accounts |
+| `balances.json` | balances | 19 | per-account balances, cleared vs pending, net worth with exclusions and archived accounts, and the per-currency rounding of both totals |
 | `budgets.json` | budgets | 45 | weekly/monthly/yearly window boundaries incl. month-end clamping, spend against them |
-| `reports.json` | reports | 27 | the golden month, category rollup with descendants, transfers excluded from flow |
+| `reports.json` | reports | 29 | the golden month, category rollup with descendants, transfers excluded from flow, and a net-worth chart that ends where the headline figure does |
 | `import.json` | import | 95 | dedupe hashing, near-duplicate decisions, MoneyWiz Report parsing (incl. `►`), date-format and decimal-comma handling |
 
 `index.json` lists the files, their case counts, the books they carry and every
-`op` they use. **279 cases in total.**
+`op` they use. **284 cases in total.**
 
 ## The rules the whole thing exists to preserve
 
@@ -80,7 +80,7 @@ Every case is the same object:
 
 ### Provenance — and why it matters
 
-- **`hand-calculated` (267 cases).** The expected value is a literal a human
+- **`hand-calculated` (272 cases).** The expected value is a literal a human
   wrote. The generator still calls the implementation and **refuses to emit the
   file** unless the two agree, so these are statements about the money, not
   about the code.
@@ -128,6 +128,33 @@ obligation to have those columns.
 
 `golden` is SPEC §12's golden month, the same scenario as `tests/golden.test.ts`
 restated as data. Its figures are the ones the app has been accepted against.
+
+`rounding-pair` and `shared-currency` exist for one reason: **several counted
+accounts sharing one non-base currency.** Every other book has at most one, and
+with one account "convert each balance, then add" and "add the balances, then
+convert once" are the same arithmetic — so no fixture could tell the two apart,
+and a real defect hid behind a green oracle in two languages: `netWorth()` (the
+dashboard headline) rounded per account while `netWorthSeries()` (the chart)
+rounded per currency, and the two figures on one screen disagreed by a penny.
+
+**Per currency is the rule.** It rounds once instead of once per account, so the
+error cannot grow with the number of accounts, and it is the ordinary accounting
+treatment: total in the source currency, then convert.
+
+- `rounding-pair` is the minimal statement — two counted accounts of €7.05 at
+  0.85. Per account: `705 × 0.85 = 599.25 → 599`, twice, `= 1198`. Per currency:
+  `1410 × 0.85 = 1198.5 → 1199`. A result of **1198 is the exact signature of
+  rounding per account.**
+- `shared-currency` is the same rule under load: three counted EUR accounts, two
+  negative JPY balances (zero-decimal), two BHD balances (three-decimal), two
+  excluded EUR accounts sharing the currency with the counted ones, an archived
+  EUR account, and two CHF accounts with no rate at all. Headline **196138**
+  (per account it would be 196139); "not counted" **9325** (per account 9326).
+
+Each of those books is stated **twice on purpose** — once through
+`balances.netWorth` and once through `reports.netWorthSeries`, whose range ends
+after the last transaction. The two must produce the same integer. If a port
+makes only one of them pass, it has reproduced the original defect exactly.
 
 ## Op vocabulary
 

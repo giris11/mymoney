@@ -235,3 +235,148 @@ export const BUDGET_BOOK: BookSource = {
     { id: 'k11', accountId: 'b-cur', date: '2026-04-05', amountMinor: 9_000, categoryId: 'k-groceries' },
   ],
 };
+
+/**
+ * SEVERAL COUNTED ACCOUNTS SHARING ONE CURRENCY — the shape every book above
+ * is missing, and the only shape in which the two defensible net-worth
+ * rounding rules give different answers:
+ *
+ *   per ACCOUNT  — convert each account's balance to base, then add;
+ *   per CURRENCY — add the balances in their own currency, then convert once.
+ *
+ * With at most one counted account per currency those are the same
+ * arithmetic. Every other book here has at most one, so 279 green fixtures in
+ * two languages could not tell the rules apart — while the app's headline
+ * figure (netWorth) and the right-hand end of its net-worth chart
+ * (netWorthSeries) genuinely disagreed, because one rounded each way.
+ * PER CURRENCY IS THE RULE (SPEC §6 rounds once, at the end); this book exists
+ * so that a port which rounds per account cannot pass.
+ *
+ * EVERY RATE HERE IS A DYADIC RATIONAL — 0.75 = 3/4, 0.0078125 = 1/128,
+ * 2.25 = 9/4 — so each is exact as a binary Double and so is every product
+ * below. That is deliberate and not decoration: these cases live or die at the
+ * .5 boundary, and a rate like 0.85 (really 0.84999999999999998 in a Double)
+ * would make the halves an artefact of floating point rather than a fact about
+ * the money. Every counted EUR balance ends in .50 for the same reason: n×0.75
+ * lands exactly on a half whenever n ≡ 2 (mod 4), which every minor amount
+ * ending in 50 is.
+ *
+ * ACCOUNTS (balance = opening + its transactions, pending included, D15):
+ *
+ *   COUNTED                       opening      txs          balance
+ *   s-cur     Current      GBP    150000   -5000p, -20000    125000
+ *   s-sav     Savings      GBP     50000   +20000             70000
+ *   s-eur-a   Euro Current EUR     53050   -5000, -3000p      45050
+ *   s-eur-b   Euro Savings EUR     12050   —                  12050
+ *   s-eur-c   Euro Cash    EUR      9050   -1000               8050
+ *   s-jpy-a   Yen Card     JPY         0   -18000            -18000
+ *   s-jpy-b   Yen Loan     JPY    -50000   —                 -50000
+ *   s-bhd-a   Dinar Curr.  BHD     13500   -1000              12500
+ *   s-bhd-b   Dinar Sav.   BHD     11500   —                  11500
+ *   s-chf-a   Franc Curr.  CHF     20000   —                  20000
+ *   s-chf-b   Franc Sav.   CHF      5000   —                   5000
+ *   NOT COUNTED — flagged excludeFromNetWorth, still real money on screen
+ *   s-eur-x1  Euro Voucher EUR      6500   -450                6050
+ *   s-eur-x2  Euro Deposit EUR      3050   —                   3050
+ *   s-gbp-x   Gift Cards   GBP      2500   —                   2500
+ *   NOT COUNTED — archived, out for an older and separate reason
+ *   s-eur-old Euro (closed)EUR     10000   -1000               9000
+ *
+ * NET WORTH, per currency, converting each subtotal exactly ONCE:
+ *   GBP  125000 + 70000            =  195000   base, no conversion  →  195000
+ *   EUR   45050 + 12050 + 8050     =   65150   × 0.75 = 48862.5     →   48863
+ *   JPY  -18000 + -50000           =  -68000   × 0.78125 = -53125   →  -53125
+ *   BHD   12500 + 11500            =   24000   × 0.225 = 5400       →    5400
+ *   CHF   20000 +  5000            =   25000   NO RATE: named, left out
+ *                                                     TOTAL         →  196138
+ *
+ * Per ACCOUNT the same book gives 196139 — EUR 33788+9038+6038 = 48864,
+ * JPY -14063 + -39063 = -53126, BHD 2813+2588 = 5401 — and that one penny is
+ * the entire reason this book exists.
+ *
+ * NOT COUNTED, by the same rule: EUR 6050 + 3050 = 9100 × 0.75 = 6825 exactly,
+ * plus GBP 2500 = 9325. Per account it would be 4538 + 2288 + 2500 = 9326.
+ * That figure sits on screen beside the headline, so it is rounded the same
+ * way — two totals on one screen rounded two different ways is the defect.
+ *
+ * The archived EUR account is in NEITHER total and is not in excludedCount.
+ * The two CHF accounts name CHF ONCE, not twice, and contribute nothing.
+ */
+export const SHARED_CURRENCY_BOOK: BookSource = {
+  baseCurrency: 'GBP',
+  fxRates: [
+    { base: 'EUR', quote: 'GBP', rate: 0.75 },
+    { base: 'JPY', quote: 'GBP', rate: 0.0078125 }, // 1 GBP = 128 JPY, exactly
+    { base: 'BHD', quote: 'GBP', rate: 2.25 },
+    // No CHF rate, on purpose, alongside three currencies that have one.
+  ],
+  accounts: [
+    { id: 's-cur', name: 'Current', currency: 'GBP', openingBalanceMinor: 150_000, sortOrder: 0 },
+    { id: 's-sav', name: 'Savings', currency: 'GBP', openingBalanceMinor: 50_000, type: 'savings', sortOrder: 1 },
+    // Three counted accounts in ONE non-base currency: the shape the oracle lacked.
+    { id: 's-eur-a', name: 'Euro Current', currency: 'EUR', openingBalanceMinor: 53_050, sortOrder: 2 },
+    { id: 's-eur-b', name: 'Euro Savings', currency: 'EUR', openingBalanceMinor: 12_050, type: 'savings', sortOrder: 3 },
+    { id: 's-eur-c', name: 'Euro Cash', currency: 'EUR', openingBalanceMinor: 9_050, type: 'cash', sortOrder: 4 },
+    // Excluded accounts SHARING that currency with the counted ones: they must
+    // be partitioned out BEFORE the per-currency subtotal, not after.
+    { id: 's-eur-x1', name: 'Euro Voucher', currency: 'EUR', openingBalanceMinor: 6_500, type: 'cash', excludeFromNetWorth: true, sortOrder: 5 },
+    { id: 's-eur-x2', name: 'Euro Deposit Held', currency: 'EUR', openingBalanceMinor: 3_050, type: 'cash', excludeFromNetWorth: true, sortOrder: 6 },
+    // And an archived one in the same currency again.
+    { id: 's-eur-old', name: 'Euro Account (closed)', currency: 'EUR', openingBalanceMinor: 10_000, type: 'savings', archived: true, sortOrder: 7 },
+    // A ZERO-DECIMAL currency, both balances NEGATIVE: half away from zero
+    // rounds each away, so per-account is MORE negative than per-currency.
+    { id: 's-jpy-a', name: 'Yen Card', currency: 'JPY', openingBalanceMinor: 0, type: 'credit_card', sortOrder: 8 },
+    { id: 's-jpy-b', name: 'Yen Loan', currency: 'JPY', openingBalanceMinor: -50_000, type: 'loan', sortOrder: 9 },
+    // A THREE-DECIMAL currency: minorFactor(to)/minorFactor(from) is 100/1000.
+    { id: 's-bhd-a', name: 'Dinar Current', currency: 'BHD', openingBalanceMinor: 13_500, sortOrder: 10 },
+    { id: 's-bhd-b', name: 'Dinar Savings', currency: 'BHD', openingBalanceMinor: 11_500, type: 'savings', sortOrder: 11 },
+    // TWO counted accounts in a currency with NO RATE AT ALL: named once.
+    { id: 's-chf-a', name: 'Franc Current', currency: 'CHF', openingBalanceMinor: 20_000, sortOrder: 12 },
+    { id: 's-chf-b', name: 'Franc Savings', currency: 'CHF', openingBalanceMinor: 5_000, type: 'savings', sortOrder: 13 },
+    { id: 's-gbp-x', name: 'Gift Cards', currency: 'GBP', openingBalanceMinor: 2_500, type: 'cash', excludeFromNetWorth: true, sortOrder: 14 },
+  ],
+  categories: [{ id: 'sc-shopping', name: 'Shopping', kind: 'expense', sortOrder: 0 }],
+  transactions: [
+    // May: a pending charge, a transfer, and one spend in each of two currencies.
+    { id: 'sc1', accountId: 's-cur', date: '2026-05-10', amountMinor: -5_000, categoryId: 'sc-shopping', status: 'pending' },
+    { id: 'sc2', accountId: 's-cur', date: '2026-05-15', amountMinor: -20_000, transferGroupId: 'sc-tg1' },
+    { id: 'sc3', accountId: 's-sav', date: '2026-05-15', amountMinor: 20_000, transferGroupId: 'sc-tg1' },
+    { id: 'sc4', accountId: 's-eur-a', date: '2026-05-20', amountMinor: -5_000, categoryId: 'sc-shopping' },
+    { id: 'sc5', accountId: 's-bhd-a', date: '2026-05-22', amountMinor: -1_000, categoryId: 'sc-shopping' },
+    // June: a pending foreign charge, and the yen card's only movement.
+    { id: 'sc6', accountId: 's-eur-a', date: '2026-06-05', amountMinor: -3_000, categoryId: 'sc-shopping', status: 'pending' },
+    { id: 'sc7', accountId: 's-eur-c', date: '2026-06-10', amountMinor: -1_000, categoryId: 'sc-shopping' },
+    { id: 'sc8', accountId: 's-jpy-a', date: '2026-06-12', amountMinor: -18_000, categoryId: 'sc-shopping' },
+    // An ARCHIVED account still moves: its balance is real, its money is not
+    // in any total, and the net-worth series must not pick this up either.
+    { id: 'sc9', accountId: 's-eur-old', date: '2026-06-15', amountMinor: -1_000, categoryId: 'sc-shopping' },
+    // Spending FROM an excluded account is still spending, and still changes
+    // that account's own balance.
+    { id: 'sc10', accountId: 's-eur-x1', date: '2026-06-18', amountMinor: -450, categoryId: 'sc-shopping' },
+  ],
+};
+
+/**
+ * The same rule, minimal: TWO counted accounts of €7.05 in one book, at 0.85.
+ *
+ * This is the example written out in src/domain/balances.ts and in the commit
+ * that fixed the defect, restated as data so the oracle states it rather than
+ * merely describing it:
+ *
+ *   per ACCOUNT : 705 × 0.85 = 599.25 → 599, twice          = 1198
+ *   per CURRENCY: 1410 × 0.85 = 1198.5 → 1199 (half away)   = 1199
+ *
+ * Two quarters that each round DOWN alone and add up to a half that rounds UP.
+ * Nothing else is in the book — no transactions, no exclusions, no second
+ * foreign currency — so a failure here says exactly one thing, and 1198 is the
+ * signature of rounding per account.
+ */
+export const ROUNDING_PAIR_BOOK: BookSource = {
+  baseCurrency: 'GBP',
+  fxRates: [{ base: 'EUR', quote: 'GBP', rate: 0.85 }],
+  accounts: [
+    { id: 'rp-cur', name: 'Current', currency: 'GBP', openingBalanceMinor: 0, sortOrder: 0 },
+    { id: 'rp-eur-1', name: 'Euro One', currency: 'EUR', openingBalanceMinor: 705, sortOrder: 1 },
+    { id: 'rp-eur-2', name: 'Euro Two', currency: 'EUR', openingBalanceMinor: 705, sortOrder: 2 },
+  ],
+};

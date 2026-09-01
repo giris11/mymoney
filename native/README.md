@@ -9,9 +9,11 @@ won, and it deliberately has nothing to show for it.
 This package is **native Phase 2**. That numbering is the native project's own
 and is *not* SPEC §8's Phase 1/2/3:
 
-- **Phase 0** froze a read-only copy of the real backup and built the 279-case
-  oracle in `../tools/oracle/` — 267 of the cases hand-calculated, so a port can
-  be held to something that was not generated from the code it is checking.
+- **Phase 0** froze a read-only copy of the real backup and built the oracle in
+  `../tools/oracle/` — 279 cases then, 284 now, 272 of them hand-calculated, so
+  a port can be held to something that was not generated from the code it is
+  checking. (The five added since were the answer to a defect the first 279
+  could not see: every book had at most one counted account per currency.)
 - **Phase 1** was a throwaway CloudKit probe (`~/CloudKitProbe`) run against a
   real container with fabricated rows, to find out whether CKSyncEngine can
   sync a ledger without silently losing rows. **Its gate failed on the delete
@@ -54,8 +56,8 @@ alternative was rejected. Start there rather than here.
 ## What the tests are
 
 `Tests/MyMoneyKitTests/OracleTests.swift` runs the **real fixtures** in
-`../tools/oracle/cases` — **all 279 cases across all six files**: money (71),
-fx (25), balances (16), budgets (45), reports (27) and import (95). Nothing is
+`../tools/oracle/cases` — **all 284 cases across all six files**: money (71),
+fx (25), balances (19), budgets (45), reports (29) and import (95). Nothing is
 copied; the same files the TypeScript suite regenerates and byte-compares are
 read from the repository at test time.
 

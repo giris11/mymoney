@@ -3,8 +3,8 @@
   "generator": "tools/oracle/build.ts",
   "regenerate": "node_modules/.bin/vite-node tools/oracle/write.ts",
   "verify": "npx vitest run tests/oracle.test.ts",
-  "totalCases": 279,
-  "handCalculated": 267,
+  "totalCases": 284,
+  "handCalculated": 272,
   "carriedFromTests": 81,
   "derived": 12,
   "files": [
@@ -45,15 +45,17 @@
       "file": "balances.json",
       "area": "balances",
       "title": "Balances: per-account, cleared vs pending, and net worth with exclusions",
-      "caseCount": 16,
-      "handCalculated": 14,
+      "caseCount": 19,
+      "handCalculated": 17,
       "carriedFromTests": 2,
       "derived": 2,
       "books": [
         "golden",
         "exclusions",
         "exclusions-simple",
-        "rollup"
+        "rollup",
+        "rounding-pair",
+        "shared-currency"
       ],
       "ops": [
         "balances.accountBalances",
@@ -84,13 +86,15 @@
       "file": "reports.json",
       "area": "reports",
       "title": "Reports: the golden month, category rollup with descendants, and flow classification",
-      "caseCount": 27,
-      "handCalculated": 26,
+      "caseCount": 29,
+      "handCalculated": 28,
       "carriedFromTests": 6,
       "derived": 1,
       "books": [
         "golden",
-        "rollup"
+        "rollup",
+        "rounding-pair",
+        "shared-currency"
       ],
       "ops": [
         "categories.categoryPathName",
