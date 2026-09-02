@@ -38,6 +38,7 @@ public enum EditError: Error, Sendable, Hashable, CustomStringConvertible {
     case unknownGroup(String)
     case unknownCategory(String)
     case unknownTransaction(String)
+    case unknownBudget(String)
     /// A transfer group with no legs, or with a number of legs other than two.
     case transferNotFound(groupId: String, legs: Int)
     /// Two legs, but not one out and one in.
@@ -76,6 +77,18 @@ public enum EditError: Error, Sendable, Hashable, CustomStringConvertible {
     /// A name that another row of the same kind already has.
     case nameTaken(what: String, name: String)
 
+    // MARK: - Budgets
+
+    /// A budget limit that is zero or negative. Refused rather than stored,
+    /// matching `saveBudget` in the web app: a budget of nothing is not a
+    /// limit anybody can be under or over, and the progress bar it produces
+    /// would divide by zero to draw itself.
+    case budgetAmountNotPositive(Int64)
+    /// A budget covering no categories. It would match no spending at all, so
+    /// it would report 0 spent for ever and look like the owner was doing
+    /// wonderfully.
+    case budgetNeedsACategory
+
     // MARK: - Undo
 
     /// An undo for something that is not deleted (already restored, or never
@@ -110,6 +123,8 @@ public enum EditError: Error, Sendable, Hashable, CustomStringConvertible {
             return "That category is not in this copy of the book (\(short(id)))."
         case .unknownTransaction(let id):
             return "That transaction is not in this copy of the book (\(short(id)))."
+        case .unknownBudget(let id):
+            return "That budget is not in this copy of the book (\(short(id)))."
         case .transferNotFound(let groupId, let legs):
             return
                 "This transfer has \(legs) leg\(legs == 1 ? "" : "s") in the book, and a transfer "
@@ -167,6 +182,16 @@ public enum EditError: Error, Sendable, Hashable, CustomStringConvertible {
         case .nameTaken(let what, let name):
             return "There is already a \(what) called \u{201C}\(name)\u{201D}."
 
+        case .budgetAmountNotPositive(let amount):
+            return amount == 0
+                ? "A budget needs an amount to be a limit. Enter what you want to keep under."
+                : "A budget amount has to be a positive figure \u{2014} enter the limit itself, "
+                    + "not what is left."
+        case .budgetNeedsACategory:
+            return
+                "Choose at least one category. A budget over no categories would match no "
+                + "spending, and would report nothing spent for ever."
+
         case .nothingToRestore(let what):
             return "That \(what) is not in the bin \u{2014} there is nothing to bring back."
         }
@@ -191,6 +216,8 @@ public enum EditError: Error, Sendable, Hashable, CustomStringConvertible {
                 + "are exactly as they were."
         case .splitsDoNotBalance, .splitsUnrepresentable:
             return "Nothing was saved \u{2014} the transaction is still as it was."
+        case .budgetAmountNotPositive, .budgetNeedsACategory:
+            return "Nothing was saved \u{2014} the budget is still as it was."
         default:
             return "Nothing was changed."
         }

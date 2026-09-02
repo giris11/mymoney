@@ -163,7 +163,7 @@ struct QuickAddView: View {
         context.categories.first { $0.id == id }?.path
     }
 
-    private func save() async {
+    @MainActor private func save() async {
         saving = true
         defer { saving = false }
         let draft = TransactionDraft(

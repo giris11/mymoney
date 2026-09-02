@@ -184,7 +184,12 @@ public enum Budgets {
     ///    covered, and the parent's own categoryId is ignored entirely;
     ///  * otherwise the whole amount, when the transaction's category is
     ///    covered.
-    static func contributions(of tx: Transaction, covering cats: Set<String>) -> [Int64] {
+    ///
+    /// Public because the budget DETAIL screen lists the transactions behind
+    /// the figure, and that list has to be decided by the same predicate the
+    /// total is -- otherwise the rows on screen would not add up to the number
+    /// above them, which is the most alarming thing a budget screen can do.
+    public static func contributions(of tx: Transaction, covering cats: Set<String>) -> [Int64] {
         if tx.transferGroupId != nil { return [] }
         if !tx.splits.isEmpty {
             return tx.splits.compactMap { split in

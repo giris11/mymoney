@@ -92,6 +92,29 @@ struct AccountsView<ImportLink: View>: View {
                 netWorthHeadline
             }
 
+            // THE THREE SCREENS THAT ANSWER A QUESTION, above the one that
+            // answers "what happened". Somebody opening this app daily wants
+            // "how am I doing" first and the register second; the accounts and
+            // their balances stay below, where they were.
+            Section {
+                NavigationLink(value: Route.dashboard) {
+                    Label("Dashboard", systemImage: "square.grid.2x2")
+                }
+                NavigationLink(value: Route.budgets) {
+                    Label("Budgets", systemImage: "chart.pie")
+                }
+                NavigationLink(value: Route.reports) {
+                    Label("Reports", systemImage: "chart.xyaxis.line")
+                }
+                // The one screen that says something the owner did not ask for.
+                // It sits with the other three because it answers the same kind
+                // of question -- "how am I doing" -- and not with the register,
+                // which answers "what happened".
+                NavigationLink(value: Route.insights) {
+                    Label("Recurring & insights", systemImage: "arrow.trianglehead.2.clockwise")
+                }
+            }
+
             Section {
                 NavigationLink(value: Route.allTransactions) {
                     HStack {
@@ -359,7 +382,10 @@ private struct AccountActions: ViewModifier {
             }
     }
 
-    private func run(_ body: @escaping () async -> EditOutcome) {
+    /// `@MainActor` so the `Task` it spawns inherits the main actor: `refusal`
+    /// is `@State`, and a write to it from the generic executor compiles
+    /// silently and is not reliably seen -- see `RootView.loadContext`.
+    @MainActor private func run(_ body: @escaping () async -> EditOutcome) {
         Task { refusal = (await body()).refusal }
     }
 }

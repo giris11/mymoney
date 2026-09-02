@@ -27,6 +27,10 @@ import SwiftUI
 /// Where the detail column is pointed. Hashable because it is the value a
 /// `NavigationLink` carries and the thing the sidebar list selects.
 enum Route: Hashable {
+    case dashboard
+    case budgets
+    case reports
+    case insights
     case allTransactions
     case account(String)
     case importBackup
@@ -235,6 +239,22 @@ struct RootView: View {
 
     @ViewBuilder private var detail: some View {
         switch selection {
+        // `revision` is handed to each of these rather than read inside them.
+        // See `BudgetsView.revision`: read only as a `.task(id:)` argument it
+        // did not register as an Observation dependency, and every one of
+        // these screens went on showing pre-edit figures.
+        case .dashboard:
+            DashboardView(
+                revision: app.revision,
+                selection: $selection,
+                onSelectTransaction: openEditor(for:)
+            )
+        case .budgets:
+            BudgetsView(revision: app.revision)
+        case .reports:
+            ReportsView(revision: app.revision)
+        case .insights:
+            InsightsView(revision: app.revision, onSelectTransaction: openEditor(for:))
         case .importBackup:
             ImportView()
         case .groups:
@@ -243,13 +263,7 @@ struct RootView: View {
             placeholder
         case .allTransactions, .account:
             if let register {
-                RegisterView(model: register) { id in
-                    Task {
-                        if let which = await app.editorSheet(forTransaction: id) {
-                            sheet = which
-                        }
-                    }
-                }
+                RegisterView(model: register, openEditor: openEditor(for:))
                 // A new model means a new register: without an identity the
                 // list would keep the previous account's rows while the new
                 // ones loaded, and for a moment show one account's
@@ -315,7 +329,27 @@ struct RootView: View {
         }
     }
 
-    private func loadContext() async {
+    /// Opening a transaction is the shell's job wherever the tap came from --
+    /// the register, or the dashboard's recent list. One route in, so the
+    /// two-doors rule about transfers (see `AppModel.editorSheet`) cannot be
+    /// bypassed by a screen that opened an editor itself.
+    @MainActor private func openEditor(for id: String) {
+        Task { @MainActor in
+            if let which = await app.editorSheet(forTransaction: id) {
+                sheet = which
+            }
+        }
+    }
+
+    /// `@MainActor` for the reason spelled out in `ReportsView.load`, and it is
+    /// load-bearing rather than tidy. `app.service` is an `actor`, so the
+    /// `await` hops off this view and the continuation resumes on the GENERIC
+    /// executor -- and `State`'s setter is `nonisolated`, so writing `context`
+    /// there compiles silently and SwiftUI never sees the change. The symptom
+    /// was not a crash: the Add menu stayed `.disabled` forever, because its
+    /// `context == nil` test kept reading the value this function believed it
+    /// had already replaced. Every editor in the app opens through that menu.
+    @MainActor private func loadContext() async {
         guard app.hasBook else {
             context = nil
             return
@@ -359,7 +393,7 @@ struct RootView: View {
                 service: app.service,
                 lookups: lookups
             )
-        case .importBackup, .groups, .none:
+        case .dashboard, .budgets, .reports, .insights, .importBackup, .groups, .none:
             register = nil
         }
     }

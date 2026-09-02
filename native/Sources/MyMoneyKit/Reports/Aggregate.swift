@@ -245,19 +245,20 @@ public enum Reports {
     /// of thing that makes an owner doubt the whole screen.
     ///
     /// The name comparison is `localeCompare`'s -- locale-aware -- pinned to
-    /// en_GB. The TypeScript passes no locale and gets the browser's. Nothing
-    /// in the oracle exercises a name tie, so this is a judgement, and it is
-    /// recorded as one.
+    /// en_GB by `DisplayOrder` (Domain/BudgetList.swift), which is the one
+    /// place that judgement is made so the report rows and the budgets list
+    /// cannot come to order names differently. The TypeScript passes no locale
+    /// and gets the browser's. Nothing in the oracle exercises a name tie, so
+    /// this is a judgement, and it is recorded as one.
     static func rankedByAmount<Row>(
         _ rows: [(index: Int, row: Row)],
         amount: (Row) -> Int64,
         name: (Row) -> String
     ) -> [Row] {
-        let enGB = Locale(identifier: "en_GB")
-        return rows.sorted { lhs, rhs in
+        rows.sorted { lhs, rhs in
             let a = amount(lhs.row), b = amount(rhs.row)
             if a != b { return a > b }
-            let byName = name(lhs.row).compare(name(rhs.row), options: [], range: nil, locale: enGB)
+            let byName = DisplayOrder.compareNames(name(lhs.row), name(rhs.row))
             if byName != .orderedSame { return byName == .orderedAscending }
             return lhs.index < rhs.index
         }.map(\.row)

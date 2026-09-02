@@ -242,7 +242,7 @@ struct AccountEditor: View {
         }
     }
 
-    private func save() async {
+    @MainActor private func save() async {
         guard let openingMinor else { return }
         saving = true
         defer { saving = false }
@@ -276,7 +276,7 @@ struct AccountEditor: View {
         dismiss()
     }
 
-    private func delete(_ id: String) async {
+    @MainActor private func delete(_ id: String) async {
         let outcome = await app.deleteAccount(id: id)
         if outcome.didSave { dismiss() } else { refusal = outcome.refusal }
     }
@@ -368,7 +368,7 @@ struct AccountGroupsView: View {
         }
     }
 
-    private func add() async {
+    @MainActor private func add() async {
         let outcome = await app.save(AccountGroupDraft(name: newName))
         if outcome.didSave {
             newName = ""
@@ -378,18 +378,18 @@ struct AccountGroupsView: View {
         }
     }
 
-    private func rename() async {
+    @MainActor private func rename() async {
         guard let group = renaming else { return }
         renaming = nil
         let outcome = await app.save(AccountGroupDraft(id: group.id, name: renameText))
         refusal = outcome.refusal
     }
 
-    private func delete(_ group: AccountGroup) async {
+    @MainActor private func delete(_ group: AccountGroup) async {
         refusal = (await app.deleteAccountGroup(id: group.id)).refusal
     }
 
-    private func move(_ group: AccountGroup, _ direction: MoveDirection) async {
+    @MainActor private func move(_ group: AccountGroup, _ direction: MoveDirection) async {
         // Groups reorder through the same store call accounts do; the arrows
         // are swipe actions so the list itself stays a plain list.
         refusal = (await app.save(

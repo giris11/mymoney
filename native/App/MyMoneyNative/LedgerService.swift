@@ -276,4 +276,219 @@ actor LedgerService {
             fileName: fileName
         )
     }
+
+    // MARK: - The screens that read the whole book
+    //
+    // Every report in `Reports` takes a `Book`, because that is the shape its
+    // arithmetic was proved in and re-expressing six reports as SQL would be
+    // six new places for a rounding rule to drift. Building one is cheap and
+    // not free, and the reports screen builds one every time a date changes --
+    // so the last one is kept.
+    //
+    // THE CACHE CANNOT GO STALE, and not because anybody remembers to clear
+    // it. `store.writeToken()` is SQLite's own count of rows changed on this
+    // connection: same token, same rows. A mutation added to this file next
+    // year invalidates the cache without knowing the cache exists, which is
+    // the only kind of cache that belongs anywhere near a ledger.
+
+    private var cachedBook: (book: Book, token: Int64)?
+
+    private func reportBook() throws -> Book {
+        let store = try opened()
+        let token = store.writeToken()
+        if let cached = cachedBook, cached.token == token { return cached.book }
+        let book = try store.book()
+        cachedBook = (book, token)
+        return book
+    }
+
+    /// Everything the dashboard draws, plus the register's own first page for
+    /// the recent-transactions list.
+    ///
+    /// The rows come from `registerPage` rather than from the book, so the
+    /// rules about what a row is CALLED are stated once, in the kit, and the
+    /// dashboard and the register cannot come to disagree about a transfer's
+    /// name.
+    func dashboard(today: String, recentLimit: Int = 8) throws -> DashboardScreen? {
+        let store = try opened()
+        if try store.isEmpty() { return nil }
+        let book = try reportBook()
+        let lookups = try store.registerLookups()
+        let page = try store.registerPage(
+            scope: .allAccounts, after: nil, limit: recentLimit, lookups: lookups
+        )
+        return DashboardScreen(
+            summary: try Dashboard.summary(book: book, today: today),
+            recent: page.rows,
+            transactionCount: try store.registerCount(scope: .allAccounts)
+        )
+    }
+
+    // MARK: Budgets
+
+    func budgetsScreen(today: String) throws -> BudgetsScreen {
+        let book = try reportBook()
+        return BudgetsScreen(
+            lines: try book.allBudgetProgress(refDate: today),
+            archived: Budgets.archived(book.budgets),
+            baseCurrency: book.baseCurrency,
+            categories: try opened().categoryChoices()
+        )
+    }
+
+    /// One budget in one window of its own grid. `offset` is a number of
+    /// PERIODS from the window containing today -- an offset rather than a
+    /// pair of dates, so a window can only ever be one that is on the grid.
+    func budgetDetail(id: String, offset: Int, today: String) throws -> BudgetDetailScreen? {
+        let book = try reportBook()
+        guard let budget = book.budgets.first(where: { $0.id == id }) else { return nil }
+        let current = try Budgets.windowContaining(
+            period: budget.period, startDate: budget.startDate, date: today
+        )
+        let window =
+            offset == 0
+            ? current
+            : try Budgets.shiftWindow(
+                period: budget.period, startDate: budget.startDate, window: current, by: offset
+            )
+        let covered = Categories.descendantIds(book.categories, rootIds: budget.categoryIds)
+        var byId: [String: MyMoneyKit.Category] = [:]
+        for c in book.categories { byId[c.id] = c }
+        return BudgetDetailScreen(
+            budget: budget,
+            offset: offset,
+            isCurrentPeriod: window == current,
+            progress: try book.budgetProgress(budget, inWindowStarting: window.start),
+            categoryNames: budget.categoryIds.map {
+                Categories.categoryPathName(byId, id: $0)
+            },
+            rows: try contributingRows(book: book, window: window, covered: covered),
+            baseCurrency: book.baseCurrency
+        )
+    }
+
+    /// The transactions that actually count toward a budget in a window, in
+    /// the register's own words and newest first.
+    ///
+    /// SAME PREDICATE AS THE ARITHMETIC. A list built from "anything in these
+    /// categories" would include transfer legs, and would show a £50 shop in
+    /// full when only £8 of it was filed under the budget's category -- and the
+    /// list would then not add up to the figure above it.
+    /// `Budgets.contributions` decides, exactly as it does for the total.
+    ///
+    /// THE ROWS ARE NAMED BY `Register`, not by this file. Which of payee, note
+    /// or "No payee" wins is a rule stated once in the kit and held to tests
+    /// there; restating it here would give the budget screen its own opinion
+    /// about what a transaction is called.
+    private func contributingRows(
+        book: Book, window: PeriodWindow, covered: Set<String>
+    ) throws -> [BudgetContribution] {
+        var payeeNames: [String: String] = [:]
+        for p in book.payees { payeeNames[p.id] = p.name }
+        var categoriesById: [String: MyMoneyKit.Category] = [:]
+        for c in book.categories { categoriesById[c.id] = c }
+
+        var out: [BudgetContribution] = []
+        for tx in book.transactions where window.contains(tx.date) {
+            let parts = Budgets.contributions(of: tx, covering: covered)
+            if parts.isEmpty { continue }
+            let title = Register.title(
+                payeeName: tx.payeeId.flatMap { payeeNames[$0] },
+                notes: tx.notes,
+                // A transfer never contributes to a budget, so this is always
+                // false here -- passed explicitly rather than hardcoded so the
+                // call reads the same as the register's.
+                isTransfer: tx.transferGroupId != nil
+            )
+            let path = tx.categoryId.map { Categories.categoryPathName(categoriesById, id: $0) }
+            let line = Register.categoryLine(
+                isTransfer: tx.transferGroupId != nil,
+                amountMinor: tx.amountMinor,
+                otherAccountName: nil,
+                splitCategoryCount: Set(tx.splits.compactMap(\.categoryId)).count,
+                hasSplits: !tx.splits.isEmpty,
+                categoryPath: (path?.isEmpty ?? true) ? nil : path
+            )
+            out.append(
+                BudgetContribution(
+                    id: tx.id,
+                    date: tx.date,
+                    title: title.text,
+                    titleIsPlaceholder: title.isPlaceholder,
+                    categoryText: Register.categoryText(line),
+                    amountMinor: tx.amountMinor,
+                    countedMinor: try Money.sum(parts),
+                    currency: tx.currency,
+                    isPartOfASplit: !tx.splits.isEmpty
+                )
+            )
+        }
+        // Newest first, with the id as a stable tiebreak so two rows on one day
+        // cannot swap places between one look and the next.
+        return out.sorted {
+            $0.date != $1.date ? $0.date > $1.date : $0.id < $1.id
+        }
+    }
+
+    func saveBudget(_ draft: BudgetDraft) throws -> Budget {
+        try opened().saveBudget(draft)
+    }
+
+    func setBudgetArchived(id: String, archived: Bool) throws {
+        try opened().setBudgetArchived(id: id, archived: archived)
+    }
+
+    func deleteBudget(id: String) throws -> DeletedRecord {
+        try opened().deleteBudget(id: id)
+    }
+
+    // MARK: Reports
+
+    func earliestTransactionDate() throws -> String? {
+        try opened().earliestTransactionDate()
+    }
+
+    // MARK: Insights
+
+    /// Everything the insights screen shows, worked out from the same cached
+    /// `Book` the reports use.
+    ///
+    /// `today` is passed in rather than read here for the same reason the
+    /// dashboard passes it: every "next expected", "8 days late" and "no
+    /// payment since" on one screen has to be about the same day.
+    func insights(today: String) throws -> InsightsScreen? {
+        let store = try opened()
+        if try store.isEmpty() { return nil }
+        return InsightsScreen(
+            report: try Insights.report(book: try reportBook(), today: today),
+            transactionCount: try store.registerCount(scope: .allAccounts)
+        )
+    }
+
+    /// One report, already reduced to what the screen draws.
+    func report(_ kind: ReportKind, range: DateRange, parentId: String?) throws -> ReportScreen {
+        let book = try reportBook()
+        let data: ReportData
+        switch kind {
+        case .netWorth:
+            data = .netWorth(
+                series: try Reports.netWorthSeries(range, book: book),
+                headline: try book.netWorth()
+            )
+        case .byCategory:
+            data = .category(
+                report: try Reports.spendingByCategory(range, parentId: parentId, book: book),
+                trail: Categories.ancestorTrail(book.categories, id: parentId)
+            )
+        case .incomeExpense:
+            data = .incomeExpense(try Reports.incomeVsExpenseByMonth(range, book: book))
+        case .cashFlow:
+            data = .cashFlow(try Reports.cashFlowByMonth(range, book: book))
+        case .byPayee:
+            data = .payee(try Reports.spendingByPayee(range, book: book))
+        case .byTag:
+            data = .tag(try Reports.spendingByTag(range, book: book))
+        }
+        return ReportScreen(kind: kind, range: range, data: data, baseCurrency: book.baseCurrency)
+    }
 }

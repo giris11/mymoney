@@ -36,7 +36,20 @@ struct TransactionEditor: View {
         self.editing = draft.id
         let currency = context.accounts.first { $0.id == draft.accountId }?.currency ?? "GBP"
         _draft = State(initialValue: draft)
-        _amount = State(initialValue: TypedAmount(signed: draft.amountMinor, currency: currency))
+        // A NEW row starts with the field EMPTY, not with a formatted zero.
+        // `TypedAmount(signed: 0)` renders "0.00", which is real text rather
+        // than a placeholder: tapping the field and typing "42.50" leaves
+        // "0.0042.50", two decimal points, which the parser correctly refuses.
+        // The owner's first act on this screen is to type an amount, so the
+        // seed has to be the empty string that `TextField`'s own "0" prompt
+        // sits behind. An EXISTING row that really is zero still shows "0.00",
+        // because there the figure is a fact rather than a starting point --
+        // which is the same rule `TransferEditor` already follows.
+        _amount = State(
+            initialValue: draft.id == nil && draft.amountMinor == 0
+                ? TypedAmount()
+                : TypedAmount(signed: draft.amountMinor, currency: currency)
+        )
         _lines = State(initialValue: draft.splits.map { SplitLine($0, currency: currency) })
         _tagText = State(initialValue: draft.tagNames.joined(separator: ", "))
     }
@@ -171,7 +184,7 @@ struct TransactionEditor: View {
         context.categories.first { $0.id == id }?.path
     }
 
-    private func save() async {
+    @MainActor private func save() async {
         guard let amountMinor, let splits = lines.splits(currency: currency) else { return }
         saving = true
         defer { saving = false }
@@ -192,7 +205,7 @@ struct TransactionEditor: View {
         }
     }
 
-    private func delete(_ id: String) async {
+    @MainActor private func delete(_ id: String) async {
         let outcome = await app.deleteTransaction(id: id)
         if outcome.didSave {
             dismiss()

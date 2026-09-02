@@ -596,7 +596,10 @@ extension LedgerStore {
         return rows
     }
 
-    private func readBudgets(from table: String) throws -> [Budget] {
+    // Internal, not private: the budgets editor reads the live view through
+    // this so there is exactly one place that turns budget rows -- and their
+    // separately stored category links -- back into a `Budget`.
+    func readBudgets(from table: String) throws -> [Budget] {
         // The category lists first, in one pass, ordered by position. A query
         // per budget would be correct and would also be a query per budget.
         var categoryIds: [String: [String]] = [:]

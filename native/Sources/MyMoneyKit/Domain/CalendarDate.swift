@@ -164,6 +164,12 @@ public struct CalendarDate: Sendable, Hashable, Comparable, CustomStringConverti
 
     public var startOfMonth: CalendarDate { CalendarDate(unchecked: year, month, 1) }
 
+    /// dayjs `startOf('year')`. Here rather than spelled out at the call site
+    /// because the only correct spelling of it elsewhere involves forcing a
+    /// failable initialiser, and a `!` in date arithmetic is a crash waiting
+    /// for the one input somebody did not think of.
+    public var startOfYear: CalendarDate { CalendarDate(unchecked: year, 1, 1) }
+
     public var endOfMonth: CalendarDate {
         CalendarDate(unchecked: year, month, Self.daysInMonth(year: year, month: month))
     }

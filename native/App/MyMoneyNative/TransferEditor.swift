@@ -203,7 +203,7 @@ struct TransferEditor: View {
         }
     }
 
-    private func save() async {
+    @MainActor private func save() async {
         guard let sent = sentMinor, let received = receivedMinor else { return }
         saving = true
         defer { saving = false }
@@ -221,7 +221,7 @@ struct TransferEditor: View {
         if outcome.didSave { dismiss() } else { refusal = outcome.refusal }
     }
 
-    private func delete(_ id: String) async {
+    @MainActor private func delete(_ id: String) async {
         let outcome = await app.deleteTransaction(id: id)
         if outcome.didSave { dismiss() } else { refusal = outcome.refusal }
     }

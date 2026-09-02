@@ -118,8 +118,19 @@ public enum Dedupe {
     /// similar: two-letter fragments are inside far too many real payee names,
     /// and a false near-duplicate costs the owner a decision on every import.
     public static func similarPayee(_ a: String, _ b: String) -> Bool {
-        let na = normalizeForHash(a)
-        let nb = normalizeForHash(b)
+        similarNormalized(normalizeForHash(a), normalizeForHash(b))
+    }
+
+    /// The same test, for callers that already hold the normalised forms.
+    ///
+    /// It exists for one reason: `Recurrence` compares every payee in the book
+    /// with every other one when it looks for a renamed payee, and normalising
+    /// two strings that were normalised when the group was built is the most
+    /// expensive thing in that loop. The keys it passes are
+    /// `normalizeForHash`'s own output, and this function is what
+    /// `similarPayee` does after normalising, so the two cannot answer
+    /// differently.
+    public static func similarNormalized(_ na: String, _ nb: String) -> Bool {
         if na == nb { return true }  // covers both-empty
         if na.isEmpty || nb.isEmpty { return false }
         let x = Array(na.utf16)
@@ -128,6 +139,11 @@ public enum Dedupe {
         let longer = x.count <= y.count ? y : x
         if shorter.count >= 3, contains(longer, shorter) { return true }
         let threshold = max(1, Int((Double(longer.count) * 0.25).rounded(.down)))
+        // An edit distance is never less than the difference in length, so a
+        // pair this far apart cannot pass and the table need not be built.
+        // Exact, not a heuristic: it removes work, never an answer. (Added for
+        // `Recurrence`, which asks this of every pair of payees in the book.)
+        if longer.count - shorter.count > threshold { return false }
         return levenshtein(na, nb) <= threshold
     }
 

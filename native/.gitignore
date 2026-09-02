@@ -12,6 +12,14 @@ Package.resolved
 # the last scheme somebody selected. Never shared, and it changes on every open.
 App/**/xcuserdata/
 App/**/*.xcuserstate
+
+# And its build output. `xcodebuild` with no -derivedDataPath writes SYMROOT
+# beside the project, which is hundreds of megabytes of object files in a
+# PUBLIC repository. The root .gitignore already covers DerivedData/ for the
+# other spelling of the same thing.
+App/build/
+build/
+
 # The demo backups and the demo store the tests can write (MYMONEY_WRITE_DEMO).
 # They are fiction, but they are large and generated, and generated files do not
 # belong in a repository.

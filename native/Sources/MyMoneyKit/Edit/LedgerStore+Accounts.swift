@@ -448,11 +448,21 @@ extension LedgerStore {
             statement.bind(2, text: receipt.deletedAt)
             try statement.run()
             guard try changedRows() > 0 else {
-                throw EditError.nothingToRestore(
-                    what: receipt.table == "accounts" ? "account" : "group"
-                )
+                throw EditError.nothingToRestore(what: Self.noun(for: receipt.table))
             }
             try recordLocalEdit(at: environment.now())
+        }
+    }
+
+    /// What to call a tombstoned row in a sentence. A table name would be a
+    /// word the owner never chose ("account_groups"), so each one is spelled
+    /// out and an unknown table falls back to "record" rather than to nothing.
+    private static func noun(for table: String) -> String {
+        switch table {
+        case "accounts": return "account"
+        case "account_groups": return "group"
+        case "budgets": return "budget"
+        default: return "record"
         }
     }
 

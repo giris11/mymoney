@@ -85,10 +85,22 @@ final class AppModel {
         case failed(String)
     }
 
+    /// What a delete left behind, so it can be taken back.
+    ///
+    /// TWO KINDS, because the store hands back two shapes of receipt: deleting
+    /// a transaction may have tombstoned BOTH legs of a transfer, which is one
+    /// thing the owner did to two rows, while every other delete is one row.
+    /// Neither is a rebuild -- both are a flag being cleared on a row that was
+    /// never destroyed.
+    enum UndoReceipt: Sendable {
+        case transactions(DeletedTransactions)
+        case record(DeletedRecord)
+    }
+
     /// A delete that can still be taken back, and the sentence offering it.
     struct PendingUndo: Identifiable, Sendable {
         let id = UUID()
-        let receipt: DeletedTransactions
+        let receipt: UndoReceipt
         let message: String
     }
 
@@ -165,22 +177,23 @@ final class AppModel {
 
     /// Delete, and keep the receipt so it can be taken back.
     func deleteTransaction(id: String) async -> EditOutcome {
-        do {
-            let receipt = try await service.deleteTransaction(id: id)
-            pendingUndo = PendingUndo(receipt: receipt, message: Self.undoMessage(for: receipt))
-            await refresh()
-            return .saved
-        } catch let error as EditError {
-            return .refused(EditRefusal(error))
-        } catch {
-            return .refused(EditRefusal(unexpected: error))
+        await deleting {
+            let receipt = try await self.service.deleteTransaction(id: id)
+            return PendingUndo(
+                receipt: .transactions(receipt), message: Self.undoMessage(for: receipt)
+            )
         }
     }
 
     func undoLastDelete() async {
         guard let pending = pendingUndo else { return }
         pendingUndo = nil
-        _ = await run { _ = try await self.service.undoDelete(pending.receipt) }
+        _ = await run {
+            switch pending.receipt {
+            case .transactions(let receipt): _ = try await self.service.undoDelete(receipt)
+            case .record(let receipt): try await self.service.undoDelete(receipt)
+            }
+        }
     }
 
     func dismissUndo() { pendingUndo = nil }
@@ -233,6 +246,32 @@ final class AppModel {
         await run { try await self.service.reorderAccountGroup(id: id, direction) }
     }
 
+    // MARK: - Budgets
+
+    func save(_ draft: BudgetDraft) async -> EditOutcome {
+        await run { _ = try await self.service.saveBudget(draft) }
+    }
+
+    func setBudgetArchived(id: String, archived: Bool) async -> EditOutcome {
+        await run { try await self.service.setBudgetArchived(id: id, archived: archived) }
+    }
+
+    /// Delete a budget, and offer it back.
+    ///
+    /// The offer is not politeness. A budget is a set of decisions -- which
+    /// categories, what limit, anchored to which day -- and re-entering them is
+    /// exactly the kind of small loss that makes somebody stop trusting an app.
+    /// Nothing is destroyed by the delete, so the undo is exact.
+    func deleteBudget(id: String, named name: String) async -> EditOutcome {
+        await deleting {
+            let receipt = try await self.service.deleteBudget(id: id)
+            return PendingUndo(
+                receipt: .record(receipt),
+                message: "Deleted the budget \u{201C}\(name)\u{201D}. No transaction was changed."
+            )
+        }
+    }
+
     /// Which editor a register row opens.
     ///
     /// TWO DOORS, AND THE ROW DECIDES WHICH. A transfer leg has no ordinary
@@ -258,6 +297,25 @@ final class AppModel {
     /// clear any undo offer, because an undo bar left on screen after a
     /// DIFFERENT change would offer to take back something the owner is no
     /// longer looking at.
+    /// A delete: do it, offer it back, and re-read. One shape for every kind
+    /// of delete, so no route can quietly acquire the ability to remove
+    /// something with no way back.
+    private func deleting(_ body: () async throws -> PendingUndo) async -> EditOutcome {
+        do {
+            let pending = try await body()
+            await refresh()
+            // Set AFTER the refresh: `refresh` is the only thing that bumps
+            // `revision`, and a bar shown before the screens behind it have
+            // caught up would offer to take back something not yet drawn.
+            pendingUndo = pending
+            return .saved
+        } catch let error as EditError {
+            return .refused(EditRefusal(error))
+        } catch {
+            return .refused(EditRefusal(unexpected: error))
+        }
+    }
+
     private func run(_ body: () async throws -> Void) async -> EditOutcome {
         do {
             try await body()

@@ -30,6 +30,17 @@ public protocol NamedCategoryTreeNode: CategoryTreeNode {
 
 extension Category: NamedCategoryTreeNode {}
 
+/// One step of a drill-down breadcrumb.
+public struct CategoryCrumb: Sendable, Hashable, Identifiable {
+    public let id: String
+    public let name: String
+
+    public init(id: String, name: String) {
+        self.id = id
+        self.name = name
+    }
+}
+
 public enum Categories {
     /// The given ids PLUS all their descendants (D16).
     ///
@@ -71,6 +82,34 @@ public enum Categories {
             cur = node.parentId.flatMap { byId[$0] }
         }
         return parts.joined(separator: " \u{203A} ")
+    }
+
+    /// Root → `id`, for a drill-down breadcrumb. Ported from `ancestorTrail`
+    /// in src/ui/reports/reportParams.ts.
+    ///
+    /// An id naming nothing still produces ONE crumb, called "Unknown
+    /// category". That is deliberate and it is the same rule as everywhere
+    /// else here: the trail and the rows below it must never disagree about
+    /// where you are, and a breadcrumb that silently emptied itself would
+    /// leave a screen full of figures with no heading saying what they are.
+    public static func ancestorTrail<C: NamedCategoryTreeNode>(
+        _ all: [C], id: String?
+    ) -> [CategoryCrumb] {
+        guard let id else { return [] }
+        var byId: [String: C] = [:]
+        for c in all { byId[c.id] = c }
+        guard var cur = byId[id] else {
+            return [CategoryCrumb(id: id, name: "Unknown category")]
+        }
+        var trail: [CategoryCrumb] = []
+        var seen = Set<String>()
+        while !seen.contains(cur.id) {
+            seen.insert(cur.id)
+            trail.insert(CategoryCrumb(id: cur.id, name: cur.name), at: 0)
+            guard let parentId = cur.parentId, let parent = byId[parentId] else { break }
+            cur = parent
+        }
+        return trail
     }
 
     /// The top-level ancestor. An orphan (parent id naming nothing) or a cycle
