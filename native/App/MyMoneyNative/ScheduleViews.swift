@@ -44,6 +44,19 @@ struct SchedulesView: View {
     @State private var refusal: EditRefusal?
 
     var body: some View {
+        // A MEASUREMENT ASKING FOR THE DETAIL SCREEN gets it here, in the same
+        // container a push would have put it in -- the detail column's
+        // navigation stack -- so its bottom bar composes with exactly the
+        // insets it does in a real run. `Reach.isOpening` is false in every
+        // launch that is not a measurement. See `Reach.opening`.
+        if Reach.isOpening("scheduled.detail"), let first = screen?.schedules.first {
+            ScheduleDetailView(scheduleId: first.id, revision: revision)
+        } else {
+            list
+        }
+    }
+
+    private var list: some View {
         List {
             if let refusal {
                 Section { RefusalNotice(refusal: refusal) }
@@ -105,9 +118,17 @@ struct SchedulesView: View {
             ScheduleEditor(existing: which.schedule)
         }
         .sheet(item: $confirming) { occurrence in
-            ConfirmPostSheet(occurrence: occurrence)
+            ConfirmPostSheet(
+                occurrence: occurrence, categoryPath: screen?.categoryPath(occurrence.categoryId)
+            )
         }
-        .task(id: "\(revision):\(horizon)") { await load() }
+        .task(id: "\(revision):\(horizon)") {
+            await load()
+            // The two sheets a measurement can ask for. Nothing else opens a
+            // sheet on its own, and this cannot fire without MYMONEY_REACH=1.
+            if Reach.isOpening("scheduled.new") { editing = .creating }
+            if Reach.isOpening("scheduled.confirm") { confirming = screen?.plan.all.first }
+        }
     }
 
     // MARK: - Sections
@@ -259,10 +280,28 @@ struct SchedulesView: View {
             // THE FACT A COUNT COULD NOT CONVEY. Schedules are not in the
             // backup file (the format has nowhere to put them), so they are not
             // something the web app will ever know about.
-            Text(
-                "Schedules live on this device. They are not part of the backup file your web app "
-                    + "reads, and entering one adds an ordinary transaction to this copy."
-            )
+            //
+            // AND WHAT A SCHEDULE CANNOT BE, said here rather than discovered
+            // as a missing option in the editor. A transfer needs a second
+            // account, a second amount when the currencies differ, and a
+            // below-zero projection that moves money out of one account and
+            // into another on one day; half of that, shipped for real money,
+            // is worse than none. A split has to sum exactly to its parent,
+            // which an amount that varies per occurrence cannot promise months
+            // in advance.
+            VStack(alignment: .leading, spacing: 6) {
+                Text(
+                    "Schedules live on this device. They are not part of the backup file your "
+                        + "web app reads, and entering one adds an ordinary transaction to this "
+                        + "copy."
+                )
+                Text(
+                    "A schedule is one payment from one account. Transfers between your own "
+                        + "accounts, and payments split across categories, are entered by hand "
+                        + "\u{2014} or entered from here and then edited."
+                )
+            }
+            .fixedSize(horizontal: false, vertical: true)
         }
     }
 

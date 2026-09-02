@@ -288,4 +288,43 @@ struct ScheduleCalendarTests {
             )
         }
     }
+
+    // MARK: - Moving the grid under decisions already taken
+
+    @Test("MOVING A SCHEDULE'S DATES SAYS WHICH DECISIONS WOULD FALL OFF THE GRID")
+    func datesLeavingTheGrid() throws {
+        // Changing the cadence or the anchor moves every occurrence. The
+        // decisions already taken -- entered, skipped -- were about dates on
+        // the OLD grid, and the ones the new grid does not fall on become
+        // orphans: still the owner's, still shown, and no longer attached to
+        // anything the schedule will do again. That is worth being told BEFORE
+        // saving rather than discovering afterwards in the history.
+        let third = ScheduleCalendar(
+            cadence: .monthly, start: try #require(CalendarDate(iso: "2026-03-03"))
+        )
+        let fifth = ScheduleCalendar(
+            cadence: .monthly, start: try #require(CalendarDate(iso: "2026-03-05"))
+        )
+        let taken = ["2026-03-03", "2026-04-03", "2026-05-03"]
+        #expect(third.datesOffTheGrid(taken).isEmpty)
+        #expect(fifth.datesOffTheGrid(taken) == taken)
+
+        // A cadence change keeps the anchor and loses what fell between.
+        let quarterly = ScheduleCalendar(
+            cadence: .quarterly, start: try #require(CalendarDate(iso: "2026-03-03"))
+        )
+        #expect(quarterly.datesOffTheGrid(taken) == ["2026-04-03", "2026-05-03"])
+
+        // An end date that stops the series before a decision was taken puts
+        // that decision off the grid too -- it is no longer an occurrence.
+        let stopped = ScheduleCalendar(
+            cadence: .monthly, start: try #require(CalendarDate(iso: "2026-03-03")),
+            end: .onDate("2026-04-03")
+        )
+        #expect(stopped.datesOffTheGrid(taken) == ["2026-05-03"])
+
+        // Something that is not a date is off the grid rather than a crash.
+        #expect(third.datesOffTheGrid(["the third"]) == ["the third"])
+    }
+
 }

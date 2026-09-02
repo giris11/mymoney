@@ -40,6 +40,39 @@ swift test
 
 No dependencies, so both work offline from a clean checkout.
 
+### Building the apps with warnings as errors
+
+The package is held to it with `swift build -Xswiftc -warnings-as-errors`. The
+**apps** need one extra setting, and it is not optional:
+
+```
+xcodebuild -project App/MyMoneyNative.xcodeproj -scheme MyMoneyNative \
+  -configuration Debug -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
+  SWIFT_TREAT_WARNINGS_AS_ERRORS=YES GCC_TREAT_WARNINGS_AS_ERRORS=YES \
+  SWIFT_SUPPRESS_WARNINGS=NO \
+  build
+```
+
+**Why `SWIFT_SUPPRESS_WARNINGS=NO` is there.** Xcode compiles a package
+dependency with `-suppress-warnings` by default, so that somebody else's
+warnings do not fill your build log. `MyMoneyKit` is a package dependency of
+this project even though it is the same repository — so a command-line
+`SWIFT_TREAT_WARNINGS_AS_ERRORS=YES`, which applies to every target, hands the
+package both flags at once and the build fails outright with
+
+```
+error: conflicting options '-warnings-as-errors' and '-suppress-warnings'
+```
+
+That is a **failure, not a pass** — four builds that exit 65 having compiled
+nothing look very like four clean builds if only the warning count is read.
+`SWIFT_SUPPRESS_WARNINGS=NO` un-suppresses the package, which is also the
+stricter reading: the kit is compiled warnings-as-errors here as well as under
+`swift build`.
+
+Run it for `Debug` and `Release`, and for `-destination 'platform=macOS'` as
+well as the simulator: a warning that only Release emits is still a warning.
+
 ## What is in it
 
 | area | what it decides |
@@ -324,8 +357,20 @@ anchored in 2024 does not fill the register with two years of transactions. A
 run is capped and says what it held back, and what it entered is announced on
 the screen.
 
+**And auto-post never re-enters something that has already been through the
+book.** An occurrence whose transaction is gone is offered for confirmation,
+never entered automatically, however trusted the schedule is. There are exactly
+two ways it can be gone and neither is a reason to write it again unasked: the
+owner deleted it (putting it straight back overrules him about his own money) or
+an import replaced the book with a file that may well already contain that
+payment (writing it again makes a duplicate). The occurrences after it are
+unaffected — one deleted payment does not switch auto-post off either.
+
 **Nothing is lost and nothing is silently repeated.** Skipping is a recorded
-decision that can be taken back; a posting is a CLAIM about the book, checked
+decision that can be taken back — from the schedule's own history, on the rows
+where it would actually do something (a skip the schedule still falls on; never
+a posting, which is undone by deleting its transaction); a posting is a CLAIM
+about the book, checked
 against `live_transactions` on every read, so a transaction that was deleted —
 or wiped by a fresh import — makes its occurrence due again rather than leaving
 a hole nobody can see. Schedules are **not** in `tombstonedTables`, deliberately:
@@ -340,6 +385,36 @@ takes it below zero. Per account, in that account's own currency, so no exchange
 rate is involved; only current, savings and cash accounts warn, because a credit
 card and a loan live below zero by design. Worst measured read over the
 5,200-row demo book with forty schedules: **8.9 ms**.
+
+**The projection stops where the screen stops.** A payment the owner has already
+entered with next June's date is real, and it is not in this window; without
+that bound it produced a warning naming a date in 2027 with no schedule behind
+it, on a screen whose own footer says it is counting what is scheduled below.
+Dropping those steps cannot change a crossing found inside the window: the
+timeline runs in date order, so everything removed comes strictly after
+everything kept.
+
+**A paused schedule says nothing at all**, and that includes its problems. It
+will enter nothing, so a "needs attention" row about its missing account is a
+job with no consequence attached, and that list is worth reading exactly as long
+as nothing in it can safely be ignored. Everything reappears the moment it is
+unpaused.
+
+**What a schedule deliberately cannot be**, said on the screen rather than left
+as a missing option: a transfer (it needs a second account, a second amount
+across currencies, and a projection that moves money out of one account and into
+another on one day — half of that shipped for real money is worse than none) or
+a split (which must sum exactly to its parent, a promise an amount that varies
+per occurrence cannot make months ahead). Both are entered by hand, or entered
+from here and then edited.
+
+**Moving a grid is said before it is done.** Changing the cadence or the first
+date moves every occurrence, and decisions taken under the old grid become
+orphans — still the owner's, still listed, no longer attached to anything the
+schedule will do again. The editor counts them (`ScheduleCalendar.datesOffTheGrid`,
+the same function the history marks its rows with) and says how many, next to
+the controls that caused it. It is a sentence, not a refusal: changing the rent
+day is an ordinary thing to do.
 
 **Reminders are local.** `Schedule/DueReminders.swift` decides which days get a
 notification and what it says; `App/MyMoneyNative/DueNotifications.swift` hands

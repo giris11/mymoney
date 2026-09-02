@@ -185,8 +185,21 @@ struct SchedulesScreen: Sendable {
     let today: String
     /// How far ahead this plan looked.
     let horizonDays: Int
+    /// The category tree, path-named, so the confirmation sheet can say where
+    /// a payment will be FILED. `DueOccurrence` carries the category's id and
+    /// not its name -- an id is the right thing for the plan to hold and the
+    /// wrong thing to put in front of somebody about to press "Enter it".
+    let categories: [CategoryChoice]
 
     func account(_ id: String) -> Account? { accounts.first { $0.id == id } }
+
+    /// "Food \u{203A} Groceries" for an occurrence's category, or nil when the
+    /// schedule files nothing -- which is a real state and is said in words
+    /// rather than left blank.
+    func categoryPath(_ id: String?) -> String? {
+        guard let id else { return nil }
+        return categories.first { $0.id == id }?.path
+    }
 
     /// The account's currency, which is the only currency a schedule's amount
     /// is ever in. Falls back to the base currency's absence rather than to a

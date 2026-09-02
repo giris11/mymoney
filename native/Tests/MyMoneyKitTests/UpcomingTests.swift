@@ -355,4 +355,100 @@ struct UpcomingTests {
         let error = editError { try Upcoming.plan(schedules: [], accounts: [], today: "2026-13-40") }
         #expect(error == .badDate("2026-13-40"))
     }
+
+    // MARK: - What must never enter itself
+
+    @Test("AN OCCURRENCE THAT CAME BACK IS NEVER ENTERED AUTOMATICALLY, however trusted")
+    func reopenedIsNeverAutomatic() throws {
+        // Auto-post has been on since June, and the 3 September payment was
+        // entered once -- but that transaction is no longer in the book. There
+        // are exactly two ways that happens and NEITHER is a reason to write it
+        // again without asking:
+        //
+        //   * the owner deleted it on purpose, and an app that quietly put it
+        //     back would be overruling him with his own money;
+        //   * a fresh import replaced the book, and the file may well already
+        //     contain that payment -- so writing it again makes a duplicate.
+        //
+        // The owner trusted the SCHEDULE. He did not trust the app to re-enter
+        // something that has already been through the book once.
+        let monthly = Self.schedule(
+            cadence: .monthly, start: "2026-09-03", expectsFrom: "2026-09-01",
+            autoPost: true, autoPostFrom: "2026-06-01"
+        )
+        let decisions: [String: ScheduleOccurrenceState] = [
+            "2026-09-03": .postedButGone(transactionId: "t-gone")
+        ]
+        let result = try plan([entry(monthly, decisions)])
+        let occurrence = try #require(result.due.first { $0.date == "2026-09-03" })
+        #expect(occurrence.reopened)
+        #expect(occurrence.postsItself == false)
+        #expect(result.autoPosting.isEmpty)
+
+        // And the NEXT one still enters itself. The refusal is about this
+        // occurrence, not about the schedule -- one deleted payment does not
+        // switch auto-post off behind the owner's back either.
+        let wider = try plan([entry(monthly, decisions)], horizon: 45)
+        #expect(wider.autoPosting.map(\.date) == ["2026-10-03"])
+    }
+
+    @Test("THE PROJECTION STOPS AT THE HORIZON, so nothing beyond it can raise a warning")
+    func projectionStopsAtTheHorizon() throws {
+        // A large payment the owner has already entered, dated next June. It is
+        // real and it is in the book, and it is not in this window. A warning
+        // here naming a date in 2027 -- with no schedule behind it, since no
+        // schedule reaches that far -- would be this screen warning about
+        // something it is not showing, on a screen whose own footer says it is
+        // counting what is scheduled BELOW.
+        let far = Self.account(
+            balance: 100_000, later: [DatedAmount(date: "2027-06-01", amountMinor: -500_000)]
+        )
+        let result = try plan([entry(Self.schedule(amountMinor: -1000))], [far])
+        #expect(result.due.count == 1)
+        #expect(result.warnings.isEmpty)
+
+        // The same payment inside the window DOES warn, so this is a boundary
+        // rather than the projection quietly ignoring the book.
+        let near = Self.account(
+            balance: 100_000, later: [DatedAmount(date: "2026-09-20", amountMinor: -500_000)]
+        )
+        let warned = try plan([entry(Self.schedule(amountMinor: -1000))], [near])
+        #expect(warned.warnings.map(\.date) == ["2026-09-20"])
+    }
+
+    @Test("A PAUSED SCHEDULE IS SILENT: not due, and not in the problems either")
+    func pausedIsSilentAboutProblemsToo() throws {
+        // Each of these is a real problem for a schedule that is RUNNING. A
+        // paused one is not running: it will enter nothing, so a row telling
+        // the owner to go and fix it is a job with no consequence attached --
+        // and a "needs attention" list is worth reading exactly as long as
+        // nothing in it can safely be ignored. Unpausing puts every one back.
+        let goneAccount = Self.schedule(id: "s1", account: "a-vanished", paused: true)
+        let goneCategory = Self.schedule(id: "s2", category: "c-gone", paused: true)
+        let unreadable = Schedule(
+            id: "s3", name: "Broken", accountId: "a-current", amountMinor: -100,
+            payeeName: "", categoryId: nil, notes: "", cadence: .monthly,
+            startDate: "the third", end: .never, expectsFrom: "2026-09-02", autoPost: false,
+            autoPostFrom: nil, paused: true, remind: true,
+            createdAt: "2026-09-01T09:00:00.000Z", updatedAt: "2026-09-01T09:00:00.000Z"
+        )
+        let result = try plan(
+            [entry(goneAccount), entry(goneCategory), entry(unreadable)],
+            categories: ["c-home"]
+        )
+        #expect(result.problems.isEmpty)
+        #expect(result.isEmpty)
+
+        // The same three, running, are all three reported -- so the silence
+        // above is the pause and not a hole in the checking.
+        let running = try plan(
+            [
+                entry(Self.schedule(id: "s1", account: "a-vanished")),
+                entry(Self.schedule(id: "s2", category: "c-gone")),
+            ],
+            categories: ["c-home"]
+        )
+        #expect(Set(running.problems.map(\.kind)) == [.accountMissing, .categoryMissing])
+    }
+
 }

@@ -530,7 +530,8 @@ actor LedgerService {
             schedules: try store.schedules(),
             accounts: try store.accountBalances().map(\.account),
             today: today,
-            horizonDays: horizonDays
+            horizonDays: horizonDays,
+            categories: try store.categoryChoices()
         )
     }
 
@@ -573,6 +574,16 @@ actor LedgerService {
     @discardableResult
     func save(_ draft: ScheduleDraft) throws -> Schedule {
         try opened().saveSchedule(draft)
+    }
+
+    /// The dates this schedule has already taken a decision about.
+    ///
+    /// Read by the EDITOR, so that changing the cadence or the first date can
+    /// say how many of them the new grid would leave stranded -- before the
+    /// save rather than afterwards in the history. See
+    /// `ScheduleCalendar.datesOffTheGrid`.
+    func settledOccurrenceDates(scheduleId: String) throws -> [String] {
+        try opened().scheduleHistory(id: scheduleId).map(\.occurrenceDate)
     }
 
     func setSchedulePaused(id: String, paused: Bool) throws {

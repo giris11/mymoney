@@ -58,6 +58,18 @@ struct BudgetsView: View {
     @State private var refusal: EditRefusal?
 
     var body: some View {
+        // A MEASUREMENT ASKING FOR THE DETAIL SCREEN gets it in the same
+        // navigation stack a push would have used, so its bottom bar composes
+        // with the same insets. False in every launch that is not a
+        // measurement; see `Reach.opening`.
+        if Reach.isOpening("budgets.detail"), let first = screen?.lines.first {
+            BudgetDetailView(budgetId: first.budget.id, revision: revision)
+        } else {
+            list
+        }
+    }
+
+    private var list: some View {
         List {
             if let refusal {
                 Section { RefusalNotice(refusal: refusal) }
@@ -144,7 +156,12 @@ struct BudgetsView: View {
             // delete, for ever.
             Text("No transaction is changed. You can undo this straight afterwards.")
         }
-        .task(id: revision) { await load() }
+        .task(id: revision) {
+            await load()
+            // The one sheet a measurement can ask for here. Cannot fire
+            // without MYMONEY_REACH=1.
+            if Reach.isOpening("budgets.new") { editing = .creating }
+        }
     }
 
     // MARK: - Sections

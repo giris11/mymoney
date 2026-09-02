@@ -235,6 +235,42 @@ struct SchedulePostingTests {
         )
     }
 
+    @Test("ONLY A SKIP STILL ON THE GRID CAN BE TAKEN BACK")
+    func onlyOnGridSkipsCanBeTakenBack() throws {
+        let scratch = try ScratchDirectory()
+        let store = try EditFixture.store(scratch)
+        let schedule = try store.saveSchedule(draft())
+
+        try store.skipOccurrence(scheduleId: schedule.id, occurrenceDate: "2026-09-03")
+        try store.postScheduled(
+            SchedulePosting(scheduleId: schedule.id, occurrenceDate: "2026-10-03")
+        )
+        let history = try store.scheduleHistory(id: schedule.id)
+        #expect(history.first { $0.occurrenceDate == "2026-09-03" }?.canBeTakenBack == true)
+        // A POSTING IS NOT UNDONE BY UN-SKIPPING IT. Deleting the transaction
+        // is what makes that occurrence due again, which is the same rule the
+        // store enforces when asked to skip something already entered.
+        #expect(history.first { $0.occurrenceDate == "2026-10-03" }?.canBeTakenBack == false)
+
+        // Move the schedule off the day it was skipped on. The skip is still
+        // recorded -- decisions are never rewritten by a cadence change -- but
+        // there is no longer an occurrence for it to be put back to, so the
+        // history offers nothing rather than offering a button that would
+        // visibly do nothing.
+        var moved = ScheduleDraft(
+            id: schedule.id, name: "Rent", accountId: "w-a", amountMinor: -45000,
+            payeeName: "Landlord", categoryId: "c-food", cadence: .monthly,
+            startDate: "2026-09-10"
+        )
+        moved.notes = "the flat"
+        try store.saveSchedule(moved)
+
+        let afterMove = try store.scheduleHistory(id: schedule.id)
+        let orphan = try #require(afterMove.first { $0.occurrenceDate == "2026-09-03" })
+        #expect(orphan.isOnTheGrid == false)
+        #expect(orphan.canBeTakenBack == false)
+    }
+
     // MARK: - The claim, checked against the book
 
     @Test("DELETING THE POSTED TRANSACTION MAKES THE OCCURRENCE DUE AGAIN, and undo settles it")

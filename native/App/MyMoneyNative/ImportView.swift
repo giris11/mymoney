@@ -27,6 +27,12 @@ import UniformTypeIdentifiers
 struct ImportView: View {
     @Environment(AppModel.self) private var app
     @State private var picking = false
+    /// Asked from the bottom bar, where the import button now lives.
+    @State private var confirmingIncoming = false
+
+    private func importIncoming() {
+        Task { await app.importIncoming() }
+    }
 
     var body: some View {
         List {
@@ -49,9 +55,7 @@ struct ImportView: View {
             if let document = app.incoming {
                 IncomingSection(
                     document: document,
-                    importIt: { Task { await app.importIncoming() } },
-                    dismiss: { app.clearIncoming() },
-                    replacesABook: app.hasBook
+                    dismiss: { app.clearIncoming() }
                 )
             }
 
@@ -121,20 +125,71 @@ struct ImportView: View {
             }
         }
         .navigationTitle("Import")
-        // The one action this screen has, at the bottom rather than three
+        // The action this screen has, at the bottom rather than three
         // paragraphs down the list where it used to be. The explanation above
         // is read once; the button is what the screen is for.
+        //
+        // AND WHICH ACTION THAT IS DEPENDS ON WHETHER A FILE IS ALREADY HERE.
+        // When one arrives from the share sheet, "Choose a backup file..." is
+        // no longer the thing to do -- the file has been chosen, by another
+        // app, and the only question left is whether to import it. That button
+        // used to be a `.borderedProminent` inside the file's card, which put
+        // the one action the screen existed for at about 0.60 of the screen on
+        // a 6.9" phone -- above the bottom third, and further up the longer the
+        // file's description ran. It was also the one primary action in the app
+        // carrying no `reachProbe`, so no measurement could see it.
         .safeAreaInset(edge: .bottom) {
             ActionBar {
-                PrimaryAction(
-                    title: "Choose a backup file\u{2026}",
-                    systemImage: "doc.badge.plus",
-                    isEnabled: !isReading
-                ) {
-                    picking = true
+                if let document = app.incoming, document.kind.isBackup {
+                    HStack(spacing: 16) {
+                        Button(role: .cancel) { app.clearIncoming() } label: {
+                            Text("Not now").frame(minHeight: 24)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.large)
+
+                        PrimaryAction(
+                            title: "Check and import this file",
+                            systemImage: "checkmark.seal",
+                            isEnabled: !isReading
+                        ) {
+                            if app.hasBook { confirmingIncoming = true } else { importIncoming() }
+                        }
+                        .reachProbe("Import \u{2014} Check and import")
+                    }
+                } else {
+                    PrimaryAction(
+                        title: "Choose a backup file\u{2026}",
+                        systemImage: "doc.badge.plus",
+                        isEnabled: !isReading
+                    ) {
+                        picking = true
+                    }
+                    .reachProbe("Import \u{2014} Choose a file")
                 }
-                .reachProbe("Import \u{2014} Choose a file")
             }
+        }
+        // THE CONFIRMATION FOLLOWS THE BUTTON. It used to live on the card, for
+        // the good reason that the sentence belongs next to the name of the
+        // file about to replace the book -- and it still names the file, so
+        // nothing about that is lost by asking it from here.
+        .confirmationDialog(
+            "Replace the copy on this device?",
+            isPresented: $confirmingIncoming,
+            titleVisibility: .visible
+        ) {
+            Button(
+                "Import \u{201C}\(app.incoming?.fileName ?? "")\u{201D}",
+                role: .destructive, action: importIncoming
+            )
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(
+                "This device already holds a copy of your book, and importing replaces it. The "
+                    + "file is checked against its own summary first, and is refused if anything "
+                    + "disagrees. Your web app is untouched either way \u{2014} it is the real "
+                    + "ledger."
+            )
         }
         // BOTH KINDS ARE OFFERED IN THE PANEL, and what a file IS is decided
         // from its bytes afterwards -- see `IncomingFile`. A picker restricted
@@ -363,21 +418,16 @@ private struct RefusedSection: View {
 }
 
 /// A file that has arrived -- picked here, or handed over by another app -- and
-/// what can be done with it.
+/// what it is.
 ///
-/// THE CONFIRMATION LIVES HERE, ON THE FILE, rather than on the button that
-/// opened the panel. An import replaces the copy on this device, and the
-/// sentence asking about that should be next to the name of the file that is
-/// about to do it. The old dialog fired before a file had even been chosen,
-/// which meant confirming the replacement of a book with a file nobody had
-/// seen yet.
+/// IT DESCRIBES; THE BAR ACTS. A backup's "Check and import this file" and its
+/// "Not now" are in `ImportView`'s bottom bar, and the confirmation that names
+/// the file went with them -- the sentence still names the file, so nothing is
+/// lost by asking it from the bar. What stays here is the description and, for
+/// a file that cannot be imported at all, the single Dismiss.
 private struct IncomingSection: View {
     let document: IncomingDocument
-    let importIt: () -> Void
     let dismiss: () -> Void
-    let replacesABook: Bool
-
-    @State private var confirming = false
 
     var body: some View {
         Section {
@@ -424,38 +474,21 @@ private struct IncomingSection: View {
                 .fixedSize(horizontal: false, vertical: true)
             }
 
-            HStack(spacing: 12) {
-                if document.kind.isBackup {
-                    Button {
-                        if replacesABook { confirming = true } else { importIt() }
-                    } label: {
-                        Label("Check and import this file", systemImage: "checkmark.seal")
-                    }
-                    .buttonStyle(.borderedProminent)
-                }
+            // A BACKUP'S TWO BUTTONS ARE IN THE BOTTOM BAR, not here -- see the
+            // `safeAreaInset` on `ImportView`. What is left in the card is the
+            // one case the bar has no answer for: a file this app can describe
+            // and cannot import, where "Dismiss" is the only thing to offer and
+            // putting it in the bar would dress a dead end up as a primary
+            // action.
+            if !document.kind.isBackup {
                 Button(role: .cancel, action: dismiss) {
-                    Text(document.kind.isBackup ? "Not now" : "Dismiss")
+                    Text("Dismiss")
                 }
                 .buttonStyle(.bordered)
+                .padding(.vertical, 4)
             }
-            .padding(.vertical, 4)
         } header: {
             Text("This file")
-        }
-        .confirmationDialog(
-            "Replace the copy on this device?",
-            isPresented: $confirming,
-            titleVisibility: .visible
-        ) {
-            Button("Import \u{201C}\(document.fileName)\u{201D}", role: .destructive, action: importIt)
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text(
-                "This device already holds a copy of your book, and importing replaces it. The "
-                    + "file is checked against its own summary first, and is refused if anything "
-                    + "disagrees. Your web app is untouched either way \u{2014} it is the real "
-                    + "ledger."
-            )
         }
     }
 

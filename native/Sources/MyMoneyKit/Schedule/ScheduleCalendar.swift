@@ -148,6 +148,26 @@ public struct ScheduleCalendar: Sendable, Hashable {
         return rawDate(index) == date ? index : nil
     }
 
+    /// Of these dates, the ones this calendar does NOT fall on.
+    ///
+    /// ASKED BEFORE A GRID IS MOVED, not after. Changing the cadence or the
+    /// anchor moves every occurrence, and the decisions already taken -- this
+    /// one entered, that one skipped -- were about dates on the OLD grid. The
+    /// ones the new grid misses become orphans: still the owner's, still listed
+    /// in the history, and no longer attached to anything the schedule will do
+    /// again. The editor asks this question with the dates the schedule has
+    /// decisions for, so the sentence it shows before saving is a COUNT of real
+    /// rows rather than a general warning nobody reads.
+    ///
+    /// A date that is not a date is off the grid, because nothing this
+    /// calendar produces could ever equal it.
+    public func datesOffTheGrid(_ dates: [String]) -> [String] {
+        dates.filter { iso in
+            guard let date = CalendarDate(iso: iso) else { return true }
+            return index(on: date) == nil
+        }
+    }
+
     /// The occurrences between two dates, inclusive at both ends.
     ///
     /// Returns index and date together because every caller needs both: the

@@ -109,6 +109,21 @@ public struct ScheduleHistoryRow: Sendable, Hashable, Identifiable {
     /// history on it.
     public let isOnTheGrid: Bool
     public let at: String
+
+    /// Can this decision be undone from the history?
+    ///
+    /// ONLY A SKIP, AND ONLY ONE THE SCHEDULE STILL FALLS ON.
+    ///
+    ///   * A POSTING IS NOT UNDONE BY UN-SKIPPING IT. It made a transaction,
+    ///     and deleting that transaction is what makes the occurrence due
+    ///     again -- the same rule `skipOccurrence` enforces when it refuses to
+    ///     skip something already entered. A button here would look like a
+    ///     second way to remove money from the book, which it is not.
+    ///   * AN OFF-GRID SKIP HAS NOTHING TO GO BACK TO. The schedule's dates
+    ///     were changed after the decision was taken, so putting it back would
+    ///     revive an occurrence that no longer exists: a button that visibly
+    ///     does nothing, which is worse than no button.
+    public var canBeTakenBack: Bool { kind == .skipped && isOnTheGrid }
 }
 
 /// What one auto-post run did.

@@ -405,6 +405,14 @@ struct AccountGroupsView: View {
         .sheet(item: $renaming) { group in
             RenameGroupSheet(name: $renameText, save: { Task { await rename(group) } })
         }
+        // The one sheet a measurement can ask for here. Cannot fire without
+        // MYMONEY_REACH=1; see `Reach.opening`.
+        .task {
+            if Reach.isOpening("groups.rename"), let first = groups.first {
+                renameText = first.name
+                renaming = first
+            }
+        }
     }
 
     @MainActor private func add() async {

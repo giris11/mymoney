@@ -283,6 +283,19 @@ struct ScheduleStoreTests {
         // above is one: a schedule is in no balance, no report and no backup
         // file, and counting it would make the number mean something vaguer
         // than it says.
+        //
+        // AND THE IMPORT RESET IS WHAT MAKES THAT THE ONLY COHERENT CHOICE,
+        // which is worth writing down because the absence of a
+        // `recordLocalEdit` call in the schedules store reads like an
+        // oversight and is not one. `resetLocalEdits` runs on import, because
+        // at that instant the copy and the file are the same book again --
+        // that is what the count means and why zero is honest. But schedules
+        // SURVIVE an import (they are in `nativeTombstonedTables`, so a fresh
+        // backup cannot sweep them away). If they counted, an import would
+        // reset the number to zero while the schedules were still, in the
+        // banner's own words, "not in your web app" -- a figure claiming a
+        // parity that had never existed and could never be reached. Counting
+        // them makes the number wrong in the one direction it must not be.
         #expect(try store.localEdits().count == 0)
 
         try store.postScheduled(

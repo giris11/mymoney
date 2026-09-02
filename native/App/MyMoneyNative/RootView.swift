@@ -155,6 +155,24 @@ struct RootView: View {
         .task {
             await app.load()
             await loadContext()
+            // A reach measurement, and nothing else, can ask to start on a
+            // particular screen. `Reach.openingRoute` is nil unless
+            // MYMONEY_REACH=1 is also set. See `Reach.opening`.
+            //
+            // After a beat, because a collapsed split view only PUSHES when its
+            // sidebar list's selection changes and the list has to exist first
+            // -- setting it in the same turn the book arrives changes a
+            // binding nothing is watching yet.
+            if let route = Reach.openingRoute {
+                try? await Task.sleep(for: .milliseconds(600))
+                selection = route
+            }
+            // The four editor sheets the sidebar's own bar opens. Same beat,
+            // and for the same reason: the context they need is loaded above.
+            if let asked = Reach.openingSheet {
+                try? await Task.sleep(for: .milliseconds(600))
+                sheet = asked
+            }
         }
         .onChange(of: selection) { _, route in
             rebuildRegister(for: route)

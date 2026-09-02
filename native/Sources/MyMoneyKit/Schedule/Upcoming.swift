@@ -280,6 +280,15 @@ public enum Upcoming {
 
         for entry in schedules {
             let schedule = entry.schedule
+            // A PAUSED SCHEDULE SAYS NOTHING AT ALL, and that includes its
+            // problems. It is switched off: it will enter nothing, so a "needs
+            // attention" row about its missing account is a job with no
+            // consequence attached -- and that list is worth reading exactly as
+            // long as nothing in it can safely be ignored. Everything below is
+            // recomputed the moment it is unpaused, so nothing is lost by
+            // waiting until it matters. It keeps every occurrence it has
+            // already settled either way.
+            if schedule.paused { continue }
             guard let calendar = schedule.calendar, CalendarDate(iso: schedule.expectsFrom) != nil
             else {
                 problems.append(
@@ -313,10 +322,6 @@ public enum Upcoming {
                     )
                 )
             }
-            // A paused schedule is not a problem and not due. It is simply
-            // switched off, and it keeps every occurrence it has already
-            // settled.
-            if schedule.paused { continue }
             if let final = calendar.finalDate, final < today {
                 // Finished is worth saying once, on the schedule's own row,
                 // rather than leaving a schedule in the list that will never
@@ -359,7 +364,7 @@ public enum Upcoming {
                     payeeName: schedule.payeeName,
                     categoryId: schedule.categoryId,
                     notes: schedule.notes,
-                    postsItself: postsItself(schedule, on: date),
+                    postsItself: postsItself(schedule, on: date, cameBack: reopened),
                     isOverdue: isOverdue,
                     daysAway: daysAway,
                     reopened: reopened
@@ -377,7 +382,9 @@ public enum Upcoming {
             overdue: overdue,
             due: due,
             totals: try totals(overdue + due),
-            warnings: try warnings(for: overdue + due, accounts: accounts, today: today),
+            warnings: try warnings(
+                for: overdue + due, accounts: accounts, today: today, through: through
+            ),
             problems: problems,
             autoPosting: (overdue + due).filter(\.postsItself)
         )
@@ -394,9 +401,29 @@ public enum Upcoming {
 
     /// Would this occurrence enter itself?
     ///
-    /// Two conditions, and the second is the one that matters: auto-post cannot
+    /// THREE CONDITIONS, AND `cameBack` IS THE ONE THAT PROTECTS THE OWNER FROM
+    /// HIS OWN APP. An occurrence is `postedButGone` when it was entered once
+    /// and the transaction is no longer in the book, and there are exactly two
+    /// ways that happens -- neither of which is a reason to write it again
+    /// without asking:
+    ///
+    ///   * HE DELETED IT. Putting it straight back is the app overruling him
+    ///     about his own money, and doing it silently at the next launch is the
+    ///     worst available version of that.
+    ///   * A FRESH IMPORT REPLACED THE BOOK. The file came from the web app,
+    ///     which may well already contain that payment -- so re-entering it
+    ///     makes a duplicate of a row that is already there.
+    ///
+    /// The owner switched auto-post on for the SCHEDULE. He did not ask the app
+    /// to re-enter something that has already been through the book once, and
+    /// the difference between the two cases is not something this code can see.
+    /// So a reopened occurrence is always offered for confirmation, with the
+    /// reason on the row; the occurrences after it are unaffected.
+    ///
+    /// The second condition is the one the header is about: auto-post cannot
     /// reach back past the day it was switched on. See `Schedule.autoPostFrom`.
-    static func postsItself(_ schedule: Schedule, on date: CalendarDate) -> Bool {
+    static func postsItself(_ schedule: Schedule, on date: CalendarDate, cameBack: Bool) -> Bool {
+        guard !cameBack else { return false }
         guard schedule.autoPost, !schedule.paused else { return false }
         guard let from = schedule.autoPostFrom.flatMap(CalendarDate.init(iso:)) else { return false }
         return date >= from
@@ -457,10 +484,19 @@ public enum Upcoming {
     /// OVERDUE ITEMS ARE APPLIED AT TODAY. They have not happened yet and they
     /// are about to; leaving them out would produce a projection that is
     /// exactly as wrong as the backlog is big.
+    ///
+    /// AND IT STOPS AT `through`, WHICH IS THE SCREEN'S OWN WINDOW. A
+    /// transaction the owner typed in with next June's date is real, and it is
+    /// not in this window; without the bound it can produce a warning naming a
+    /// date in 2027 with no schedule behind it, on a screen whose footer says
+    /// it is counting what is scheduled below. Dropping those steps cannot
+    /// change a crossing found inside the window either -- the timeline runs in
+    /// date order, so everything removed comes strictly after everything kept.
     static func warnings(
         for occurrences: [DueOccurrence],
         accounts: [ProjectedAccount],
-        today: CalendarDate
+        today: CalendarDate,
+        through: CalendarDate
     ) throws -> [BalanceWarning] {
         var byAccount: [String: [DueOccurrence]] = [:]
         for occurrence in occurrences { byAccount[occurrence.accountId, default: []].append(occurrence) }
@@ -492,7 +528,7 @@ public enum Upcoming {
             // The merged timeline. Facts sort before plans on the same day,
             // which is what `isFact` does in the comparator.
             var timeline: [(date: String, amount: Int64, occurrence: DueOccurrence?)] = []
-            for row in account.laterDated where row.date > today.iso {
+            for row in account.laterDated where row.date > today.iso && row.date <= through.iso {
                 timeline.append((row.date, row.amountMinor, nil))
             }
             for occurrence in mine {

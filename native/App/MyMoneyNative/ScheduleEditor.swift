@@ -82,6 +82,9 @@ struct ScheduleEditor: View {
     @State private var paused = false
     @State private var refusal: EditRefusal?
     @State private var saving = false
+    /// The occurrence dates this schedule has already decided something about.
+    /// Empty for a new one, and for one that has never been entered or skipped.
+    @State private var settledDates: [String] = []
 
     private var accounts: [Account] { context?.accounts ?? [] }
     private var currency: String {
@@ -89,6 +92,37 @@ struct ScheduleEditor: View {
     }
 
     private var typedMinor: Int64? { amount.minor(currency: currency) }
+
+    /// The decisions this edit would strand.
+    ///
+    /// MOVING THE GRID IS A REAL EDIT AND IT IS NOT REVERSIBLE BY GUESSING.
+    /// Changing the cadence or the first date moves every occurrence, and a
+    /// decision taken about the old 3rd of the month is not a decision about
+    /// the new 5th -- the transaction it entered stays in the book, correctly,
+    /// and stops being attached to anything the schedule will do again. The
+    /// arithmetic is `ScheduleCalendar.datesOffTheGrid`, which is the same
+    /// function `scheduleHistory` marks its rows with, so the number said here
+    /// and the rows marked there cannot disagree.
+    private var strandedDates: [String] {
+        guard let existing, !settledDates.isEmpty else { return [] }
+        guard cadence != existing.cadence || startDate != existing.startDate || endMoved(existing)
+        else { return [] }
+        guard let start = CalendarDate(iso: startDate) else { return [] }
+        return ScheduleCalendar(cadence: cadence, start: start, end: chosenEnd)
+            .datesOffTheGrid(settledDates)
+    }
+
+    private func endMoved(_ existing: Schedule) -> Bool { chosenEnd != existing.end }
+
+    /// How the form's three end controls read as one value. Used by the save
+    /// and by the warning, so the two cannot describe different schedules.
+    private var chosenEnd: ScheduleEnd {
+        switch endChoice {
+        case .never: return .never
+        case .onDate: return .onDate(endDate)
+        case .afterCount: return .afterOccurrences(endCount)
+        }
+    }
 
     private var canSave: Bool {
         !Names.isBlank(name) && !accountId.isEmpty && (typedMinor ?? 0) != 0 && !saving
@@ -217,6 +251,8 @@ struct ScheduleEditor: View {
                     .fixedSize(horizontal: false, vertical: true)
                 }
 
+                strandedSection
+
                 if let refusal {
                     Section { RefusalNotice(refusal: refusal) }
                 }
@@ -239,6 +275,42 @@ struct ScheduleEditor: View {
                 }
             }
             .task { await prepare() }
+        }
+    }
+
+    /// What this edit would strand, said before it is saved.
+    ///
+    /// NOT A REFUSAL AND NOT A CONFIRMATION DIALOG. Moving a schedule's dates
+    /// is a perfectly ordinary thing to do -- the rent day changed -- and the
+    /// old decisions are not damaged by it: the transactions they entered stay
+    /// in the book, and the history goes on listing them, marked. So this is a
+    /// sentence with a number in it, in the form, next to the controls that
+    /// caused it, and Save is still Save.
+    @ViewBuilder private var strandedSection: some View {
+        let stranded = strandedDates
+        if !stranded.isEmpty {
+            Section {
+                Label {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(
+                            "\(Display.count(stranded.count, "earlier decision")) will no longer "
+                                + "line up with this schedule."
+                        )
+                        Text(
+                            "Changing how often it happens, or the day it falls on, moves every "
+                                + "date. Anything you have already entered stays in your book and "
+                                + "keeps its place in the history \u{2014} it just stops being "
+                                + "one of this schedule\u{2019}s dates."
+                        )
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    }
+                    .fixedSize(horizontal: false, vertical: true)
+                } icon: {
+                    Image(systemName: "calendar.badge.exclamationmark")
+                        .foregroundStyle(.orange)
+                }
+            }
         }
     }
 
@@ -305,6 +377,11 @@ struct ScheduleEditor: View {
             autoPost = existing.autoPost
             remind = existing.remind
             paused = existing.paused
+            // Read once, when the sheet opens. It is a list of dates, not of
+            // transactions, and a schedule with hundreds of them is a schedule
+            // that has been running for years.
+            settledDates =
+                (try? await app.service.settledOccurrenceDates(scheduleId: existing.id)) ?? []
         } else if let prefill {
             name = prefill.name
             accountId = prefill.accountId
@@ -330,12 +407,7 @@ struct ScheduleEditor: View {
         guard let minor = typedMinor else { return }
         saving = true
         defer { saving = false }
-        let end: ScheduleEnd
-        switch endChoice {
-        case .never: end = .never
-        case .onDate: end = .onDate(endDate)
-        case .afterCount: end = .afterOccurrences(endCount)
-        }
+        let end = chosenEnd
         let outcome = await app.save(
             ScheduleDraft(
                 id: existing?.id,
@@ -380,6 +452,11 @@ struct ConfirmPostSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     let occurrence: DueOccurrence
+    /// Where this payment will be FILED, path-named. Passed in rather than
+    /// looked up here: the screen presenting this sheet already holds the
+    /// category list the plan was built from, and a second read could name a
+    /// category the plan did not use.
+    let categoryPath: String?
 
     @State private var amount: TypedAmount
     @State private var date: String
@@ -387,8 +464,9 @@ struct ConfirmPostSheet: View {
     @State private var refusal: EditRefusal?
     @State private var saving = false
 
-    init(occurrence: DueOccurrence) {
+    init(occurrence: DueOccurrence, categoryPath: String?) {
         self.occurrence = occurrence
+        self.categoryPath = categoryPath
         _amount = State(
             initialValue: TypedAmount(
                 signed: occurrence.amountMinor, currency: occurrence.currency
@@ -409,6 +487,14 @@ struct ConfirmPostSheet: View {
                     if !occurrence.payeeName.isEmpty {
                         FigureRow(label: "Payee", value: occurrence.payeeName)
                     }
+                    // WHERE IT GETS FILED, and it was missing. This sheet's
+                    // whole claim is that it shows "exactly what will be
+                    // written"; the category is the field that decides which
+                    // budget the payment lands in, and it was the one field
+                    // the sheet did not name. "Not filed" is said out loud
+                    // rather than left as an absent row, because a blank is
+                    // read as "nothing to see" and this is a choice.
+                    FigureRow(label: "Category", value: categoryPath ?? "Not filed")
                 } header: {
                     Text("Entering")
                 } footer: {
@@ -521,8 +607,16 @@ struct ConfirmPostSheet: View {
 
 // MARK: - One schedule
 
-/// A schedule, opened: what it is, what it has done, and the two switches that
+/// A schedule, opened: what it is, what it has done, and the switches that
 /// change how it behaves.
+///
+/// ITS TWO ACTIONS ARE AT THE BOTTOM, on the same `ActionBar` every other
+/// screen in this app ends with. Edit used to be a `ToolbarItem` -- 60pt down a
+/// 956pt screen, in the one band a thumb on a 6.9" phone cannot reach -- and
+/// Delete was a row in the middle of the form, which put a destructive control
+/// in the path of a scrolling finger. They are now a wide filled button and a
+/// small red square about 250pt apart, which is the shape `SaveBar` already
+/// gives every editor. Measured rather than eyeballed: see `Reach`.
 struct ScheduleDetailView: View {
     @Environment(AppModel.self) private var app
 
@@ -560,11 +654,17 @@ struct ScheduleDetailView: View {
             }
         }
         .navigationTitle(screen?.schedule.name ?? "Schedule")
-        .toolbar {
-            if let screen {
-                ToolbarItem {
-                    Button("Edit") { editing = .editing(screen.schedule) }
-                }
+        #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+        #endif
+        .safeAreaInset(edge: .bottom) {
+            if let schedule = screen?.schedule {
+                SaveBar(
+                    title: "Edit this schedule",
+                    probe: "Schedule detail \u{2014} Edit",
+                    save: { editing = .editing(schedule) },
+                    delete: ("Delete schedule", { confirmingDelete = true })
+                )
             }
         }
         .sheet(item: $editing) { which in
@@ -656,9 +756,6 @@ struct ScheduleDetailView: View {
             ) {
                 Label("Remind me", systemImage: "bell")
             }
-            Button(role: .destructive) { confirmingDelete = true } label: {
-                Label("Delete schedule\u{2026}", systemImage: "trash")
-            }
         } footer: {
             if let from = screen.schedule.autoPostFrom {
                 Text(
@@ -688,6 +785,33 @@ struct ScheduleDetailView: View {
             } else {
                 ForEach(screen.history) { row in
                     ScheduleHistoryRowView(row: row)
+                        // PUTTING A SKIP BACK IS REACHABLE, because the sheet
+                        // that takes the skip promises it is. Only on the rows
+                        // the store would actually act on -- see
+                        // `ScheduleHistoryRow.canBeTakenBack` -- so a swipe
+                        // never reveals a button that does nothing.
+                        .swipeActions(edge: .trailing) {
+                            if row.canBeTakenBack {
+                                Button {
+                                    Task { await unskip(row) }
+                                } label: {
+                                    Label("Put it back", systemImage: "arrow.uturn.backward")
+                                }
+                                .tint(.blue)
+                            }
+                        }
+                        .contextMenu {
+                            if row.canBeTakenBack {
+                                Button {
+                                    Task { await unskip(row) }
+                                } label: {
+                                    Label(
+                                        "Put this payment back",
+                                        systemImage: "arrow.uturn.backward"
+                                    )
+                                }
+                            }
+                        }
                 }
             }
         } header: {
@@ -721,6 +845,16 @@ struct ScheduleDetailView: View {
     @MainActor private func delete() async {
         guard let screen else { return }
         let outcome = await app.deleteSchedule(id: scheduleId, named: screen.schedule.name)
+        refusal = outcome.refusal
+    }
+
+    /// Take a skip back. The occurrence becomes due again, and if it is inside
+    /// the window it reappears on the upcoming list on the next read -- which
+    /// `AppModel.run` triggers, so nothing here has to reload by hand.
+    @MainActor private func unskip(_ row: ScheduleHistoryRow) async {
+        let outcome = await app.unskip(
+            scheduleId: scheduleId, occurrenceDate: row.occurrenceDate
+        )
         refusal = outcome.refusal
     }
 }
@@ -763,7 +897,14 @@ struct ScheduleHistoryRowView: View {
                 : "Entered, and that transaction is no longer in your book \u{2014} so it is due "
                     + "again."
         case .skipped:
-            text = "Skipped."
+            // The gesture, named, because a swipe action nobody knows is there
+            // is a feature nobody has. Different words per platform: there is
+            // no swipe on a Mac, and the same row's context menu is.
+            #if os(iOS)
+                text = row.canBeTakenBack ? "Skipped. Swipe to put it back." : "Skipped."
+            #else
+                text = row.canBeTakenBack ? "Skipped. Right-click to put it back." : "Skipped."
+            #endif
         }
         if !row.isOnTheGrid {
             // Not a bug and not a deletion: the schedule's dates were changed

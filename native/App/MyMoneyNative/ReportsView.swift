@@ -94,6 +94,10 @@ struct ReportsView: View {
         }
         .task(id: LoadKey(revision: revision, kind: kind, range: range, parentId: parentId)) {
             await load()
+            // The one sheet a measurement can ask for here. `shownRange` is
+            // filled by `load()` above, and the sheet needs it. Cannot fire
+            // without MYMONEY_REACH=1.
+            if Reach.isOpening("reports.range") { showingRangeEditor = true }
         }
     }
 
