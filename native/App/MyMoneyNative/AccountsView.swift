@@ -29,7 +29,7 @@
 import MyMoneyKit
 import SwiftUI
 
-struct AccountsView<ImportLink: View>: View {
+struct AccountsView<ImportLink: View, ExportLink: View>: View {
     @Environment(AppModel.self) private var app
 
     let summary: LedgerSummary
@@ -38,6 +38,8 @@ struct AccountsView<ImportLink: View>: View {
     /// `NavigationLink` of the same kind. See RootView's header for why that
     /// matters on a phone.
     @ViewBuilder let importLink: () -> ImportLink
+    /// The other direction, handed in the same way and for the same reason.
+    @ViewBuilder let exportLink: () -> ExportLink
     /// Editing is owned by the shell, which holds the sheet.
     let onEditAccount: (AccountBalance) -> Void
     let onAddAccount: () -> Void
@@ -147,6 +149,34 @@ struct AccountsView<ImportLink: View>: View {
                 }
             }
 
+            // A BOOK WITH NOTHING IN IT SAYS SO, AND SAYS WHAT TO DO. This is
+            // where "start empty" lands, and where somebody who deleted their
+            // only account lands too. Without this the screen is a net worth of
+            // zero over four navigation rows that all lead to empty screens --
+            // technically correct and indistinguishable from a broken app. The
+            // ACTION is not here: it is the bar at the bottom, which swaps its
+            // primary to "Add an account" whenever this row is showing, so the
+            // one thing to do is in the one place a thumb reaches.
+            if summary.accountCount == 0 {
+                Section {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("No accounts yet")
+                            .font(.headline)
+                        Text(
+                            "Add the first one with the button at the bottom \u{2014} a current "
+                            + "account, a card, cash, whatever you actually use. Payments can "
+                            + "go in as soon as there is somewhere to put them."
+                        )
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 4)
+                    .accessibilityElement(children: .combine)
+                }
+            }
+
             Section {
                 NavigationLink(value: Route.allTransactions) {
                     HStack {
@@ -212,6 +242,7 @@ struct AccountsView<ImportLink: View>: View {
 
             Section {
                 importLink()
+                exportLink()
                 NavigationLink(value: Route.settings) {
                     Label("Settings\u{2026}", systemImage: "gearshape")
                 }
@@ -445,6 +476,20 @@ private struct ProvenanceFooter: View {
                     value: String(hash.prefix(12)),
                     spoken: "SHA 256, beginning \(hash.prefix(12).map(String.init).joined(separator: " "))"
                 )
+            }
+            // A BOOK STARTED HERE HAS NO FILE FACTS AT ALL, so without this
+            // line the whole footer -- and the section drawn around it -- would
+            // be empty. It also answers, in the one place that lists where this
+            // book came from, the question the missing copy banner raises: it
+            // is not that the count is hidden, it is that there is no second
+            // copy for a count to be about.
+            if !summary.provenance.origin.hasCounterpartElsewhere {
+                Text(
+                    "Started on this device. There is no other copy of this book, so there is "
+                    + "nothing here to be out of step with."
+                )
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             }
             // WHAT THIS COPY HAS THAT THE FILE DID NOT. The banner at the top
             // carries the headline; this is the detail, beside the provenance

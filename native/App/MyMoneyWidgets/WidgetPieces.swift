@@ -69,8 +69,13 @@ struct LocalChangesLine: View {
     let count: Int
 
     var body: some View {
-        if count > 0 {
-            Text(LocalEdits(count: count, firstAt: nil, lastAt: nil).countLine)
+        // NOTHING AT ALL FOR A BOOK CREATED ON THIS DEVICE. Such a book has no
+        // web app copy to differ from, so `countLine` is nil and there is no
+        // sentence to draw -- and its count is zero anyway, because nothing
+        // counts an edit on it. Two independent reasons for the same silence,
+        // which is what makes it hard to lose by accident.
+        if count > 0, let line = LocalEdits(count: count, firstAt: nil, lastAt: nil).countLine {
+            Text(line)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)

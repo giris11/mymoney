@@ -172,7 +172,16 @@ struct RegisterView: View {
         }
         .safeAreaInset(edge: .bottom) {
             if showsAddBar {
-                AddActionBar(probe: "Register \u{2014} Quick add", open: openSheet)
+                // The same swap the sidebar makes: a book with no accounts has
+                // nothing a transaction could be written into, so the bar
+                // offers the one action that works. Reachable here because
+                // "All transactions" opens on a book with no accounts at all.
+                AddActionBar(
+                    hasAccounts: app.hasAccounts,
+                    probe: app.hasAccounts
+                        ? "Register \u{2014} Quick add" : "Register \u{2014} Add an account",
+                    open: openSheet
+                )
             }
         }
     }

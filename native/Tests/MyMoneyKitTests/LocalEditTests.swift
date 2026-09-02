@@ -25,8 +25,8 @@ struct LocalEditTests {
         #expect(edits.count == 0)
         #expect(!edits.hasDiverged)
         #expect(edits.firstAt == nil)
-        #expect(edits.summary.contains("matches the backup"))
-        #expect(edits.summary.contains("web app still holds the real ledger"))
+        #expect(edits.summary?.contains("matches the backup") == true)
+        #expect(edits.summary?.contains("web app still holds the real ledger") == true)
     }
 
     @Test("THE COUNT SURVIVES THE COMPACT BANNER, at every count")
@@ -51,8 +51,8 @@ struct LocalEditTests {
         // And the full sentence is still there for the disclosure to show. The
         // compact form replaces what is permanently on screen, not what the app
         // is willing to say.
-        #expect(LocalEdits(count: 3, firstAt: "t", lastAt: "t").summary
-            .contains("only on this device"))
+        #expect(LocalEdits(count: 3, firstAt: "t", lastAt: "t").summary?
+            .contains("only on this device") == true)
     }
 
     @Test("the compact line and the sentence quote the SAME number")
@@ -64,8 +64,8 @@ struct LocalEditTests {
         #expect(edits.count == 1)
         // Both are derived from `count`, and a screen showing one above the
         // other must never be able to show two different figures.
-        #expect(edits.countLine.hasPrefix("1 change "))
-        #expect(edits.summary.hasPrefix("1 change made here"))
+        #expect(edits.countLine?.hasPrefix("1 change ") == true)
+        #expect(edits.summary?.hasPrefix("1 change made here") == true)
     }
 
     @Test("EVERY KIND OF CHANGE COUNTS, exactly once")
@@ -121,8 +121,8 @@ struct LocalEditTests {
         #expect(edits.hasDiverged)
         #expect(edits.firstAt == EditFixture.now)
         #expect(edits.lastAt == EditFixture.now)
-        #expect(edits.summary.contains("\(expected) changes made here"))
-        #expect(edits.summary.contains("only on this device"))
+        #expect(edits.summary?.contains("\(expected) changes made here") == true)
+        #expect(edits.summary?.contains("only on this device") == true)
     }
 
     @Test("DELETING A TRANSFER IS ONE CHANGE, not two, because it is one thing the owner did")

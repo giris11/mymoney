@@ -41,9 +41,10 @@ struct ImportView: View {
                     Text("Bring a backup onto this device")
                         .font(.headline)
                     Text(
-                        "Export a backup from the web app, then choose the file here. This app "
-                            + "reads it and keeps its own private copy to show you. The file is "
-                            + "opened read-only and is never changed, and neither is your web app."
+                        "Choose a backup file \u{2014} one your web app exported, or one this app "
+                            + "exported on another device. It is read, checked against its own "
+                            + "summary, and kept as this app's own private copy. The file itself "
+                            + "is opened read-only and is never changed."
                     )
                     .font(.callout)
                     .foregroundStyle(.secondary)
@@ -184,12 +185,7 @@ struct ImportView: View {
             )
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text(
-                "This device already holds a copy of your book, and importing replaces it. The "
-                    + "file is checked against its own summary first, and is refused if anything "
-                    + "disagrees. Your web app is untouched either way \u{2014} it is the real "
-                    + "ledger."
-            )
+            Text(replacementWarning)
         }
         // BOTH KINDS ARE OFFERED IN THE PANEL, and what a file IS is decided
         // from its bytes afterwards -- see `IncomingFile`. A picker restricted
@@ -208,6 +204,41 @@ struct ImportView: View {
     private var isReading: Bool {
         if case .reading = app.importPhase { return true }
         return false
+    }
+
+    /// What replacing THIS book actually costs, which is not the same sentence
+    /// for the two kinds of book.
+    ///
+    /// ─────────────────────────────────────────────────────────────────────
+    /// THE IMPORTED WORDING MUST NOT LEAK ONTO A BOOK CREATED HERE, and this
+    /// is the place it would do the most damage. "Your web app is untouched --
+    /// it is the real ledger" is a reassurance, and it is EARNED for an
+    /// imported book: whatever this device loses, the browser still has. Said
+    /// over a book that was started on this phone it is worse than merely
+    /// untrue, because it answers "what am I about to lose?" with "nothing"
+    /// when the honest answer is "all of it, unless you have exported a file".
+    ///
+    /// So a created book gets the warning it is owed, in the same dialog, in
+    /// place of a comfort that does not apply. The dialog itself is not
+    /// skippable either way: `replacingExistingBook` is always true by the time
+    /// this app calls the importer, so this sentence is the last thing standing
+    /// between a tap and a book that only ever lived here.
+    private var replacementWarning: String {
+        let checked =
+            "The file is checked against its own summary first, and is refused if anything "
+            + "disagrees."
+        switch app.bookOrigin {
+        case .imported:
+            return
+                "This device already holds a copy of your book, and importing replaces it. "
+                + checked
+                + " Your web app is untouched either way \u{2014} it is the real ledger."
+        case .created:
+            return
+                "This book was started on this device, and this app is its only home. Importing "
+                + "replaces it, and there is no other copy to put it back from. " + checked
+                + " Export a backup of this book first if you want to keep it."
+        }
     }
 
     /// Read the bytes HERE, while the security-scoped URL is still in hand, and

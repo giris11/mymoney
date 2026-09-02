@@ -273,8 +273,12 @@ struct NetWorthIntent: AppIntent {
         var sentence =
             "Your accounts come to "
             + Display.moneySpoken(worth.totalBaseMinor, worth.baseCurrency) + "."
-        if summary.localEdits.count > 0 {
-            sentence += " " + summary.localEdits.countLine + "."
+        // A CREATED BOOK SAYS NOTHING HERE, and it says nothing because there
+        // is nothing to say rather than because this line remembered to check.
+        // `countLine` is nil for a book with no counterpart anywhere, so Siri
+        // cannot read out a sentence about a web app that has never held it.
+        if summary.localEdits.count > 0, let line = summary.localEdits.countLine {
+            sentence += " " + line + "."
         }
         return .result(dialog: IntentDialog(stringLiteral: sentence))
     }
@@ -294,10 +298,17 @@ enum Spoken {
                 + snapshot.missingRateCurrencies.joined(separator: " and ")
                 + ", which has no exchange rate."
         }
-        if snapshot.localEditCount > 0 {
-            sentence += " " + LocalEdits(
+        // The snapshot carries a COUNT and not an origin, and it does not need
+        // one: nothing counts an edit on a book created here, so the count is
+        // zero for exactly the books that must stay silent. The `if let` is
+        // belt as well as braces -- `countLine` is the only thing entitled to
+        // decide whether this sentence exists.
+        if snapshot.localEditCount > 0,
+            let line = LocalEdits(
                 count: snapshot.localEditCount, firstAt: nil, lastAt: nil
-            ).countLine + "."
+            ).countLine
+        {
+            sentence += " " + line + "."
         }
         return sentence
     }
@@ -313,7 +324,14 @@ enum AppLedgerError: Error, CustomLocalizedStringResourceConvertible {
     var localizedStringResource: LocalizedStringResource {
         switch self {
         case .noBook:
-            return "There is no book on this device yet. Open MyMoney and import a backup first."
+            // Through `stringLiteral:` so the sentence can be written across
+            // two lines: a `LocalizedStringResource` returned from a bare
+            // literal cannot be a concatenation.
+            return LocalizedStringResource(
+                stringLiteral:
+                    "There is no book on this device yet. Open MyMoney to set one up \u{2014} "
+                    + "add your accounts, start empty, or import a backup."
+            )
         case .badAmount(let why):
             return LocalizedStringResource(stringLiteral: why)
         case .refused(let why):

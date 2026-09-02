@@ -35,6 +35,10 @@ enum Route: Hashable {
     case allTransactions
     case account(String)
     case importBackup
+    /// Writing the book out to a file. A route rather than a plain push so it
+    /// can be reached from the sidebar the way import is, and so a reach
+    /// measurement can open it without hands.
+    case exportBackup
     case groups
     case settings
 }
@@ -102,12 +106,27 @@ struct RootView: View {
         // undo bar keeps the very bottom of the screen, which is the easiest
         // place on the phone to reach and the right place for "put that back".
         VStack(spacing: 0) {
-            NavigationSplitView {
-                sidebar
-                    .navigationSplitViewColumnWidth(min: 280, ideal: 340)
-            } detail: {
-                NavigationStack {
-                    detail
+            // FIRST RUN REPLACES THE WHOLE SHELL, rather than sitting inside
+            // the sidebar column where the empty state used to.
+            //
+            // Two reasons, and the first is not cosmetic. A wizard drawn in a
+            // 340pt sidebar on an iPad or a Mac is a form in a slot, with a
+            // detail column beside it saying "choose an account" about a book
+            // that does not exist yet. The second: while there is no book there
+            // is nothing for the sidebar's own furniture -- the copy banner,
+            // the Add bar, the net-worth headline -- to be about, and every one
+            // of them would have to grow a special case for a state that lasts
+            // ninety seconds.
+            if app.isFirstRun {
+                FirstRunView()
+            } else {
+                NavigationSplitView {
+                    sidebar
+                        .navigationSplitViewColumnWidth(min: 280, ideal: 340)
+                } detail: {
+                    NavigationStack {
+                        detail
+                    }
                 }
             }
             if let pending = app.pendingUndo {
@@ -195,6 +214,13 @@ struct RootView: View {
 
     private var sidebar: some View {
         VStack(spacing: 0) {
+            // NIL DRAWS NOTHING, and both nils matter. There is nothing to say
+            // on a device with no book -- the banner used to print "0 changes
+            // not in your web app" over an empty state, which is a sentence
+            // about a web app copy of a book that does not exist -- and there
+            // is nothing to say about a book CREATED here, which has no
+            // counterpart anywhere to have drifted from. `LocalEdits` decides
+            // which is which; this view is not asked to remember.
             LocalCopyBanner(edits: app.localEdits)
             content
         }
@@ -206,12 +232,20 @@ struct RootView: View {
         // is its own button rather than the first item of a menu, so the fast
         // path is one tap from the accounts screen instead of two.
         //
-        // Nothing is shown while there is no book: a disabled bar under a
-        // screen whose whole message is "import a backup" would be a dead grey
-        // slab arguing with it.
+        // AND WHAT THE BAR OFFERS DEPENDS ON WHETHER THERE IS ANYTHING TO ADD
+        // TO. A book with no accounts in it -- which is exactly where "start
+        // empty" lands -- cannot take a transaction, a transfer or a quick
+        // entry: they all need an account to go in. A bar whose big filled
+        // button could only ever refuse is the dead end this whole phase is
+        // about, so with no accounts the bar carries one action, "Add an
+        // account", and nothing else.
         .safeAreaInset(edge: .bottom) {
-            if app.hasBook, context != nil {
-                AddActionBar(probe: "Accounts \u{2014} Quick add") { sheet = $0 }
+            if context != nil {
+                AddActionBar(
+                    hasAccounts: app.hasAccounts,
+                    probe: app.hasAccounts
+                        ? "Accounts \u{2014} Quick add" : "Accounts \u{2014} Add an account"
+                ) { sheet = $0 }
             }
         }
         // THE IMPORT BUTTON IS GONE FROM THE TOOLBAR AND NOT REPLACED. It was
@@ -228,27 +262,16 @@ struct RootView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
         case .empty:
-            // The explanation sits ABOVE the list rather than in it, and the
-            // one action is a `NavigationLink` INSIDE it.
-            //
-            // Both halves of that are load-bearing. A bare Button would be a
-            // dead end on a phone, where only a change to the sidebar list's
-            // selection pushes the detail column. And a paragraph of prose in a
-            // macOS List row is proposed an unbounded width, takes its ideal
-            // one -- a single line -- and gets clipped: the sentence explaining
-            // what to do next would stop mid-word.
-            emptyOrFailed(
-                Notice(
-                    symbol: "tray.and.arrow.down",
-                    title: "Nothing on this device yet",
-                    message:
-                        "Export a backup from your web app, then import it here. This app edits "
-                        + "its own copy of it and never writes back."
-                )
-            )
+            // UNREACHABLE, AND KEPT ANYWAY. `body` sends `.empty` to
+            // `FirstRunView` before the split view is built, so this case
+            // cannot be drawn today. It is here so that a later change to that
+            // branch degrades to the first-run flow rather than back to the
+            // dead end this arm used to hold -- an explanation with no way to
+            // start a book, only a way to go and use a different app.
+            FirstRunView()
 
         case .failed(let message):
-            emptyOrFailed(
+            failedState(
                 Notice(
                     symbol: "exclamationmark.triangle",
                     title: "The copy on this device could not be opened",
@@ -264,6 +287,7 @@ struct RootView: View {
                 summary: summary,
                 selection: $selection,
                 importLink: { importLink },
+                exportLink: { exportLink },
                 onEditAccount: { sheet = .account($0) },
                 onAddAccount: { sheet = .account(nil) }
             )
@@ -271,7 +295,15 @@ struct RootView: View {
     }
 
     /// A full-width explanation, then a list carrying the one route out.
-    private func emptyOrFailed(_ notice: Notice) -> some View {
+    ///
+    /// ONLY THE FAILED STATE USES THIS NOW. The empty state used to share it,
+    /// and sharing it was the shape of the problem: "nothing here yet" and
+    /// "your book will not open" are not the same situation and do not have the
+    /// same one way out. A device with no book has three, and they are on the
+    /// first-run screen; a device whose book will not open has exactly this
+    /// one, and must not be walked through setting up a second book over the
+    /// top of the first.
+    private func failedState(_ notice: Notice) -> some View {
         VStack(spacing: 0) {
             notice
                 .frame(maxWidth: .infinity)
@@ -285,6 +317,16 @@ struct RootView: View {
     private var importLink: some View {
         NavigationLink(value: Route.importBackup) {
             Label("Import a backup\u{2026}", systemImage: "square.and.arrow.down")
+        }
+    }
+
+    /// EXPORT SITS NEXT TO IMPORT, not three screens away from it. They are the
+    /// two halves of the same idea -- a book and a file -- and the moment a
+    /// book can be CREATED here, the out direction stops being a convenience:
+    /// it is the only thing that makes the in direction survivable.
+    private var exportLink: some View {
+        NavigationLink(value: Route.exportBackup) {
+            Label("Back up this book\u{2026}", systemImage: "square.and.arrow.up")
         }
     }
 
@@ -312,6 +354,8 @@ struct RootView: View {
             InsightsView(revision: app.revision, onSelectTransaction: openEditor(for:))
         case .importBackup:
             ImportView()
+        case .exportBackup:
+            ExportView()
         case .groups:
             AccountGroupsView(groups: groups, counts: accountCountsByGroup)
         case .settings:
@@ -382,7 +426,10 @@ struct RootView: View {
             case .transfer(let draft, let legId):
                 TransferEditor(context: context, draft: draft, legId: legId)
             case .account(let balance):
-                AccountEditor(groups: groups, existing: balance)
+                AccountEditor(
+                    groups: groups, existing: balance,
+                    defaultCurrency: app.baseCurrency ?? "GBP"
+                )
             }
         } else {
             // Unreachable while the Add menu is disabled without a context, and
@@ -418,10 +465,19 @@ struct RootView: View {
     /// `context == nil` test kept reading the value this function believed it
     /// had already replaced. Every editor in the app opens through that menu.
     @MainActor private func loadContext() async {
-        guard app.hasBook else {
-            context = nil
-            return
-        }
+        // NO `guard app.hasBook` ANY MORE, and removing it is half the answer
+        // to "I could not add an account".
+        //
+        // It used to return here without loading anything whenever the device
+        // held no book, which left `context` nil, which left the Add bar
+        // hidden -- so on the one screen where somebody needed to create
+        // something, every door was shut. The other half of the answer is that
+        // a book can now BE created (`FirstRunView`), so by the time this shell
+        // is on screen there is one; but the guard is gone regardless, because
+        // the store answers this question perfectly well on its own. An empty
+        // store hands back an empty context, a broken one throws, and both of
+        // those are better handled by the code below than by a precondition
+        // that turned "nothing yet" into "no controls at all".
         context = try? await app.service.quickAddContext()
     }
 
@@ -461,8 +517,8 @@ struct RootView: View {
                 service: app.service,
                 lookups: lookups
             )
-        case .dashboard, .budgets, .scheduled, .reports, .insights, .importBackup, .groups,
-            .settings, .none:
+        case .dashboard, .budgets, .scheduled, .reports, .insights, .importBackup, .exportBackup,
+            .groups, .settings, .none:
             register = nil
         }
     }
@@ -475,12 +531,36 @@ struct RootView: View {
 /// where a thumb lands without aiming. The other three kinds -- a full
 /// transaction, a transfer, an account -- are behind the small menu at the far
 /// end, because between them they are a handful of taps a month.
+///
+/// AND WITH NO ACCOUNTS IT IS ONE BUTTON: "Add an account". Quick Add, a
+/// transaction and a transfer all need an account to write into -- the store
+/// refuses without one and Quick Add's Save cannot even be enabled -- so
+/// offering them to a book that has none is offering three buttons that can
+/// only disappoint. The account editor is the one thing that works, so it gets
+/// the whole bar and the same wide filled target Quick Add gets afterwards.
 struct AddActionBar: View {
+    /// Whether this book has anything to add a transaction TO.
+    var hasAccounts = true
     /// What this bar's primary button is called in the reach log.
     let probe: String
     let open: (EditorSheet) -> Void
 
     var body: some View {
+        if hasAccounts { full } else { accountOnly }
+    }
+
+    /// The first thing a brand-new book needs, and the only thing that works
+    /// before it has been done.
+    private var accountOnly: some View {
+        ActionBar {
+            PrimaryAction(title: "Add an account", systemImage: "building.columns") {
+                open(.account(nil))
+            }
+            .reachProbe(probe)
+        }
+    }
+
+    private var full: some View {
         ActionBar {
             HStack(spacing: 16) {
                 Menu {

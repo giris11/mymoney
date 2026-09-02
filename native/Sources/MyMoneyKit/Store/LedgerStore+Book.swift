@@ -159,7 +159,10 @@ extension LedgerStore {
         }
     }
 
-    private func writeCategories(_ categories: [Category]) throws {
+    /// Internal rather than private because `createBook` seeds the starter tree
+    /// through it. One category writer, so a seeded row and an imported row are
+    /// written by the same statement into the same columns.
+    func writeCategories(_ categories: [Category]) throws {
         let statement = try connection.prepare(
             """
             INSERT INTO categories (
@@ -358,7 +361,7 @@ extension LedgerStore {
     /// truth -- reconstruction never reads them. `StoreFidelityTests` pins that
     /// they agree with the record anyway, because a stale index is a lie even
     /// when nothing depends on it.
-    private func writeSettings(_ settings: Settings?) throws {
+    func writeSettings(_ settings: Settings?) throws {
         guard let settings else { return }
         let statement = try connection.prepare(
             """

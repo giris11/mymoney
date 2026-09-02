@@ -83,6 +83,10 @@ enum Reach {
     ///
     /// Known values, each naming one primary action to be measured:
     ///
+    ///   firstrun           the welcome screen         -> Get started
+    ///   firstrun.currency  the base currency step     -> Continue
+    ///   firstrun.choice    the three ways in          -> Continue
+    ///   firstrun.accounts  the starter accounts step  -> Create my book
     ///   accounts           the accounts sidebar       -> Quick add
     ///   quickadd           the Quick Add sheet        -> Save, and its keypad
     ///   transaction        the transaction editor     -> Save
@@ -98,6 +102,7 @@ enum Reach {
     ///   scheduled.detail   the first schedule, opened -> Edit this schedule
     ///   reports.range      the custom date range      -> Apply
     ///   import             the import screen          -> Choose a file
+    ///   export             the back-up screen         -> Create the file
     ///   groups             the account groups screen  -> Add
     ///   groups.rename      the rename sheet           -> Save
     ///
@@ -128,6 +133,7 @@ enum Reach {
         case "budgets": return .budgets
         case "reports": return .reports
         case "import": return .importBackup
+        case "export": return .exportBackup
         case "groups": return .groups
         case "register": return .allTransactions
         case "dashboard": return .dashboard
@@ -136,6 +142,27 @@ enum Reach {
         // The sidebar is the accounts screen, and the four editor sheets open
         // on top of it. Nil leaves the selection alone, which is where they
         // are opened from in a real run.
+        default: return nil
+        }
+    }
+
+    /// The first-run step a measurement wants to be looking at.
+    ///
+    /// SEPARATE FROM `openingRoute` AND FROM `openingSheet` because first run
+    /// is neither: it replaces the whole shell while this device has no book,
+    /// so there is no sidebar selection to set and no sheet to present. It is
+    /// also the one family here that needs an EMPTY STORE to be measurable at
+    /// all -- delete the app's data first, or the four probes below never
+    /// appear because the app has a book and shows the ledger instead.
+    ///
+    /// The welcome step needs no entry: it is where first run starts, so
+    /// `MYMONEY_REACH_OPEN=firstrun` measures it by simply launching.
+    static var openingFirstRunStep: FirstRunView.Step? {
+        switch opening {
+        case "firstrun": return .welcome
+        case "firstrun.currency": return .currency
+        case "firstrun.choice": return .howToStart
+        case "firstrun.accounts": return .accounts
         default: return nil
         }
     }

@@ -27,6 +27,16 @@ public enum StoreError: Error, Sendable, CustomStringConvertible {
     /// without being told that replacing it is intended.
     case storeNotEmpty(accounts: Int, transactions: Int)
 
+    /// A fresh book was asked for on a device that already has one.
+    ///
+    /// UNCONDITIONAL, unlike `storeNotEmpty`, which a caller can override by
+    /// saying that replacing the book is what it meant. There is no equivalent
+    /// override here and there must not be: a restore is asked for by somebody
+    /// holding the file they want back, while "start fresh" is a button that
+    /// can be tapped by somebody who has not realised their imported ledger is
+    /// behind it.
+    case bookAlreadyExists(accounts: Int, transactions: Int)
+
     /// A column held something other than what it is declared to hold. In a
     /// STRICT schema this is unreachable through this package's own writers;
     /// it is what a store edited by another tool looks like.
@@ -66,6 +76,11 @@ public enum StoreError: Error, Sendable, CustomStringConvertible {
                 "Refusing to restore over a ledger that already holds \(accounts) account(s) and "
                 + "\(transactions) transaction(s). Nothing was changed. Restore into an empty "
                 + "ledger, or say explicitly that the existing one is to be replaced."
+        case .bookAlreadyExists(let accounts, let transactions):
+            return
+                "This device already holds a book (\(accounts) account(s), \(transactions) "
+                + "transaction(s)), so a new one was not started over it. Nothing was changed. "
+                + "Open the book that is here, or import a backup if you meant to replace it."
         case .columnTypeMismatch(let statement, let column, let expected, let found):
             return
                 "Corrupt ledger: \(column) holds \(found) where \(expected) was expected "

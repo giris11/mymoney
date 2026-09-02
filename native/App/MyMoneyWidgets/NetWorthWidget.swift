@@ -200,11 +200,15 @@ struct NetWorthWidgetViewBody: View {
     {
         var sentence = "Net worth \(snapshot.netWorthSpoken), \(freshness.phrase)."
         if let note = caveat(snapshot) { sentence += " " + note + "." }
-        if snapshot.localEditCount > 0 {
-            sentence +=
-                " "
-                + LocalEdits(count: snapshot.localEditCount, firstAt: nil, lastAt: nil).countLine
-                + "."
+        // Silent on a book created here: nothing counts an edit on one, so the
+        // count is zero, and `countLine` is nil for it in any case. The
+        // wording is the kit's to decide, not this widget's.
+        if snapshot.localEditCount > 0,
+            let line = LocalEdits(
+                count: snapshot.localEditCount, firstAt: nil, lastAt: nil
+            ).countLine
+        {
+            sentence += " " + line + "."
         }
         return sentence
     }

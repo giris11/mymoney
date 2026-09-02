@@ -27,29 +27,66 @@
 //   * an import RESETS it, because the copy has just been replaced wholesale by
 //     the file and the two are, at that instant, the same book again.
 //
+// A BOOK CREATED ON THIS DEVICE HAS NO SUCH COUNT, and its absence is a
+// property of the book rather than a decision taken by whichever screen is
+// drawing. There is no web app copy of a book the web app has never seen, so
+// there is nothing for a count to be a count OF: `recordLocalEdit` records
+// nothing, and both sentences below are nil rather than being reworded. The
+// reasoning, and what happens when one kind of book is restored over the other,
+// is in BookOrigin.swift.
+//
 // The count is stored in `store_meta`, which is the store's own bookkeeping and
 // is not part of the book -- so it never reaches a backup file, never changes a
 // content hash, and cannot be mistaken for data.
 import Foundation
 
 /// How far this copy has drifted from the file it was imported from.
+///
+/// ONLY MEANINGFUL FOR AN IMPORTED BOOK, and this type is where that is
+/// decided rather than in whatever view is drawing. A book CREATED on this
+/// device (BookOrigin.swift) has no counterpart anywhere: there is no web app
+/// copy for it to differ from, so there is no number to report and nothing to
+/// warn about. For such a book `count` stays at zero -- nothing counts it --
+/// and both sentences below are nil, which is how a screen is told to show no
+/// banner at all rather than being trusted to remember.
 public struct LocalEdits: Sendable, Hashable {
     /// Mutations committed since the last import. Zero means this copy still
-    /// says exactly what the backup said.
+    /// says exactly what the backup said -- and stays zero for ever on a book
+    /// that was created here, because a created book has nothing to diverge
+    /// from.
     public let count: Int
     /// When the first of them landed, ISO-8601. nil when there are none.
     public let firstAt: String?
     /// When the most recent landed. nil when there are none.
     public let lastAt: String?
+    /// Where the book came from. What makes the count worth saying, or not.
+    public let origin: BookOrigin
 
     public var hasDiverged: Bool { count > 0 }
 
-    public init(count: Int, firstAt: String?, lastAt: String?) {
+    /// Is there anything here to tell the owner about? False for a created
+    /// book, always -- the two sentences below are nil in that case, and this
+    /// is the same question asked without unwrapping one of them.
+    public var isWorthSaying: Bool { origin.hasCounterpartElsewhere }
+
+    /// The default is `.imported` because that is what every `LocalEdits` ever
+    /// constructed meant before a book could be created here, and because a
+    /// non-zero count can only have come from an imported book: nothing counts
+    /// edits on a created one.
+    public init(count: Int, firstAt: String?, lastAt: String?, origin: BookOrigin = .imported) {
         self.count = count
         self.firstAt = firstAt
         self.lastAt = lastAt
+        self.origin = origin
     }
 
+    /// An imported copy that has not been changed yet.
+    ///
+    /// NOT "there is no book". A device holding no book has no `LocalEdits` at
+    /// all -- `LedgerService.summary()` is nil, and there is nothing for a
+    /// banner to say -- whereas this value says "imported, zero changes", which
+    /// prints a line. A caller reaching for a placeholder on the no-book path
+    /// wants the nil, not this.
     public static let none = LocalEdits(count: 0, firstAt: nil, lastAt: nil)
 
     /// THE ONE LINE THAT MUST NEVER LEAVE THE SCREEN.
@@ -71,8 +108,17 @@ public struct LocalEdits: Sendable, Hashable {
     /// "0 changes" and not "No changes yet": the shape does not change, only the
     /// figure does, and a reader who glances at this a hundred times a month is
     /// checking one character.
-    public var countLine: String {
-        "\(count) change\(count == 1 ? "" : "s") not in your web app"
+    ///
+    /// NIL FOR A BOOK CREATED HERE, and the optionality is the feature. "0
+    /// changes not in your web app" is a false sentence about a book the web
+    /// app has never seen -- it names a second copy that does not exist and an
+    /// authority that was never involved -- and a false line in the one place
+    /// this app promises to be honest is worse than no line at all, because it
+    /// teaches the reader that this row is furniture. A caller cannot print it
+    /// by accident: there is nothing to print.
+    public var countLine: String? {
+        guard origin.hasCounterpartElsewhere else { return nil }
+        return "\(count) change\(count == 1 ? "" : "s") not in your web app"
     }
 
     /// The sentence the app puts under the net-worth figure. One sentence, in
@@ -81,7 +127,12 @@ public struct LocalEdits: Sendable, Hashable {
     ///
     /// Shown behind the disclosure on the banner, and in full wherever there is
     /// room for it. `countLine` is the part that is always on screen.
-    public var summary: String {
+    ///
+    /// Nil for a created book, for the reason `countLine` is: every wording
+    /// here names the web app as the authority, and for a book the web app has
+    /// never held that is simply untrue.
+    public var summary: String? {
+        guard origin.hasCounterpartElsewhere else { return nil }
         guard count > 0 else {
             return "This copy matches the backup you imported. Your web app still holds the "
                 + "real ledger."
@@ -105,7 +156,8 @@ extension LedgerStore {
         LocalEdits(
             count: Int(try meta(LocalEditKey.count).flatMap(Int.init) ?? 0),
             firstAt: try meta(LocalEditKey.firstAt),
-            lastAt: try meta(LocalEditKey.lastAt)
+            lastAt: try meta(LocalEditKey.lastAt),
+            origin: try bookOrigin()
         )
     }
 
@@ -114,8 +166,18 @@ extension LedgerStore {
     ///
     /// `n` is the number of CHANGES, not of rows: deleting a transfer touches
     /// two rows and is one thing the owner did.
+    ///
+    /// A BOOK CREATED HERE COUNTS NOTHING, and the counter is left absent
+    /// rather than left at zero-and-growing. The quantity this measures is
+    /// "changes this copy has that the other copy does not"; for a book with no
+    /// other copy that quantity is not zero, it is undefined, and a number
+    /// stored for it would eventually be shown by somebody. So the honest store
+    /// is an empty one -- and it means the widget, the Siri answer and the
+    /// banner all stay silent about drift on a created book without any of them
+    /// having to know why.
     func recordLocalEdit(_ n: Int = 1, at timestamp: String) throws {
         guard n > 0 else { return }
+        guard try bookOrigin().hasCounterpartElsewhere else { return }
         let current = try meta(LocalEditKey.count).flatMap(Int.init) ?? 0
         try setMeta(LocalEditKey.count, String(current + n))
         if try meta(LocalEditKey.firstAt) == nil {

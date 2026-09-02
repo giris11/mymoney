@@ -157,8 +157,37 @@ final class AppModel {
 
     var hasBook: Bool { summary != nil }
 
-    /// How far this copy has drifted from the backup it was made from.
-    var localEdits: LocalEdits { summary?.localEdits ?? .none }
+    /// Nothing on this device yet, so the first-run flow is what to show.
+    ///
+    /// A SEPARATE QUESTION FROM `hasBook`, because `.loading` and `.failed` are
+    /// also "no summary" and neither of them is a first run: a device whose
+    /// book will not open must be told that, not walked through setting up a
+    /// second one over the top of it.
+    var isFirstRun: Bool { if case .empty = phase { return true } else { return false } }
+
+    /// A book with no accounts in it -- the state "start empty" lands in, and
+    /// the one every screen has to keep offering a way out of. Quick Add cannot
+    /// write a transaction without an account, so the bar swaps its primary for
+    /// "Add an account" rather than offering a button that can only refuse.
+    var hasAccounts: Bool { (summary?.accountCount ?? 0) > 0 }
+
+    /// The currency every total is reported in, or nil with no book.
+    var baseCurrency: String? { summary?.snapshot.netWorth.baseCurrency }
+
+    /// Where the book came from, which is what decides whether there is
+    /// anything true to say about a web app. `.imported` with no book at all is
+    /// meaningless and unused -- every caller has a summary in hand.
+    var bookOrigin: BookOrigin { summary?.provenance.origin ?? .imported }
+
+    /// How far this copy has drifted from the backup it was made from, or nil
+    /// when there is nothing to say: no book, or a book created here, which has
+    /// no counterpart anywhere to have drifted from.
+    ///
+    /// OPTIONAL RATHER THAN `.none`, and that is the fix for a real defect:
+    /// `.none` means "imported, unchanged", so a device with NO book printed
+    /// "0 changes not in your web app" -- a sentence about a web app copy of a
+    /// book that does not exist. nil means draw nothing.
+    var localEdits: LocalEdits? { summary?.localEdits }
 
     func load() async {
         phase = .loading
@@ -178,6 +207,25 @@ final class AppModel {
             lookups = nil
             phase = .failed(Self.message(for: error))
         }
+        // THE SAME BUMP `refresh` DOES, and leaving it out was a real defect
+        // rather than an omission of tidiness. `revision` is the one signal
+        // every other screen re-reads on: the dashboard, insights, budgets,
+        // reports and schedules all key a `.task(id: revision)` to it, and
+        // `RootView` reloads the Add context from it. This function replaces
+        // the WHOLE book -- strictly more of a change than `refresh` ever makes
+        // -- so a book that arrives here without saying so leaves all of them
+        // holding the previous one.
+        //
+        // WHAT THAT ACTUALLY LOOKED LIKE. Import a backup as the first thing
+        // the app ever does: the shell had already loaded an Add context from
+        // the empty store, this replaced the book without a word, and Quick add
+        // opened onto a book with 58 accounts still believing there were none
+        // -- no account picker, no category chips, and a Save that could never
+        // enable. It cleared on relaunch, which is the signature of state that
+        // was never told. The same staleness reached every `revision` screen
+        // when an App Intent wrote to the book from Siri while the app was
+        // open (see `RootView`'s `.ledgerChangedOutsideTheApp`).
+        revision += 1
         await refreshDueCounts()
         await replanReminders()
         await WidgetPublishing.publish(using: service)
@@ -249,6 +297,30 @@ final class AppModel {
             return "Deleted the transfer, \(amount) \u{2014} both halves."
         }
         return "Deleted \u{201C}\(receipt.title)\u{201D}, \(amount)."
+    }
+
+    // MARK: - Starting a book
+
+    /// Create the book this device did not have.
+    ///
+    /// THE SAME SHAPE AS EVERY OTHER MUTATION -- `run` -- so a refusal comes
+    /// back as the store's own two sentences and the screen stays put rather
+    /// than closing over a book that was not created. The one refusal worth
+    /// naming is `StoreError.bookAlreadyExists`: this cannot overwrite an
+    /// imported ledger, and there is no flag here that would let it.
+    func createBook(baseCurrency: String, startingAccounts: [AccountDraft] = []) async
+        -> EditOutcome
+    {
+        await run {
+            _ = try await self.service.createBook(
+                baseCurrency: baseCurrency, startingAccounts: startingAccounts
+            )
+        }
+    }
+
+    /// Change the currency the totals are reported in. Converts nothing.
+    func setBaseCurrency(_ code: String) async -> EditOutcome {
+        await run { _ = try await self.service.setBaseCurrency(code) }
     }
 
     // MARK: - Accounts

@@ -45,6 +45,18 @@ struct LedgerSummary: Sendable {
     let storePath: String
 }
 
+/// A backup file this app has just written, and what is in it.
+struct ExportedBackup: Sendable, Hashable {
+    let url: URL
+    let byteCount: Int
+    /// The canonical fingerprint of the file, the same one the import screen
+    /// prints for a file it read. Two identical books produce the same hash,
+    /// which is what makes "did this land intact?" a question with an answer.
+    let contentHash: String
+    let accountCount: Int
+    let transactionCount: Int
+}
+
 /// What an import verified, in the words the owner should see.
 struct ImportSummary: Sendable {
     let accountCount: Int
@@ -121,6 +133,75 @@ actor LedgerService {
 
     func registerLookups() throws -> RegisterLookups {
         try opened().registerLookups()
+    }
+
+    // MARK: - Starting a book here
+    //
+    // THE OTHER WAY A BOOK CAN GET ONTO THIS DEVICE, and until now there was
+    // no other way: `importBackup` was the only door, so somebody opening the
+    // app for the first time was told that the way to begin was to go and use
+    // a different app first. These two calls are what the first run writes.
+
+    /// Start a book: a settings row in the chosen currency, the seeded category
+    /// tree, and whatever starting accounts the owner accepted.
+    ///
+    /// ONE CALL, so first run is ONE COMMIT. The kit refuses outright if this
+    /// device already holds a book (`StoreError.bookAlreadyExists`) and there
+    /// is no flag that overrides it -- "start fresh" is a button, and a button
+    /// that can replace an imported ledger is a way to lose one.
+    @discardableResult
+    func createBook(baseCurrency: String, startingAccounts: [AccountDraft]) throws -> CreatedBook {
+        try opened().createBook(
+            baseCurrency: baseCurrency, startingAccounts: startingAccounts
+        )
+    }
+
+    /// Write this book out as a backup file, and say what is in it.
+    ///
+    /// ─────────────────────────────────────────────────────────────────────
+    /// WHY THIS HAD TO EXIST THE MOMENT A BOOK COULD BE CREATED HERE. Until
+    /// now every book on this device was a COPY of one the web app held, so
+    /// there was always somewhere to get it back from and an export was a
+    /// convenience nobody had written. A book started here has no such
+    /// counterpart: this app is its only home, and an app that can create a
+    /// book, replace it on import, and never let it out is an app in which the
+    /// only thing you can do with your own ledger is lose it. Import already
+    /// warns that it replaces; this is what makes that warning survivable.
+    ///
+    /// THE FILE IS THE SAME FORMAT THE IMPORTER READS, produced by the same
+    /// writer the round-trip check uses -- so a file exported here can be
+    /// imported here, imported by the web app, and verified by both. The
+    /// content hash is reported so it can be compared against the one the
+    /// import screen prints for a file.
+    ///
+    /// Nothing is recorded on the book: an export is a READ. In particular
+    /// `lastBackupAt` is deliberately not written, because that would make
+    /// looking at your own ledger a change to it, and the local-edit count
+    /// would climb for a button that copied bytes out.
+    func exportBackup(to directory: URL, today: String) throws -> ExportedBackup {
+        let store = try opened()
+        let text = try store.exportBackupText()
+        let hash = try store.exportContentHash()
+        let url = directory.appendingPathComponent("mymoney-backup-\(today).json")
+        try Data(text.utf8).write(to: url, options: .atomic)
+        return ExportedBackup(
+            url: url,
+            byteCount: text.utf8.count,
+            contentHash: hash,
+            accountCount: try store.liveCount("accounts"),
+            transactionCount: try store.liveCount("transactions")
+        )
+    }
+
+    /// Change the currency every total is reported in.
+    ///
+    /// Converts nothing and re-denominates nothing: each account keeps its own
+    /// currency and its own integer minor units, and `Balances.netWorth`
+    /// redoes the conversion from the book's rates each time a total is drawn.
+    /// A first-run choice that could not be undone would be a trap.
+    @discardableResult
+    func setBaseCurrency(_ code: String) throws -> Settings {
+        try opened().setBaseCurrency(code)
     }
 
     // MARK: - Reads the editors open on

@@ -37,7 +37,18 @@ import SwiftUI
 /// what this app is; the number is read every day, and it is the number that
 /// changes.
 struct LocalCopyBanner: View {
-    let edits: LocalEdits
+    /// nil when there is nothing to say, and the caller does not decide which
+    /// case that is -- `LedgerSummary` is nil with no book, and `LocalEdits`
+    /// answers nil for a book CREATED on this device.
+    ///
+    /// AN OPTIONAL RATHER THAN A REWORDING, and that is the whole point. Every
+    /// sentence this banner can print names the web app as the authority, and
+    /// for a book the web app has never held that is not a warning that is
+    /// slightly too strong, it is a false statement in the one place this app
+    /// promises to be exact. A reader who catches it being wrong once has
+    /// learned the row is furniture, and the day the count is right is the day
+    /// it is ignored. So there is nothing to print, and nothing is printed.
+    let edits: LocalEdits?
     /// Closed on every launch. This is deliberately NOT remembered: the
     /// explanation is a thing you go and read, not a setting, and a banner whose
     /// height depended on a tap made six weeks ago would be a banner nobody
@@ -45,11 +56,17 @@ struct LocalCopyBanner: View {
     @State private var showingExplanation = false
 
     var body: some View {
+        if let edits, let countLine = edits.countLine {
+            banner(edits, countLine)
+        }
+    }
+
+    private func banner(_ edits: LocalEdits, _ countLine: String) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             Button {
                 withAnimation(.snappy(duration: 0.2)) { showingExplanation.toggle() }
             } label: {
-                countRow
+                countRow(edits, countLine)
             }
             .buttonStyle(.plain)
             .accessibilityElement(children: .combine)
@@ -58,8 +75,8 @@ struct LocalCopyBanner: View {
                 showingExplanation ? "Hides what this means" : "Explains what this means"
             )
 
-            if showingExplanation {
-                Text(edits.summary)
+            if showingExplanation, let summary = edits.summary {
+                Text(summary)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -77,7 +94,7 @@ struct LocalCopyBanner: View {
         )
     }
 
-    private var countRow: some View {
+    private func countRow(_ edits: LocalEdits, _ countLine: String) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
             Image(
                 systemName: edits.hasDiverged
@@ -90,7 +107,7 @@ struct LocalCopyBanner: View {
             // still wraps rather than truncating: a count that ran off the edge
             // of the screen at a large text size would be the same bug in a
             // smaller costume.
-            Text(edits.countLine)
+            Text(countLine)
                 .font(.footnote.weight(.medium))
                 .foregroundStyle(edits.hasDiverged ? .primary : .secondary)
                 .fixedSize(horizontal: false, vertical: true)

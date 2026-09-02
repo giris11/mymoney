@@ -34,6 +34,10 @@ public enum EditError: Error, Sendable, Hashable, CustomStringConvertible {
 
     // MARK: - Things that are not there
 
+    /// An edit asked for on a device that holds no book at all. Not "the row
+    /// is missing": there is nothing here to edit yet, and the answer is to
+    /// start a book or import one rather than to try again.
+    case noBook
     case unknownAccount(String)
     case unknownGroup(String)
     case unknownCategory(String)
@@ -132,6 +136,10 @@ public enum EditError: Error, Sendable, Hashable, CustomStringConvertible {
         case .badColour(let colour):
             return "\u{201C}\(colour)\u{201D} is not a colour. Use a hex value like #2563eb."
 
+        case .noBook:
+            return
+                "There is no book on this device yet. Start one, or import a backup, and then "
+                + "this can be changed."
         case .unknownAccount(let id):
             return "That account is not in this copy of the book (\(short(id)))."
         case .unknownGroup(let id):

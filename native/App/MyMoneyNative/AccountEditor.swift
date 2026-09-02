@@ -24,6 +24,16 @@ struct AccountEditor: View {
     let groups: [AccountGroup]
     /// The account being edited, with its live balance -- nil to create.
     let existing: AccountBalance?
+    /// What a NEW account starts in: the book's own base currency.
+    ///
+    /// NOT A HARD-CODED "GBP", which is what this used to be and which was
+    /// wrong the moment a book could be created in something else. Somebody who
+    /// chose LKR on the first screen and then added an account got a GBP one,
+    /// silently, and the currency of an account is the thing every amount in it
+    /// IS -- it is only editable until the first transaction lands. Most
+    /// accounts are in the currency the totals are counted in, so that is the
+    /// default; a different one is still a field away.
+    var defaultCurrency = "GBP"
 
     @State private var name: String
     @State private var type: AccountType
@@ -47,13 +57,14 @@ struct AccountEditor: View {
         "#ea580c", "#dc2626", "#db2777", "#7c3aed", "#64748b",
     ]
 
-    init(groups: [AccountGroup], existing: AccountBalance?) {
+    init(groups: [AccountGroup], existing: AccountBalance?, defaultCurrency: String = "GBP") {
         self.groups = groups
         self.existing = existing
+        self.defaultCurrency = defaultCurrency
         let account = existing?.account
         _name = State(initialValue: account?.name ?? "")
         _type = State(initialValue: account?.type ?? .current)
-        _currency = State(initialValue: account?.currency ?? "GBP")
+        _currency = State(initialValue: account?.currency ?? defaultCurrency)
         _openingText = State(
             initialValue: account.map {
                 Money.formatPlain($0.openingBalanceMinor, currency: $0.currency)

@@ -35,6 +35,14 @@ import Foundation
 /// How the book in this store arrived. Empty on a store that has never had a
 /// backup imported into it.
 public struct StoreProvenance: Sendable, Hashable {
+    /// Whether this book was IMPORTED from a backup or CREATED here.
+    ///
+    /// THE FIELD THE WORDING HANGS OFF. Everything else on this struct
+    /// describes a FILE, and is nil for a book that never came from one; this
+    /// says whether there is a file -- and a web app behind it -- in the story
+    /// at all. See BookOrigin.swift for the transitions and for why an absent
+    /// record reads as `.imported`.
+    public let origin: BookOrigin
     /// The `exportedAt` of the file this book came from.
     public let exportedAt: String?
     /// The BACKUP FILE's schema version (`Schema.version`'s scale), not the
@@ -48,6 +56,9 @@ public struct StoreProvenance: Sendable, Hashable {
     /// When the import ran, in this app's clock.
     public let importedAt: String?
 
+    /// No file facts at all. Deliberately NOT about `origin`: a created book
+    /// has an origin and no source file, and "we know nothing about the file"
+    /// is exactly what this asks.
     public var isEmpty: Bool {
         exportedAt == nil && schemaVersion == nil && manifestVersion == nil
             && contentHash == nil && importedAt == nil
@@ -90,6 +101,7 @@ extension LedgerStore {
 
     public func provenance() throws -> StoreProvenance {
         StoreProvenance(
+            origin: try bookOrigin(),
             exportedAt: try meta(ProvenanceKey.exportedAt),
             schemaVersion: try meta(ProvenanceKey.schemaVersion).flatMap(Int.init),
             manifestVersion: try meta(ProvenanceKey.manifestVersion).flatMap(Int.init),
@@ -181,6 +193,14 @@ extension LedgerStore {
             )
             try setMeta(ProvenanceKey.contentHash, imported.contentHash)
             try setMeta(ProvenanceKey.importedAt, Self.timestampNow())
+            // AN IMPORT ALWAYS MAKES THIS AN IMPORTED BOOK, whatever was here
+            // before -- including a book that was CREATED here and has just
+            // been replaced wholesale by the file (which took an explicit
+            // `replacingExistingBook`). What this store holds now is a copy of
+            // a book that exists somewhere else, and calling it "created here"
+            // would be a claim about rows that no longer exist. The reasoning
+            // in full, and the reverse direction, is in BookOrigin.swift.
+            try setBookOrigin(.imported)
             // The copy has just BECOME the file, so it has drifted from it by
             // nothing. See LedgerStore+LocalEdits.swift for why the count
             // exists at all and why only an import may reset it.
