@@ -93,8 +93,8 @@ export async function saveAccount(input: SaveAccountInput): Promise<Account> {
 
     const account: Account = {
       // Preserves fields this form does not edit: the optional loan fields and
-      // excludeFromNetWorth. Renaming an account must never silently pull a
-      // £90,000 property back into net worth.
+      // excludeFromNetWorth. Renaming an account must never silently pull an
+      // excluded property back into net worth.
       ...existing,
       id: existing?.id ?? uid(),
       name,
@@ -260,8 +260,8 @@ export interface GroupingSuggestion {
  * Normalise a name to ' word word word ' — lowercased, every run of
  * non-alphanumerics collapsed to a single space, padded with spaces at both
  * ends. The padding is what makes `includes(' isa ')` a WHOLE-WORD test, so
- * "Lisa" and "Visa" can never be mistaken for an ISA, and "Bowen" can never
- * look like "owe". Punctuation folding also makes "Kayal's" → "kayal s" and
+ * "Lisa" and "Visa" can never be mistaken for an ISA, and "Flowers" can never
+ * look like "owe". Punctuation folding also makes "Priya's" → "priya s" and
  * "Cash (Notes)" → "cash notes".
  */
 const norm = (name: string): string =>
@@ -274,6 +274,11 @@ const has = (n: string, words: readonly string[]): boolean =>
 // --- signal vocabularies ---------------------------------------------------
 // Each list is matched whole-word. Order of the CHECKS (not of these lists) is
 // what disambiguates; see inferTypeFrom below.
+//
+// The example names quoted in the comments below are SYNTHETIC — this repo is
+// public, so no real account name goes in it (see DECISIONS.md D38). They keep
+// the SHAPE of the real names these rules were tuned against, which is the part
+// that explains why each rule exists; invent the same shape if you add one.
 
 /** Stored-value cards. Checked before credit so "Amazon Gift card" is not a credit card. */
 const GIFT = ['gift', 'gifts', 'giftcard', 'voucher', 'vouchers', 'itunes', 'eneba'] as const;
@@ -317,9 +322,9 @@ const CREDIT_STRONG = [
 const CREDIT_WEAK = ['card', 'cards', 'reward', 'rewards', 'visa', 'mastercard', 'cashback'] as const;
 
 /**
- * Savings signals. 'server' is deliberate: in this dataset it is a consistent
- * typo for "saver" ("BARCLAYS REWARDS SERVER", "Instant Server"), and no
- * personal-finance account is ever a web server.
+ * Savings signals. 'server' is deliberate: in the source book it was a
+ * consistent typo for "saver" ("NATWEST REWARDS SERVER", "Flexible Server"),
+ * and no personal-finance account is ever a web server.
  */
 const SAVINGS = [
   'saver',
@@ -475,7 +480,7 @@ const STREET_WORDS = [
 ] as const;
 
 /**
- * A house number followed by a street word ("68 Saint's Mary Drive") — a
+ * A house number followed by a street word ("14 Alder Grove") — a
  * property held as an asset. Both halves are required: the number alone would
  * catch "1st Account", the street word alone would catch far too much.
  */
@@ -491,16 +496,16 @@ const looksLikeProperty = (n: string): boolean => /^ \d+[a-z]? /.test(n) && has(
  *     purely because it contains the word "card".
  *  2. Lending before everything else, because "…Borrowed" describes what the
  *     account IS, whatever product words trail after it.
- *  3. STRONG credit before savings, so "HSBC Premier Credit" is a card even
- *     though nothing else in the name says so; and so "American Express Gold"
- *     is a card, not bullion.
- *  4. Savings before WEAK credit — this is the rewards case. "BARCLAYS REWARDS
- *     SERVER" (server = saver) is a savings account, while "HSBC rewards" and
- *     "Barclays Blue Rewards" are credit products. A bare 'rewards' therefore
+ *  3. STRONG credit before savings, so "Lloyds Premier Credit" is a card even
+ *     though nothing else in the name says so; and so "American Express
+ *     Platinum" is a card, not bullion.
+ *  4. Savings before WEAK credit — this is the rewards case. "NATWEST REWARDS
+ *     SERVER" (server = saver) is a savings account, while "Lloyds rewards" and
+ *     "Natwest Blue Rewards" are credit products. A bare 'rewards' therefore
  *     never decides a type on its own: it only lands at step 9, after every
  *     strong signal has had its say, and when it does decide it reports
  *     confident:false so the UI asks.
- *  5. Savings before cash, so "METRO VARIABLE RATE CASH ISA" is savings.
+ *  5. Savings before cash, so "TSB VARIABLE RATE CASH ISA" is savings.
  *  6. Savings before investment, so a stocks-and-shares ISA is filed as
  *     savings — 'isa' is genuinely ambiguous and savings is the safer guess.
  *
@@ -529,15 +534,15 @@ function inferTypeFrom(n: string): { type: AccountType; confident: boolean } {
  *  1. Gift-card signals → 'Gift Cards & Vouchers'. Beats currency because an
  *     iTunes balance in TRY is a gift card the owner thinks of as a gift card,
  *     not as "foreign money".
- *  2. Lending signals → 'Money Lent & Owed'. Same reasoning: "Kayal's Akka
+ *  2. Lending signals → 'Money Lent & Owed'. Same reasoning: "Priya's Sister
  *     Borrowed (LKR)" is an IOU first and a rupee balance second.
  *  3. currency ≠ base currency → 'Foreign Currency'. This is the fallback for
  *     accounts whose only distinguishing feature is the money they hold
- *     ("WISE INDIAN CURRENCY"), so it outranks the type map.
+ *     ("STARLING INDIAN CURRENCY"), so it outranks the type map.
  *  4. Otherwise the type decides — except that a 'current' account only earns
  *     'Bank Accounts' if the name actually names a bank or says "account".
  *     Everything else falls to 'Other Accounts', flagged for review, because
- *     "Work Seeddu" or "Lost In Business" are not bank accounts and pretending
+ *     "Work Float" or "Lost In A Venture" are not bank accounts and pretending
  *     otherwise buries them in the wrong part of the sidebar.
  */
 function groupFrom(

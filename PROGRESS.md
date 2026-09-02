@@ -139,9 +139,11 @@ logged as D34 rather than editing your spec. What that means in practice:
   report which ones they kept.
 - **Offline is a non-event**: saved rates stay in use, nothing is guessed.
 
-Verified in the browser against the live API: ₹130,000.00 → £998.81 and
-LKR 500,000.00 → £1,116.27, with net worth matching a hand calculation to the
-penny, and a deliberately sabotaged fetch leaving every figure untouched.
+Verified in the browser against the live API: an INR balance and an LKR
+balance each converted to GBP within a penny of a hand calculation, net worth
+agreeing to the penny, and a deliberately sabotaged fetch leaving every figure
+untouched. (Figures not reproduced here: this repo is public and real balances
+do not belong in it — DECISIONS.md D38.)
 
 ## Live deployment and post-handover features (2026-08-26)
 
@@ -150,9 +152,11 @@ penny, and a deliberately sabotaged fetch leaving every figure untouched.
 publishing). HTTPS means the service worker registers, so it is a genuinely
 installable, offline-capable PWA — the LAN-http route never could be.
 
-**Girish's real MoneyWiz history is imported and verified**: 58 accounts,
-5,127 transactions, net worth £429,327.86. Every account balance was checked
-against the export — 58/58 exact — and re-checked after grouping: still 58/58.
+**The real MoneyWiz history is imported and verified**: 58 accounts and
+5,127 transactions, with net worth reconciled to the penny. Every account
+balance was checked against the export — 58/58 exact — and re-checked after
+grouping: still 58/58. (The figures themselves are deliberately not recorded
+here; this repo is public — DECISIONS.md D38.)
 
 Added on request after he started using it:
 | Feature | Notes |
@@ -320,10 +324,14 @@ permanent test for the populated ancestor (Apple promises nothing about it);
 phantom-self-conflict suppression after a crash; and `atomicByZone` /
 state-serialization persistence handled for a first sync measured in minutes.
 
-Incidentally established, because it cost an afternoon: the Team ID is
-**AQ5Z6U57L5** (`D9URF77Y76` is the certificate's per-person identifier, not a
-team id), and `CKContainer(identifier:)` **SIGTRAPs** the process if it is not
-entitled for that container rather than throwing or returning nil.
+Incidentally established, because it cost an afternoon: the Team ID is the
+ten-character code on the Apple Developer account's Membership page — and the
+ten-character identifier Apple puts in the signing certificate's common name is
+*not* it. The two are the same shape, which is the whole trap; the second one is
+per-person and fails provisioning outright. (Neither value is recorded in this
+repository — D38. They are on the Membership page and in `DEVELOPMENT_TEAM` in
+the Xcode project.) Also: `CKContainer(identifier:)` **SIGTRAPs** the process if
+it is not entitled for that container rather than throwing or returning nil.
 
 ### Native Phase 2 — `MyMoneyKit`, the money rules in Swift · **gate PASSED**
 

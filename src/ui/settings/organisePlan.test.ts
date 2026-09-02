@@ -1,13 +1,18 @@
 // The "Organise accounts" preview must promise exactly what
 // autoGroupAccounts() does — no more (a change that never happens) and no less
-// (a change he wasn't warned about). These pin the rules it mirrors.
+// (a change the user wasn't warned about). These pin the rules it mirrors.
+//
+// The account names here are SYNTHETIC, like every fixture in this repo: it is
+// public, so no real account name goes in it (DECISIONS.md D38). They keep the
+// shapes the preview has to render — a bank, a bare brand, a savings account,
+// and one the classifier could only guess at.
 import { describe, expect, it } from 'vitest';
 import type { GroupingSuggestion } from '../../domain/accounts';
 import { planRows, summarisePlan, type AccountRef, type GroupRef } from './organisePlan';
 
 const suggestion = (over: Partial<GroupingSuggestion> = {}): GroupingSuggestion => ({
   accountId: 'a1',
-  name: 'HSBC Premier',
+  name: 'Lloyds Premier',
   currentType: 'current',
   suggestedType: 'current',
   suggestedGroup: 'Bank Accounts',
@@ -88,17 +93,17 @@ describe('planRows', () => {
 
 describe('summarisePlan', () => {
   const suggestions: GroupingSuggestion[] = [
-    suggestion({ accountId: 'a1', name: 'HSBC Premier', suggestedGroup: 'Bank Accounts' }),
-    suggestion({ accountId: 'a2', name: 'REVOLUT', suggestedGroup: 'Bank Accounts' }),
+    suggestion({ accountId: 'a1', name: 'Lloyds Premier', suggestedGroup: 'Bank Accounts' }),
+    suggestion({ accountId: 'a2', name: 'MONZO', suggestedGroup: 'Bank Accounts' }),
     suggestion({
       accountId: 'a3',
-      name: 'Halifax Bonus Saver',
+      name: 'Santander Bonus Saver',
       suggestedType: 'savings',
       suggestedGroup: 'Savings',
     }),
     suggestion({
       accountId: 'a4',
-      name: 'Work Seeddu',
+      name: 'Work Float',
       suggestedGroup: 'Other Accounts',
       confident: false,
     }),

@@ -140,16 +140,42 @@ Every non-obvious choice made while building, per Working Agreement §2. Newest 
   origin (GitHub Pages, which is one command away when Girish asks). Recording
   this because it is a deployment fact, not a bug, and it decides where his real
   history should live.
-- **D38. Account grouping is inferred, and says when it is guessing.** MoneyWiz's
-  Report export carries no account type and no grouping, so all 58 accounts
-  imported as `current` in a flat list. `autoGroupAccounts()` files them into ten
+- **D38. Account grouping is inferred, and says when it is guessing.**
+
+  **Standing rule, wider than this entry — NO REAL DATA IN THIS REPOSITORY.** No
+  real account name, payee, amount or personal identifier belongs in it: not in
+  code, comments, tests, fixtures or docs. **Account identifiers count**, and are
+  the easiest to miss because they do not look like money: an Apple Developer
+  Team ID or certificate identifier, an OAuth client id, a device or machine
+  name, a home-directory path. A value being non-secret is not the test — the
+  test is whether it points at a person. The repo is PUBLIC (GitHub Pages
+  cannot serve a private repo on a free account, D3/D37), so anything committed
+  is world-readable, permanently, by anyone who finds it. The classifier's
+  comments and the 58-row table in `tests/accounts-grouping.test.ts` originally
+  quoted the real MoneyWiz names — including a home address, family and friends'
+  names, and an Apple ID — because they were "just strings, no amounts". Names
+  are the more identifying half. They are now SYNTHETIC names chosen to keep the
+  same SHAPES (the typo, the possessive, the bracketed closure note, the house
+  number plus street word), because the shape is what explains the rule; the
+  identity was never doing any work. One deliberate exception: Girish's own
+  first name is left in the prose and in device-name fixtures ("Girish's iMac"),
+  because the repo is published under his GitHub account and every commit is
+  authored in his name — removing it from the text while the metadata says it
+  would be theatre. Say the word and it goes too. **Caveat: this was fixed in
+  the working tree ONLY. Earlier commits still contain the real names, and only
+  a history rewrite — filter + force-push, which invalidates every existing
+  clone and the Pages deployment history — would remove them. Not done, and not
+  to be done without Girish deciding it is worth that.**
+
+  MoneyWiz's Report export carries no account type and no grouping, so all 58
+  accounts imported as `current` in a flat list. `autoGroupAccounts()` files them into ten
   canonical groups (Cash · Bank Accounts · Savings · Credit Cards · Loans ·
   Investments & Assets · Foreign Currency · Gift Cards & Vouchers · Money Lent &
   Owed · Other Accounts) by matching WHOLE WORDS in the name — so "Visa" is not
-  an ISA and "Bowen" does not owe anything. Precedence is gift → lending →
+  an ISA and "Flowers" does not owe anything. Precedence is gift → lending →
   currency → type. `rewards` is deliberately a *weak* signal, which is what
-  separates "BARCLAYS REWARDS SERVER" (savings) from "HSBC rewards" (a credit
-  card). Anything matched only weakly returns `confident: false` and the UI
+  separates "NATWEST REWARDS SERVER" (savings) from "Lloyds rewards" (a credit
+  card) — synthetic names, per the rule at the top of this entry. Anything matched only weakly returns `confident: false` and the UI
   flags it for review rather than asserting a fact about someone's finances.
   Grouping and typing are organisational only — a test asserts transactions,
   per-account balances and net worth are byte-identical across a full run.
@@ -524,9 +550,13 @@ experiments against a real server and would be expensive to rediscover.
     (tag aside) and treat it as already-applied.
 
   (Also established the hard way, and worth keeping out of the next person's
-  afternoon: the Team ID is **AQ5Z6U57L5**. `D9URF77Y76` is the per-person
-  identifier Apple puts in the certificate common name, not a team id, and
-  building with it fails provisioning outright.)
+  afternoon: the Team ID is the ten-character code on the Membership page of the
+  Apple Developer account. The ten-character identifier Apple puts in the signing
+  certificate's *common name* looks exactly like one but is per-person, not a
+  team id, and building with it fails provisioning outright — that is the whole
+  trap, and it costs an afternoon precisely because the two are the same shape.
+  Neither value is written down here; read them off the Membership page, or out
+  of `DEVELOPMENT_TEAM` in the Xcode project. See the standing rule in D38.)
 
 - **D50. Money survives CloudKit exactly, so amounts cross the wire as `Int64`
   and are never wrapped in anything else.** `amountMinor` round-tripped with
@@ -730,9 +760,8 @@ experiments against a real server and would be expensive to rediscover.
   **Why the manifest is VERSIONED and not reinterpreted.** `restoreBackup()`
   recomputes every manifest figure from the rows that landed and REFUSES the
   restore if any of them disagrees. Every backup file in existence — including
-  the frozen file at `~/Documents/mymoney-backup-2026-09-01.json` that the
-  entire native port is gated on — states a net worth computed under the
-  per-account rule. Simply changing the arithmetic would therefore have made
+  the frozen backup export that the entire native port is gated on — states a
+  net worth computed under the per-account rule. Simply changing the arithmetic would therefore have made
   every one of those files fail its own self-check on the way back in.
   Measured, not assumed: recomputing the frozen file's manifest under the new
   rule produces exactly one disagreement — *"net worth is £X.99, but the backup

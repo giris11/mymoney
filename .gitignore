@@ -27,3 +27,16 @@ coverage/
 mymoney-backup*.json
 mymoney-conflict*.json
 backups/
+
+# A SQLite ledger, anywhere in the tree. native/.gitignore already covers the
+# native package, but a store opened at the repo root or under src/ was not
+# covered by anything, and that file is a database full of real money. Same
+# reasoning as the export rules above: impossible, not unlikely.
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# Xcode's build output. The default location is ~/Library/Developer/Xcode, but
+# "Build Location: Legacy" and workspace-relative settings both put DerivedData
+# inside the project directory, where nothing was ignoring it.
+DerivedData/

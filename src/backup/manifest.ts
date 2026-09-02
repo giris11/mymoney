@@ -606,9 +606,10 @@ const plural = (n: number, one: string, many: string): string =>
 
 /**
  * The figures in the owner's own terms: "58 accounts, 5,127 transactions, net
- * worth £429,327.86". A sentence, not a table, because it has to be readable
- * in a toast and in a confirmation dialog — and because the point is that he
- * recognises the numbers.
+ * worth £314,159.26" (an invented total — no real figure goes in this public
+ * repo, DECISIONS.md D38). A sentence, not a table, because it has to be
+ * readable in a toast and in a confirmation dialog — and because the point is
+ * that he recognises the numbers.
  *
  * A currency the total could not include is SAID, never left out silently.
  */

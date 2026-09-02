@@ -1295,7 +1295,7 @@ describe('sha256Hex', () => {
       'x'.repeat(119),
       'x'.repeat(120),
       'x'.repeat(128),
-      '£429,327.86 — Tesco • café',
+      '£314,159.26 — Tesco • café',
       '𝄞 clef and an emoji 🧾',
       JSON.stringify({ a: 1, b: [1, 2, 3] }),
       'y'.repeat(20_000),
@@ -1623,20 +1623,21 @@ describe('summariseManifest', () => {
     exportedAt: T0,
     rowCounts: { accounts: 58, transactions: 5127 },
     accounts: [],
-    netWorth: { baseCurrency: 'GBP', totalMinor: 42_932_786, rates: [], missingRateCurrencies: [] },
+    netWorth: { baseCurrency: 'GBP', totalMinor: 31_415_926, rates: [], missingRateCurrencies: [] },
     ...over,
   });
 
   it('says it in the owner’s own terms', () => {
-    // The sentence Girish should recognise without opening anything.
+    // The sentence Girish should recognise without opening anything. The total
+    // is a made-up one: this repo is public (DECISIONS.md D38).
     expect(summariseManifest(base())).toBe(
-      '58 accounts, 5,127 transactions, net worth £429,327.86',
+      '58 accounts, 5,127 transactions, net worth £314,159.26',
     );
   });
 
   it('uses the singular for one of a thing', () => {
     expect(summariseManifest(base({ rowCounts: { accounts: 1, transactions: 1 } }))).toBe(
-      '1 account, 1 transaction, net worth £429,327.86',
+      '1 account, 1 transaction, net worth £314,159.26',
     );
   });
 
