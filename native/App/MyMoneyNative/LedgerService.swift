@@ -14,10 +14,19 @@
 // as long as it takes. Every method here is `async` from the caller's side, so
 // the UI keeps drawing and can say what it is doing.
 //
-// READ-ONLY, AND STRUCTURALLY SO. There is no method here that edits a row.
-// The only write is `importBackup`, which replaces the whole local copy with a
-// file the owner chose -- and even that cannot change the web app, which is the
-// system of record.
+// THIS COPY CAN NOW BE EDITED, AND IT IS STILL A COPY. Every mutation below
+// goes to the LOCAL database and nowhere else: there is no method here that
+// writes to the web app, and there cannot be one -- the web app has no server
+// and this process has no access to its IndexedDB. What the edits do create is
+// DIVERGENCE, which is the thing this phase has to be honest about rather than
+// prevent, and `LedgerStore.localEdits()` counts it so the UI can say how far
+// this copy has drifted from the backup it was made from.
+//
+// EVERY MUTATION IS ONE `await`. The store does the whole thing -- validate,
+// write, count -- inside one SQLite transaction, so there is no state in this
+// actor to keep consistent and nothing to undo if a call throws. A refusal
+// comes back as an `EditRefusal` carrying the two sentences the owner needs:
+// what was wrong, and what was NOT changed.
 import Foundation
 import MyMoneyKit
 
@@ -27,6 +36,10 @@ struct LedgerSummary: Sendable {
     let transactionCount: Int
     let accountCount: Int
     let provenance: StoreProvenance
+    /// How far this copy has drifted from the file it was imported from. The
+    /// number the banner shows, and the reason the banner is a statement of
+    /// fact rather than a warning.
+    let localEdits: LocalEdits
     /// Where the local copy lives, so the owner can be told exactly what this
     /// app has and where.
     let storePath: String
@@ -101,12 +114,97 @@ actor LedgerService {
             transactionCount: try store.registerCount(scope: .allAccounts),
             accountCount: try store.liveCount("accounts"),
             provenance: try store.provenance(),
+            localEdits: try store.localEdits(),
             storePath: store.path
         )
     }
 
     func registerLookups() throws -> RegisterLookups {
         try opened().registerLookups()
+    }
+
+    // MARK: - Reads the editors open on
+
+    func quickAddContext() throws -> QuickAddContext {
+        try opened().quickAddContext()
+    }
+
+    /// The draft an editor opens on, or nil when this row is a transfer leg --
+    /// in which case the caller asks for `transferDraft` instead. Two doors,
+    /// because a transfer edited through the ordinary one would be written back
+    /// as half a transfer.
+    func transactionDraft(id: String) throws -> TransactionDraft? {
+        try opened().transactionDraft(forId: id)
+    }
+
+    func transferDraft(legId: String) throws -> TransferDraft? {
+        try opened().transferDraft(forLegId: legId)
+    }
+
+    func transaction(id: String) throws -> Transaction? {
+        try opened().transaction(id: id)
+    }
+
+    // MARK: - Mutations
+    //
+    // Each of these is a single call into the store, which does all of it
+    // inside one transaction. Nothing here catches an error and continues:
+    // a refusal is the answer, and it is the caller's job to show it.
+
+    func save(_ draft: TransactionDraft) throws -> Transaction {
+        try opened().saveTransaction(draft)
+    }
+
+    func save(_ draft: TransferDraft) throws -> TransferPair {
+        try opened().saveTransfer(draft)
+    }
+
+    func deleteTransaction(id: String) throws -> DeletedTransactions {
+        try opened().deleteTransaction(id: id)
+    }
+
+    func undoDelete(_ receipt: DeletedTransactions) throws -> Int {
+        try opened().undoDelete(receipt)
+    }
+
+    func save(_ draft: AccountDraft) throws -> Account {
+        try opened().saveAccount(draft)
+    }
+
+    func setAccountArchived(id: String, archived: Bool) throws {
+        try opened().setAccountArchived(id: id, archived: archived)
+    }
+
+    func setAccountExcluded(id: String, excluded: Bool) throws {
+        try opened().setAccountExcluded(id: id, excluded: excluded)
+    }
+
+    func moveAccount(id: String, toGroup groupId: String?) throws {
+        try opened().moveAccount(id: id, toGroup: groupId)
+    }
+
+    func reorderAccount(id: String, _ direction: MoveDirection) throws {
+        try opened().reorderAccount(id: id, direction)
+    }
+
+    func deleteAccount(id: String) throws -> DeletedRecord {
+        try opened().deleteAccount(id: id)
+    }
+
+    func save(_ draft: AccountGroupDraft) throws -> AccountGroup {
+        try opened().saveAccountGroup(draft)
+    }
+
+    func deleteAccountGroup(id: String) throws -> DeletedRecord {
+        try opened().deleteAccountGroup(id: id)
+    }
+
+    func reorderAccountGroup(id: String, _ direction: MoveDirection) throws {
+        try opened().reorderAccountGroup(id: id, direction)
+    }
+
+    func undoDelete(_ receipt: DeletedRecord) throws {
+        try opened().undoDelete(receipt)
     }
 
     func registerCount(scope: RegisterScope) throws -> Int {

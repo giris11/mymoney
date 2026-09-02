@@ -2,34 +2,111 @@
 import MyMoneyKit
 import SwiftUI
 
-/// The statement that outranks everything else on screen.
+/// THE STATEMENT THAT OUTRANKS EVERYTHING ELSE ON SCREEN.
 ///
-/// The web app is the system of record. This app reads a backup file and shows
-/// it. It cannot edit, add or delete anything, and it is not the place to go
-/// when a figure is wrong. Somebody who forgets that could try to "fix"
-/// something here, find they cannot, and conclude that their money is missing.
+/// The web app is the system of record. This app holds an imported COPY of it,
+/// and from this version on it can edit that copy -- which means the two can
+/// disagree, and the person holding the phone has to be able to tell which is
+/// which without thinking about it.
 ///
-/// It is a real sentence, not a chip or an icon: an icon that means "read only"
-/// is a thing you have to already know.
-struct ReadOnlyBanner: View {
+/// SO THE BANNER IS NOT A WARNING, IT IS A COUNT. A fixed sentence ("this is a
+/// copy") says the same thing before the first edit and after the hundredth,
+/// and a sentence that never changes stops being read within a week. A number
+/// that grows -- "14 changes made here that your web app does not have" -- is
+/// arithmetic rather than advice: it is different every time you look at it,
+/// which is exactly why it keeps being looked at.
+///
+/// It is permanent, it is not dismissible, and it sits ABOVE the scrolling
+/// list so it cannot be scrolled away. The wording comes from
+/// `LocalEdits.summary` in the kit, so the sentence and the number it quotes
+/// are produced by the same thing.
+struct LocalCopyBanner: View {
+    let edits: LocalEdits
+
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
-            Image(systemName: "eye")
-                .foregroundStyle(.secondary)
+            Image(systemName: edits.hasDiverged ? "arrow.triangle.branch" : "iphone.and.arrow.forward")
+                .foregroundStyle(edits.hasDiverged ? .orange : .secondary)
                 .accessibilityHidden(true)
-            Text(
-                "Read-only copy. Your web app is the real ledger \u{2014} nothing here can "
-                    + "change it, and nothing here can be edited."
-            )
-            .font(.footnote)
-            .foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
+            Text(edits.summary)
+                .font(.footnote)
+                .foregroundStyle(edits.hasDiverged ? .primary : .secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary.opacity(0.4))
+        .background(edits.hasDiverged ? AnyShapeStyle(.orange.opacity(0.12)) : AnyShapeStyle(.quaternary.opacity(0.4)))
         .accessibilityElement(children: .combine)
+    }
+}
+
+/// A refusal, shown where the Save button is.
+///
+/// BOTH SENTENCES, ALWAYS, and in different weights: what was wrong is the
+/// headline, and "nothing was saved" is the line underneath it. The second one
+/// is the one that stops somebody closing the sheet and re-entering everything
+/// they just typed -- possibly onto a row that already took it.
+struct RefusalNotice: View {
+    let refusal: EditRefusal
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(refusal.problem)
+                    .font(.callout)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(refusal.unchanged)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 4)
+        .accessibilityElement(children: .combine)
+    }
+}
+
+/// The bar that offers a delete back.
+///
+/// A DELETE IS AN ACTION WITH A WAY BACK, not a question with a confirmation
+/// dialog. Confirming every delete taxes the common case -- a delete the owner
+/// meant -- to protect the rare one, and people learn to tap through
+/// confirmations without reading them within a day. An undo taxes nothing and
+/// is EXACT here, because the row was never destroyed: undoing clears a
+/// tombstone rather than rebuilding anything from a copy that might be stale.
+struct UndoBar: View {
+    let message: String
+    let undo: () -> Void
+    let dismiss: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Text(message)
+                .font(.footnote)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 8)
+            Button("Undo", action: undo)
+                .font(.footnote.weight(.semibold))
+            Button {
+                dismiss()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.footnote)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .accessibilityLabel("Dismiss")
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.thinMaterial)
+        .overlay(alignment: .top) { Divider() }
     }
 }
 

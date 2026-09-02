@@ -27,6 +27,15 @@ public final class LedgerStore {
     /// The store schema version actually on disk after opening.
     public private(set) var storeVersion: Int
 
+    /// Where ids and timestamps come from.
+    ///
+    /// A stored property rather than an argument on twenty mutation methods,
+    /// and a `var` so a test can pin both. The read paths never touch it: it
+    /// only matters where a row is CREATED, which is the one place a port's
+    /// tests otherwise cannot state an expectation, because `createdAt` and a
+    /// fresh UUID are different on every run. See `StoreEnvironment`.
+    public var environment: StoreEnvironment = .live
+
     /// Where the database lives. ":memory:" for a scratch store.
     public var path: String { connection.path }
 

@@ -181,6 +181,10 @@ extension LedgerStore {
             )
             try setMeta(ProvenanceKey.contentHash, imported.contentHash)
             try setMeta(ProvenanceKey.importedAt, Self.timestampNow())
+            // The copy has just BECOME the file, so it has drifted from it by
+            // nothing. See LedgerStore+LocalEdits.swift for why the count
+            // exists at all and why only an import may reset it.
+            try clearLocalEdits()
 
             // INSIDE the transaction, so a store that somehow contains a
             // floating-point amount is never committed. Unreachable through

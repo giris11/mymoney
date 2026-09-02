@@ -19,16 +19,30 @@
 //
 // And when a currency has no rate, the headline says so instead of quietly
 // leaving an account out of a number that looks complete.
+//
+// THE EDITING AFFORDANCES ARE SWIPES AND A LONG-PRESS MENU, deliberately, so
+// that the list still reads as a list of balances rather than as a form. Every
+// one of them is reversible in a tap: archive un-archives, "not counted" counts
+// again, and moving a row up moves it back down. None of them can change an
+// amount -- the only thing on this screen that can is the account editor's
+// opening balance, which is a field with a confirmation of what it read.
 import MyMoneyKit
 import SwiftUI
 
 struct AccountsView<ImportLink: View>: View {
+    @Environment(AppModel.self) private var app
+
     let summary: LedgerSummary
     @Binding var selection: Route?
     /// The import row, handed in by the shell so every route in this list is a
     /// `NavigationLink` of the same kind. See RootView's header for why that
     /// matters on a phone.
     @ViewBuilder let importLink: () -> ImportLink
+    /// Editing is owned by the shell, which holds the sheet.
+    let onEditAccount: (AccountBalance) -> Void
+    let onAddAccount: () -> Void
+
+    @State private var refusal: EditRefusal?
 
     private var netWorth: NetWorth { summary.snapshot.netWorth }
 
@@ -93,12 +107,17 @@ struct AccountsView<ImportLink: View>: View {
                 )
             }
 
+            if let refusal {
+                Section { RefusalNotice(refusal: refusal) }
+            }
+
             ForEach(sections, id: \.id) { section in
                 Section(section.name) {
                     ForEach(section.rows, id: \.account.id) { row in
                         NavigationLink(value: Route.account(row.account.id)) {
                             AccountRow(balance: row)
                         }
+                        .modifier(AccountActions(balance: row, edit: onEditAccount, refusal: $refusal))
                     }
                 }
             }
@@ -109,6 +128,7 @@ struct AccountsView<ImportLink: View>: View {
                         NavigationLink(value: Route.account(row.account.id)) {
                             AccountRow(balance: row, archived: true)
                         }
+                        .modifier(AccountActions(balance: row, edit: onEditAccount, refusal: $refusal))
                     }
                 } header: {
                     Text("Archived")
@@ -118,6 +138,21 @@ struct AccountsView<ImportLink: View>: View {
                             + "They are not part of the net-worth total."
                     )
                 }
+            }
+
+            Section {
+                Button(action: onAddAccount) {
+                    Label("Add an account\u{2026}", systemImage: "plus.circle")
+                }
+                NavigationLink(value: Route.groups) {
+                    Label("Account groups\u{2026}", systemImage: "folder")
+                }
+            } footer: {
+                Text(
+                    "Swipe an account for archive, \u{201C}\(Display.notCountedLabel)\u{201D} and "
+                        + "reordering. Both of those change what your totals COUNT and never what "
+                        + "is shown \u{2014} the account stays on this list with its real balance."
+                )
             }
 
             Section {
@@ -251,6 +286,84 @@ private struct AccountRow: View {
     }
 }
 
+/// The swipe actions and context menu on an account row.
+///
+/// A MODIFIER RATHER THAN CODE IN TWO PLACES, because the visible list and the
+/// archived list both need exactly these and a copy of them would drift. Every
+/// action here writes ONE column through the store, and every one of them is
+/// undone by doing it again.
+private struct AccountActions: ViewModifier {
+    @Environment(AppModel.self) private var app
+    let balance: AccountBalance
+    let edit: (AccountBalance) -> Void
+    @Binding var refusal: EditRefusal?
+
+    private var account: Account { balance.account }
+
+    func body(content: Content) -> some View {
+        content
+            .swipeActions(edge: .trailing) {
+                Button {
+                    edit(balance)
+                } label: {
+                    Label("Edit", systemImage: "pencil")
+                }
+                .tint(.blue)
+                Button {
+                    run { await app.setAccountArchived(id: account.id, archived: !account.archived) }
+                } label: {
+                    Label(
+                        account.archived ? "Unarchive" : "Archive",
+                        systemImage: account.archived ? "tray.and.arrow.up" : "archivebox"
+                    )
+                }
+                .tint(.orange)
+            }
+            .swipeActions(edge: .leading) {
+                Button {
+                    run { await app.reorderAccount(id: account.id, .up) }
+                } label: {
+                    Label("Move up", systemImage: "arrow.up")
+                }
+                .tint(.indigo)
+                Button {
+                    run { await app.reorderAccount(id: account.id, .down) }
+                } label: {
+                    Label("Move down", systemImage: "arrow.down")
+                }
+                .tint(.indigo)
+            }
+            .contextMenu {
+                Button { edit(balance) } label: { Label("Edit account\u{2026}", systemImage: "pencil") }
+                Button {
+                    run {
+                        await app.setAccountExcluded(
+                            id: account.id, excluded: !(account.excludeFromNetWorth == true)
+                        )
+                    }
+                } label: {
+                    Label(
+                        balance.excludedFromNetWorth
+                            ? "Count in net worth" : "Don\u{2019}t count in net worth",
+                        systemImage: balance.excludedFromNetWorth ? "sum" : "minus.circle"
+                    )
+                }
+                Button {
+                    run { await app.setAccountArchived(id: account.id, archived: !account.archived) }
+                } label: {
+                    Label(
+                        account.archived ? "Unarchive" : "Archive",
+                        systemImage: account.archived ? "tray.and.arrow.up" : "archivebox"
+                    )
+                }
+            }
+    }
+
+    private func run(_ body: @escaping () async -> EditOutcome) {
+        Task { refusal = (await body()).refusal }
+    }
+}
+
 /// Where this copy came from, and when. Quiet, and at the bottom, but present:
 /// a shadow copy that will not say which file it is a copy of is a screen full
 /// of numbers with no provenance.
@@ -270,6 +383,20 @@ private struct ProvenanceFooter: View {
                     label: "File fingerprint",
                     value: String(hash.prefix(12)),
                     spoken: "SHA 256, beginning \(hash.prefix(12).map(String.init).joined(separator: " "))"
+                )
+            }
+            // WHAT THIS COPY HAS THAT THE FILE DID NOT. The banner at the top
+            // carries the headline; this is the detail, beside the provenance
+            // it is a departure from.
+            if summary.localEdits.hasDiverged {
+                FigureRow(
+                    label: "Changed here since",
+                    value: summary.localEdits.firstAt.map(Display.timestampText) ?? "\u{2014}"
+                )
+                FigureRow(
+                    label: "Changes not in your web app",
+                    value: Display.grouped(summary.localEdits.count),
+                    emphasised: true
                 )
             }
         }

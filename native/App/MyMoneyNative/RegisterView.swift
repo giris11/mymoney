@@ -16,14 +16,26 @@
 //
 // EVERY ROW IS ONE ACCESSIBILITY ELEMENT with a sentence of its own, because
 // four columns read out as four disconnected fragments is not a register.
+//
+// EDITING: a tap opens the row, a swipe deletes it. The delete is not confirmed
+// and does not need to be -- nothing is destroyed by it, and the undo bar the
+// shell pins to the bottom offers it straight back. A transfer leg opens the
+// TRANSFER editor rather than the transaction one; the row does not decide
+// that, `AppModel.editorSheet(forTransaction:)` does, by asking the store which
+// kind of draft this row has.
 import MyMoneyKit
 import SwiftUI
 
 struct RegisterView: View {
+    @Environment(AppModel.self) private var app
     @State private var model: RegisterModel
+    /// Handed in by the shell, which owns the sheet.
+    let openEditor: (String) -> Void
+    @State private var refusal: EditRefusal?
 
-    init(model: RegisterModel) {
+    init(model: RegisterModel, openEditor: @escaping (String) -> Void) {
         _model = State(initialValue: model)
+        self.openEditor = openEditor
     }
 
     var body: some View {
@@ -41,9 +53,14 @@ struct RegisterView: View {
                     Notice(
                         symbol: "tray",
                         title: "No transactions",
-                        message: "This account has no transactions in the copy on this device."
+                        message:
+                            "Nothing here yet in the copy on this device. Use Add to enter one."
                     )
                     .frame(maxWidth: .infinity)
+                }
+
+                if let refusal {
+                    RefusalNotice(refusal: refusal)
                 }
 
                 ForEach(model.entries) { entry in
@@ -52,6 +69,25 @@ struct RegisterView: View {
                         showsRunningBalance: model.showsRunningBalance,
                         runningCurrency: model.currency
                     )
+                    .contentShape(Rectangle())
+                    .onTapGesture { openEditor(entry.id) }
+                    .swipeActions(edge: .trailing) {
+                        Button(role: .destructive) {
+                            Task { refusal = (await app.deleteTransaction(id: entry.id)).refusal }
+                        } label: {
+                            Label("Delete", systemImage: "trash")
+                        }
+                        Button {
+                            openEditor(entry.id)
+                        } label: {
+                            Label("Edit", systemImage: "pencil")
+                        }
+                        .tint(.blue)
+                    }
+                    .accessibilityAction(named: "Edit") { openEditor(entry.id) }
+                    .accessibilityAction(named: "Delete") {
+                        Task { refusal = (await app.deleteTransaction(id: entry.id)).refusal }
+                    }
                     .onAppear {
                         guard model.shouldLoadMore(after: entry) else { return }
                         Task { await model.loadNextPage() }
@@ -77,7 +113,7 @@ struct RegisterView: View {
                 if model.reachedEnd && !model.entries.isEmpty {
                     Text(
                         "\(Display.count(model.entries.count, "transaction")), oldest last. "
-                            + "This copy cannot be edited."
+                            + "Tap one to edit it; swipe to delete, with an undo."
                     )
                     .font(.footnote)
                 }

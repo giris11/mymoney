@@ -119,7 +119,11 @@ extension LedgerStore {
         let rates = RateTable(rates: try readFxRates(from: "live_fx_rates"))
         return AccountsSnapshot(
             balances: balances,
-            groups: try readAccountGroups(from: "live_account_groups"),
+            // IN THEIR OWN SORT ORDER, which is what the sidebar draws and what
+            // reordering a group has to change. `readAccountGroups` returns
+            // them by id -- deterministic, which is what the backup round trip
+            // needs, and not an order anybody chose.
+            groups: try accountGroups(),
             netWorth: try Balances.netWorth(balances, baseCurrency: base, rates: rates),
             baseCurrency: base
         )
