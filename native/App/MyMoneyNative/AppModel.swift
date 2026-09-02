@@ -104,7 +104,13 @@ final class AppModel {
         let message: String
     }
 
-    let service = LedgerService()
+    /// THE ONE `LedgerService` IN THE PROCESS, shared with the App Intents.
+    ///
+    /// Not a style choice. An intent can run while the app is in the foreground
+    /// -- Siri asked for a coffee while the register is on screen -- and two
+    /// `LedgerService` actors would be two SQLite connections writing one file,
+    /// each with its own cached `Book`. One connection, one cache, one writer.
+    let service = IntentServices.shared.service
 
     private(set) var phase: Phase = .loading
     var importPhase: ImportPhase = .idle
@@ -115,6 +121,29 @@ final class AppModel {
     /// The most recent delete, while it can still be undone. Cleared when it is
     /// undone, when another change lands, or when the owner dismisses it.
     private(set) var pendingUndo: PendingUndo?
+
+    /// The local reminders. Owned here rather than by a view, because they are
+    /// re-planned after every change to the book and a view that happened to be
+    /// closed must not be the reason a reminder is stale.
+    let reminders = RemindersModel()
+
+    /// What is waiting, for the badge in the sidebar. Kept beside the summary
+    /// so the badge and the screen it points at come from the same read.
+    private(set) var dueCount = 0
+    private(set) var overdueCount = 0
+
+    /// What the last automatic run entered, once, so the schedules screen can
+    /// say it out loud. Cleared when the owner has seen it.
+    ///
+    /// A TRANSACTION THAT APPEARED WITHOUT A TAP HAS TO BE ANNOUNCED. That is
+    /// the entire safety argument for auto-post: it is opt-in per schedule, it
+    /// cannot reach back before the day it was switched on, and when it does
+    /// fire the app says so rather than leaving the owner to notice a row they
+    /// do not remember making.
+    private(set) var lastAutoPost: AutoPostResult?
+    /// The day the automatic run last happened, so returning to the app on a
+    /// new day runs it and returning ten minutes later does not.
+    private var lastAutoPostDay: String?
 
     /// The lookups the register needs, read once per book and shared by every
     /// register screen. Re-read after a change, because an edit can create a
@@ -133,6 +162,10 @@ final class AppModel {
 
     func load() async {
         phase = .loading
+        // BEFORE THE BOOK IS READ, so the screen that appears already contains
+        // anything that entered itself. Nothing happens here unless a schedule
+        // has auto-post switched on -- see `LedgerStore.postDue`.
+        await runAutomaticPosting()
         do {
             if let summary = try await service.summary() {
                 lookups = try await service.registerLookups()
@@ -145,6 +178,9 @@ final class AppModel {
             lookups = nil
             phase = .failed(Self.message(for: error))
         }
+        await refreshDueCounts()
+        await replanReminders()
+        await WidgetPublishing.publish(using: service)
     }
 
     /// Re-read after a change WITHOUT flashing the loading state. The screen is
@@ -163,6 +199,13 @@ final class AppModel {
             phase = .failed(Self.message(for: error))
         }
         revision += 1
+        await refreshDueCounts()
+        await replanReminders()
+        // THE WIDGET IS PART OF THE APP'S HONESTY, not a decoration. A figure
+        // on a home screen that is a week behind the book, with nothing to say
+        // so, is the same defect as a banner that stopped counting -- so a
+        // committed change republishes before this function returns.
+        await WidgetPublishing.publish(using: service)
     }
 
     // MARK: - Transactions
@@ -316,6 +359,14 @@ final class AppModel {
         }
     }
 
+    /// One service call, through the same shape every mutation uses: do it,
+    /// re-read the book, re-plan the reminders. For the switches on the
+    /// schedule detail screen, which are one call each and would otherwise each
+    /// need a method here that did nothing else.
+    func runService(_ body: @escaping (LedgerService) async throws -> Void) async -> EditOutcome {
+        await run { try await body(self.service) }
+    }
+
     private func run(_ body: () async throws -> Void) async -> EditOutcome {
         do {
             try await body()
@@ -327,6 +378,163 @@ final class AppModel {
         } catch {
             return .refused(EditRefusal(unexpected: error))
         }
+    }
+
+    // MARK: - Schedules
+
+    func save(_ draft: ScheduleDraft) async -> EditOutcome {
+        await run { _ = try await self.service.save(draft) }
+    }
+
+    func setSchedulePaused(id: String, paused: Bool) async -> EditOutcome {
+        await run { try await self.service.setSchedulePaused(id: id, paused: paused) }
+    }
+
+    func setScheduleAutoPost(id: String, autoPost: Bool) async -> EditOutcome {
+        await run { try await self.service.setScheduleAutoPost(id: id, autoPost: autoPost) }
+    }
+
+    func setScheduleRemind(id: String, remind: Bool) async -> EditOutcome {
+        await run { try await self.service.setScheduleRemind(id: id, remind: remind) }
+    }
+
+    /// Delete a schedule, and offer it back.
+    ///
+    /// The sentence says what was NOT deleted, because that is the question a
+    /// person actually has: the payments it already entered are ordinary
+    /// transactions that happened, and they stay.
+    func deleteSchedule(id: String, named name: String) async -> EditOutcome {
+        await deleting {
+            let receipt = try await self.service.deleteSchedule(id: id)
+            return PendingUndo(
+                receipt: .record(receipt),
+                message:
+                    "Deleted the schedule \u{201C}\(name)\u{201D}. The payments it already "
+                    + "entered are still in your book."
+            )
+        }
+    }
+
+    /// Enter one due occurrence. The deliberate act.
+    func post(_ posting: SchedulePosting) async -> EditOutcome {
+        await run { _ = try await self.service.postScheduled(posting) }
+    }
+
+    func skip(scheduleId: String, occurrenceDate: String) async -> EditOutcome {
+        await run {
+            try await self.service.skipOccurrence(
+                scheduleId: scheduleId, occurrenceDate: occurrenceDate
+            )
+        }
+    }
+
+    func unskip(scheduleId: String, occurrenceDate: String) async -> EditOutcome {
+        await run {
+            try await self.service.unskipOccurrence(
+                scheduleId: scheduleId, occurrenceDate: occurrenceDate
+            )
+        }
+    }
+
+    func acknowledgeAutoPost() { lastAutoPost = nil }
+
+    /// Run the automatic postings, at most once a day.
+    ///
+    /// ONCE A DAY BY THE DEVICE'S OWN CALENDAR, not on every foregrounding:
+    /// re-running it is harmless (a settled occurrence is refused) but it is
+    /// also a write attempt per app switch, and the announcement it produces
+    /// should appear once rather than every time the owner comes back from
+    /// Messages.
+    private func runAutomaticPosting() async {
+        let today = todayISO()
+        guard lastAutoPostDay != today else { return }
+        do {
+            let result = try await service.postDue(today: today)
+            lastAutoPostDay = today
+            if !result.isEmpty { lastAutoPost = result }
+        } catch {
+            // An automatic run that fails is not a reason to fail the launch.
+            // It is a reason to say so on the screen that owns it.
+            lastAutoPost = AutoPostResult(
+                posted: [], heldBack: 0, refusals: [Self.message(for: error)]
+            )
+        }
+    }
+
+    /// Coming back to the app on a new day runs the automatic postings; coming
+    /// back ten minutes later does not.
+    func foregrounded() async {
+        guard hasBook, lastAutoPostDay != todayISO() else { return }
+        await runAutomaticPosting()
+        // `refresh`, not `load`: the screen is already showing a book, and
+        // replacing it with a spinner because the date rolled over would be a
+        // flicker on the one screen that must not look unstable.
+        await refresh()
+    }
+
+    private func refreshDueCounts() async {
+        guard let counts = try? await service.dueCounts(today: todayISO()) else {
+            dueCount = 0
+            overdueCount = 0
+            return
+        }
+        dueCount = counts.due
+        overdueCount = counts.overdue
+    }
+
+    /// Re-plan the local reminders from what is due now.
+    ///
+    /// AFTER EVERY CHANGE, because the alternative is a banner tomorrow morning
+    /// about a payment entered this morning. The planning itself is
+    /// `DueReminders.plan`, in the kit, where it is tested; this hands the
+    /// answer to iOS.
+    private func replanReminders() async {
+        guard reminders.settings.enabled else { return }
+        guard let input = try? await service.reminderInput(today: todayISO()) else { return }
+        let plan = DueReminders.plan(
+            occurrences: input.occurrences,
+            remindingScheduleIds: input.reminding,
+            settings: reminders.settings,
+            today: todayISO(),
+            nowMinutes: RemindersModel.nowMinutes()
+        )
+        await reminders.apply(plan)
+    }
+
+    /// Re-plan from outside -- the settings screen, when a switch moves.
+    func remindersSettingsChanged() async {
+        await replanReminders()
+    }
+
+    // MARK: - Files that arrive from elsewhere
+
+    /// A file handed over by another app, waiting on the Import screen for the
+    /// owner to say what to do with it.
+    ///
+    /// It is NOT imported on arrival. See `IncomingDocument`'s header: an
+    /// import replaces the copy on this device, and a book replaced because
+    /// somebody tapped Share in Mail is exactly the loss this project exists to
+    /// prevent.
+    var incoming: IncomingDocument?
+
+    /// Take a file the system has handed us. Answers whether it was readable
+    /// enough to show, which is always true -- an unreadable one is shown WITH
+    /// its reason, because silence after sharing a file is the worst outcome.
+    func receive(_ url: URL) {
+        guard let document = IncomingDocument.read(url) else { return }
+        incoming = document
+        importPhase = .idle
+        document.discardInboxCopy(at: url)
+    }
+
+    func clearIncoming() { incoming = nil }
+
+    /// Import the file that arrived, through the same door as one picked by
+    /// hand. There is deliberately no other method here that writes a backup.
+    func importIncoming() async {
+        guard let document = incoming, document.kind.isBackup else { return }
+        incoming = nil
+        await importBackup(data: document.data, fileName: document.fileName)
     }
 
     // MARK: - Import

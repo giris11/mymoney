@@ -74,7 +74,22 @@ public struct SplitTally: Sendable, Hashable {
     /// What a new line should be pre-filled with, so that finishing a split is
     /// one tap rather than a subtraction the owner does in their head.
     /// nil when there is nothing left to allocate.
+    ///
+    /// AND NIL FOR THE FIRST LINE, WHICH IS NOT AN OVERSIGHT. With no lines yet
+    /// the remainder is the whole transaction, and pre-filling line one with the
+    /// full amount taxed the common case to help a case that does not exist:
+    /// nobody splits £50 into a single £50 line. Every two-line split began by
+    /// clearing a field the app had just filled in, and the second line then
+    /// pre-filled with £0.00 because the first had already claimed everything.
+    ///
+    /// So the pre-fill starts on the SECOND line. Type what one part cost, and
+    /// the next line arrives holding exactly what is left -- which is the tap
+    /// this property was written for, now landing where the arithmetic is
+    /// actually hard. `remainderMinor` still reports the whole amount for a
+    /// split of nothing, because that is what is unallocated; this is a
+    /// statement about what to type into a box, not about the money.
     public var suggestedNextLineMinor: Int64? {
+        guard status != .notSplit else { return nil }
         guard let remainder = remainderMinor, remainder != 0 else { return nil }
         return remainder
     }

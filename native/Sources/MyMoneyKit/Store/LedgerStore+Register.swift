@@ -172,6 +172,37 @@ extension LedgerStore {
         }
     }
 
+    /// How many rows a SEARCH has, for the scope.
+    ///
+    /// Counted in SQL rather than by paging until the pages run out, so
+    /// "312 matches" is a fact the database produced in one pass rather than a
+    /// number the app accumulated and could get wrong at a page boundary. An
+    /// empty search falls through to the plain count above -- same answer, one
+    /// fewer predicate.
+    public func registerCount(scope: RegisterScope, search: RegisterSearch, lookups: RegisterLookups)
+        throws -> Int
+    {
+        guard !search.isEmpty else { return try registerCount(scope: scope) }
+        let predicate = searchPredicate(search, lookups: lookups)
+        var conditions: [String] = []
+        if case .account = scope { conditions.append("t.account_id = ?") }
+        if !predicate.isEmpty { conditions.append(predicate.sql) }
+        let whereClause = conditions.isEmpty ? "" : "WHERE " + conditions.joined(separator: " AND ")
+
+        let statement = try connection.prepare(
+            "SELECT count(*) FROM live_transactions t \(whereClause)"
+        )
+        defer { statement.finalize() }
+        var slot: Int32 = 1
+        if case .account(let id) = scope {
+            statement.bind(slot, text: id)
+            slot += 1
+        }
+        _ = statement.bind(predicate.bindings, from: slot)
+        guard try statement.step() else { return 0 }
+        return try statement.int(0)
+    }
+
     /// One page of the register, newest first, resuming after `cursor`.
     ///
     /// `limit + 1` rows are asked for and at most `limit` are returned: the
@@ -183,10 +214,31 @@ extension LedgerStore {
         limit: Int = 60,
         lookups: RegisterLookups
     ) throws -> RegisterPage {
+        try registerPage(
+            scope: scope, search: .none, after: cursor, limit: limit, lookups: lookups
+        )
+    }
+
+    /// One page of the register, filtered by a search.
+    ///
+    /// THE SAME QUERY, with one more predicate. Same order, same cursor, same
+    /// row construction -- see the header of `LedgerStore+Search.swift` for why
+    /// searching is not allowed to become a second read path. An empty search
+    /// adds no predicate at all, so the ordinary register pays nothing for the
+    /// search box existing.
+    public func registerPage(
+        scope: RegisterScope,
+        search: RegisterSearch,
+        after cursor: RegisterCursor? = nil,
+        limit: Int = 60,
+        lookups: RegisterLookups
+    ) throws -> RegisterPage {
         precondition(limit > 0, "a register page of no rows is not a page")
 
+        let predicate = searchPredicate(search, lookups: lookups)
         var conditions: [String] = []
         if case .account = scope { conditions.append("t.account_id = ?") }
+        if !predicate.isEmpty { conditions.append(predicate.sql) }
         if cursor != nil {
             // Row-value comparison: ONE expression over the whole sort key, and
             // the form SQLite can drive an index seek from (3.15+). Spelling it
@@ -214,6 +266,10 @@ extension LedgerStore {
             statement.bind(slot, text: id)
             slot += 1
         }
+        // In the order the conditions were appended above, which is the order
+        // their placeholders appear in the statement. `bind(_:from:)` returns
+        // the next free slot rather than letting this function guess it.
+        slot = statement.bind(predicate.bindings, from: slot)
         if let cursor {
             statement.bind(slot, text: cursor.date)
             statement.bind(slot + 1, text: cursor.createdAt)

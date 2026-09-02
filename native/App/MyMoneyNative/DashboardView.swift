@@ -205,8 +205,20 @@ struct DashboardView: View {
         return CardSection(title: "This month", caption: monthLabel(month.month)) {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(alignment: .top, spacing: 24) {
-                    figure("In", month.incomeMinor, summary.baseCurrency, .green)
-                    figure("Out", month.expenseMinor, summary.baseCurrency, .red)
+                    // THE COLOUR FOLLOWS THE MONEY, NOT THE HEADING. Both of
+                    // these can be negative, and when one is, the sentence
+                    // further down this card says the money went the other way.
+                    // A figure drawn in the colour its column is usually drawn
+                    // in would be contradicting that sentence six points below
+                    // it. `FlowWords` decides, and is tested.
+                    figure(
+                        "In", month.incomeMinor, summary.baseCurrency,
+                        flowColour(FlowWords.movement(ofIn: month.incomeMinor))
+                    )
+                    figure(
+                        "Out", month.expenseMinor, summary.baseCurrency,
+                        flowColour(FlowWords.movement(ofOut: month.expenseMinor))
+                    )
                 }
                 // The two-colour bar is decoration for the two figures above,
                 // which is why it is hidden from a screen reader rather than

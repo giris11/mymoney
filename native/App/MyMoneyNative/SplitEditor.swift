@@ -98,9 +98,21 @@ struct SplitEditor: View {
             .onDelete { lines.remove(atOffsets: $0) }
 
             Button {
-                // A NEW LINE OPENS PRE-FILLED WITH WHAT IS LEFT. This is the
-                // tap that makes finishing a split trivial, and it is why an
-                // unbalanced split has to be deliberate rather than accidental.
+                // A NEW LINE OPENS PRE-FILLED WITH WHAT IS LEFT -- FROM THE
+                // SECOND LINE ON. This is the tap that makes finishing a split
+                // trivial, and it is why an unbalanced split has to be
+                // deliberate rather than accidental.
+                //
+                // The FIRST line arrives empty, which it did not used to. With
+                // no lines yet the remainder is the whole transaction, so line
+                // one opened holding the full £50.00 of a £50.00 expense -- and
+                // since nobody splits £50 into a single £50 line, every two-line
+                // split began by clearing a field the app had just filled in.
+                // Line two then offered £0.00, because line one had claimed
+                // everything. The pre-fill now lands where the arithmetic is
+                // actually worth doing: type the part you know, and the next
+                // line holds exactly what is left. `SplitTally` decides this;
+                // see `suggestedNextLineMinor`, which is tested.
                 lines.append(SplitLine(amount: suggestedAmount))
             } label: {
                 Label(

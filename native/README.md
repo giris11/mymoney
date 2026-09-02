@@ -55,6 +55,7 @@ No dependencies, so both work offline from a clean checkout.
 | `Domain/Budgets.swift` | period windows that tile the timeline, and spend against them |
 | `Reports/` | the six report aggregations, in base currency, transfers excluded |
 | `Import/` | CSV reading, per-file date and decimal detection, dedupe keys, the two MoneyWiz layouts |
+| `Schedule/` | standing arrangements: the occurrence grid (built on `Insights/Cadence.swift`, never a second copy of it), what is due, the below-zero projection, and the local reminder plan |
 | `Store/` | the SQLite ledger: a schema mirroring the model, money as INTEGER minor units that SQLite cannot turn into a float, tombstones on every deletable row, versioned migrations, and an atomic all-or-nothing restore |
 
 Each file's header comment explains why it is the way it is, including which
@@ -293,6 +294,131 @@ Two rules it is built around:
 * **Every figure comes from `Money`.** No `NumberFormatter` is constructed
   anywhere in the app target. `Formatting.swift` says so and explains why; a
   second formatter would be a second answer to "what is this amount".
+
+## Scheduled and recurring payments
+
+`Schedule/` plus `Store/LedgerStore+Schedules.swift`, and migration 4. A
+schedule is an amount, an account, a payee, a category, one of the six cadences
+and a start date, ending never, on a date, or after a count.
+
+**It is a plan, not money.** Nothing in `Schedule/` is in a balance, a report or
+a backup file. The only way one becomes money is `postScheduled`, which builds
+an ordinary `TransactionDraft` and hands it to `saveTransaction` — the same door
+Quick Add and Siri use, so it gets the same validation, the same
+currency-from-the-account rule, the same dedupe hash and the same local-edit
+count. There is no second writer.
+
+**One cadence arithmetic.** Every date comes from `Cadence.date(from:steps:)`,
+the function the recurrence detector already uses, and occurrence *n* is always
+measured from the ANCHOR rather than from occurrence *n−1*. That is what makes
+**monthly on the 31st the last day of every month** — 31 Jan, 28 Feb, 31 Mar —
+instead of a schedule that February permanently drags back to the 28th. A
+detected pattern can be turned into a schedule in one tap, and a test asserts
+the schedule's first date is the very date the insights screen predicted.
+
+**Entering is deliberate.** A due item opens a sheet showing exactly what will
+be written, with the amount and the date editable, and writes nothing until the
+button is pressed. Auto-post is per schedule, off by default, and **cannot reach
+back before the day it was switched on** — so turning it on for a schedule
+anchored in 2024 does not fill the register with two years of transactions. A
+run is capped and says what it held back, and what it entered is announced on
+the screen.
+
+**Nothing is lost and nothing is silently repeated.** Skipping is a recorded
+decision that can be taken back; a posting is a CLAIM about the book, checked
+against `live_transactions` on every read, so a transaction that was deleted —
+or wiped by a fresh import — makes its occurrence due again rather than leaving
+a hole nobody can see. Schedules are **not** in `tombstonedTables`, deliberately:
+an import replaces the book and must not sweep away the owner's own
+arrangements.
+
+**The warning is the point.** The upcoming screen projects each account forward
+from its balance *as at today* — the same `Balances.accountBalances`, fed only
+the transactions dated today or earlier — plus the transactions already entered
+for later dates, plus what is scheduled, and names the day and the payment that
+takes it below zero. Per account, in that account's own currency, so no exchange
+rate is involved; only current, savings and cash accounts warn, because a credit
+card and a loan live below zero by design. Worst measured read over the
+5,200-row demo book with forty schedules: **8.9 ms**.
+
+**Reminders are local.** `Schedule/DueReminders.swift` decides which days get a
+notification and what it says; `App/MyMoneyNative/DueNotifications.swift` hands
+that to iOS. One notification per day rather than one per payment (iOS keeps 64
+pending requests for the whole app and silently drops the rest), capped at half
+that budget, and **no figures and no names unless the owner switches the detail
+on** — a lock screen is a public surface.
+
+## The things only the native app can do
+
+Four capabilities that a browser cannot have, plus a search that had to be SQL.
+Each is small on purpose, and each says out loud what it does *not* do.
+
+**Face ID / Touch ID lock** — `Device/AppLockPolicy.swift` (the rules, tested)
+and `App/MyMoneyNative/AppLock.swift` (LocalAuthentication, and the screen).
+Locked on every launch; locked on return from the background after a grace
+period the owner chooses (default: one minute). `.deviceOwnerAuthentication`,
+so the device passcode is always behind the biometry. Every uncertainty locks —
+no reading of when the app left, a clock that appears to go backwards, an
+unrecognised failure. **It is a curtain, not a safe:** it draws a view over the
+app, stores no secret and encrypts nothing, and `AppLockSettings.honestyLine`
+says so on the settings screen with a test pinning the wording. Off by default,
+and it refuses to switch on until the device has proved once, in front of the
+owner, that it can authenticate.
+
+**Widgets** — `App/MyMoneyWidgets/`, reading one small JSON file the app
+publishes into an App Group container (`Device/LedgerSnapshot.swift`,
+`Device/SnapshotFile.swift`). The widget opens no database and computes
+nothing: every figure was worked out by `Dashboard.summary` while the app was
+running. Every family prints how old the figures are, and a snapshot it cannot
+read is "Open MyMoney once" rather than £0.00 — a zero on a home screen is a
+figure. The local-edit count travels with it.
+
+> **`MYMONEY_WIDGETS` is 0, and turning it on needs one thing done in Xcode.**
+> An App Group is a signing capability, and Xcode's automatic signing works out
+> what a target needs by reading *every* entitlements file that target can
+> resolve to, on any platform — so a group declared for the Mac alone makes an
+> iPhone device build fail with "Provisioning profile doesn't include the App
+> Groups capability". This machine's Xcode has no Apple ID signed in and cannot
+> create a profile that carries it, so the switch ships at 0: everything builds
+> and signs, the app publishes nothing, and the widget says to open the app.
+> To turn it on: **Signing & Capabilities → + App Groups →
+> `group.com.gs.MyMoneyNative`, on both targets**, then set `MYMONEY_WIDGETS`
+> to 1. No code changes. `MYMONEY_WIDGETS=1` on an `xcodebuild` command line is
+> enough for the simulator, which needs no profile.
+
+**App Intents / Siri / Shortcuts** — `App/MyMoneyNative/Intents.swift`. Adds a
+payment without opening the app, through `LedgerService` and therefore through
+`LedgerStore.saveTransaction`: the same validated, local-edit-counting
+transaction the Quick Add sheet uses. There is no second write path, and the
+intents live in the app target rather than an extension for exactly that reason
+— an extension would be a second process with a second SQLite connection. The
+one place a `Double` gets near money is the amount parameter, which the system
+types; `QuickEntry.minorUnits(spokenAmount:currency:)` converts it exactly or
+refuses it.
+
+**Share sheet and Files** — `Import/IncomingFile.swift` and
+`App/MyMoneyNative/IncomingDocument.swift`. A file arriving from another app is
+identified from its **bytes**, never its name: a backup called `.csv` still goes
+to `BackupImporter` with its manifest check intact. Arriving is not importing —
+the file lands on the Import screen with the ordinary confirmation, because an
+import replaces the copy on this device. A `.csv` is read and described and
+**not** written: there is no validated path from a statement's rows into the
+book yet, and half of one would be the second write path this app is built
+without.
+
+**Search** — `Domain/RegisterSearch.swift` and `Store/LedgerStore+Search.swift`.
+Payees, notes, amounts, categories (including the ones only on a split),
+accounts, tags and dates, over the whole register, in SQL. The small tables are
+resolved to id sets in Swift and handed to the database as `IN` lists, so the
+only per-row text work is the note; paging is the same keyset cursor as the
+ordinary register, so memory is one page whatever the book's size. Worst
+measured query over the 5,465-row demo book: **6.2 ms**. There is deliberately
+no FTS index — it would be a second copy of the book kept in step by triggers,
+and one that drifted would not look like a broken index, it would look like a
+transaction that is not there. And there is **no running balance down a search**:
+a balance is the account's figure minus every newer row, and a filtered list has
+gaps in it, so the screen says so instead of printing numbers that are not
+balances.
 
 ## What this package is not
 

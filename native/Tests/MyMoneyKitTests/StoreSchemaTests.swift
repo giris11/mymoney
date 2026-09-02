@@ -107,7 +107,12 @@ struct StoreSchemaTests {
     func tombstonesAndViews() throws {
         let scratch = try ScratchDirectory()
         let store = try scratch.store()
-        for table in StoreSchema.tombstonedTables {
+        // The ledger's tables AND this app's own (schedules, and the decisions
+        // taken about their occurrences). The second group is deliberately not
+        // in `tombstonedTables` -- an import must not wipe it -- but a row a
+        // person can delete carries a tombstone wherever it lives, and the
+        // live_ view is what makes forgetting the clause impossible.
+        for table in StoreSchema.allTombstonedTables {
             let column = try store.connection.scalarInt(
                 "SELECT count(*) FROM pragma_table_info('\(table)') WHERE name = 'deleted_at'"
             )

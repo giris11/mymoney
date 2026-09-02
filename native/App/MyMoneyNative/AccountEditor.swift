@@ -168,30 +168,29 @@ struct AccountEditor: View {
                     Section { RefusalNotice(refusal: refusal) }
                 }
 
-                if let existing {
+                // NO DISABLED DELETE BUTTON ANY MORE, and that is the better
+                // screen rather than a compromise. The delete lives in the
+                // bottom bar now, and a greyed-out control down there with the
+                // sentence explaining it stranded up here would be a question
+                // and its answer at opposite ends of the screen. So when the
+                // account cannot be deleted there is no button at all -- only
+                // the sentence saying why, and what to do instead.
+                if let existing, existing.txCount > 0 {
                     Section {
-                        Button(role: .destructive) { confirmingDelete = true } label: {
-                            Label("Delete this account", systemImage: "trash")
-                        }
-                        .disabled(existing.txCount > 0)
-                        .confirmationDialog(
-                            "Delete \u{201C}\(existing.account.name)\u{201D}?",
-                            isPresented: $confirmingDelete, titleVisibility: .visible
-                        ) {
-                            Button("Delete", role: .destructive) {
-                                Task { await delete(existing.account.id) }
-                            }
-                            Button("Keep it", role: .cancel) {}
-                        }
-                    } footer: {
-                        if existing.txCount > 0 {
-                            Text(
-                                "This account has \(Display.count(existing.txCount, "transaction")) "
-                                    + "in it, so it cannot be deleted. Archive it instead \u{2014} "
-                                    + "an archived account keeps its history and its balance and "
-                                    + "drops out of your totals."
-                            )
-                        }
+                        // A row rather than a section footer: a `Section` with
+                        // no rows in it is free to draw no footer either, and
+                        // this sentence is the only thing standing between
+                        // "why is there no delete" and a support question to
+                        // nobody.
+                        Text(
+                            "This account has \(Display.count(existing.txCount, "transaction")) "
+                                + "in it, so it cannot be deleted. Archive it instead \u{2014} "
+                                + "an archived account keeps its history and its balance and "
+                                + "drops out of your totals."
+                        )
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                     }
                 }
             }
@@ -199,13 +198,42 @@ struct AccountEditor: View {
             #if os(iOS)
                 .navigationBarTitleDisplayMode(.inline)
             #endif
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") { Task { await save() } }.disabled(!canSave)
+            .safeAreaInset(edge: .bottom) {
+                SaveBar(
+                    title: "Save",
+                    isEnabled: canSave,
+                    probe: "Account editor \u{2014} Save",
+                    save: { Task { await save() } },
+                    delete: canDelete
+                        ? (title: "Delete this account", run: { confirmingDelete = true })
+                        : nil
+                )
+            }
+            .confirmationDialog(
+                "Delete \u{201C}\(existing?.account.name ?? "")\u{201D}?",
+                isPresented: $confirmingDelete, titleVisibility: .visible
+            ) {
+                if let existing {
+                    Button("Delete", role: .destructive) {
+                        Task { await delete(existing.account.id) }
+                    }
                 }
+                Button("Keep it", role: .cancel) {}
+            } message: {
+                Text("Only this device is changed. Your web app is untouched.")
+            }
+            .toolbar {
+                // Cancel stays top-left. See `ActionBar`.
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
             }
         }
+    }
+
+    /// An account can be deleted only while nothing has been recorded in it.
+    /// The store enforces this; the screen simply does not offer the button.
+    private var canDelete: Bool {
+        guard let existing else { return false }
+        return existing.txCount == 0
     }
 
     private var colourPalette: some View {
@@ -350,21 +378,32 @@ struct AccountGroupsView: View {
                 )
             }
 
-            Section("Add a group") {
-                HStack {
-                    TextField("Name", text: $newName)
-                    Button("Add") { Task { await add() } }
-                        .disabled(Names.isBlank(newName))
+        }
+        .navigationTitle("Account groups")
+        // ADDING A GROUP IS A FIELD AND A BUTTON, AND BOTH BELONG DOWN HERE.
+        // In the list it was a section whose position depended on how many
+        // groups there already were, and typing into it put the keyboard over
+        // the button that submits it. As a bottom bar the pair is always in the
+        // same place, and the system lifts both above the keyboard together.
+        .safeAreaInset(edge: .bottom) {
+            ActionBar {
+                HStack(spacing: 12) {
+                    TextField("New group name", text: $newName)
+                        .textFieldStyle(.roundedBorder)
+                    PrimaryAction(title: "Add", isEnabled: !Names.isBlank(newName)) {
+                        Task { await add() }
+                    }
+                    .frame(maxWidth: 120)
+                    .reachProbe("Account groups \u{2014} Add")
                 }
             }
         }
-        .navigationTitle("Account groups")
-        .alert("Rename group", isPresented: Binding(
-            get: { renaming != nil }, set: { if !$0 { renaming = nil } }
-        )) {
-            TextField("Name", text: $renameText)
-            Button("Save") { Task { await rename() } }
-            Button("Cancel", role: .cancel) { renaming = nil }
+        // RENAME IS A SHEET RATHER THAN AN ALERT. An alert draws itself across
+        // the middle of the screen, which puts its Save at about half height --
+        // the same reach problem as a navigation bar, in the other direction.
+        // A short sheet sits on the bottom edge with its Save in the bar.
+        .sheet(item: $renaming) { group in
+            RenameGroupSheet(name: $renameText, save: { Task { await rename(group) } })
         }
     }
 
@@ -378,8 +417,7 @@ struct AccountGroupsView: View {
         }
     }
 
-    @MainActor private func rename() async {
-        guard let group = renaming else { return }
+    @MainActor private func rename(_ group: AccountGroup) async {
         renaming = nil
         let outcome = await app.save(AccountGroupDraft(id: group.id, name: renameText))
         refusal = outcome.refusal
@@ -398,5 +436,48 @@ struct AccountGroupsView: View {
                 sortOrder: max(0, group.sortOrder + (direction == .up ? -1 : 1))
             )
         )).refusal
+    }
+}
+
+/// Renaming a group: a short sheet, with the Save where the thumb is.
+///
+/// It replaces an `.alert` carrying a text field. The alert worked, and its
+/// buttons sat halfway down a 956pt screen -- past the fold for a thumb, for a
+/// rename that is one word and a tap. A sheet at a fixed small height puts the
+/// field and the button on the bottom edge, and the keyboard pushes the button
+/// up rather than over it.
+private struct RenameGroupSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @Binding var name: String
+    let save: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                TextField("Name", text: $name)
+            }
+            .navigationTitle("Rename group")
+            #if os(iOS)
+                .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .safeAreaInset(edge: .bottom) {
+                ActionBar {
+                    PrimaryAction(title: "Save", isEnabled: !Names.isBlank(name)) {
+                        save()
+                        dismiss()
+                    }
+                    .reachProbe("Rename group \u{2014} Save")
+                }
+            }
+            .toolbar {
+                // Cancel stays top-left. See `ActionBar`.
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+        }
+        #if os(iOS)
+            .presentationDetents([.height(260)])
+        #endif
     }
 }

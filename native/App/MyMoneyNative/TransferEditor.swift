@@ -141,37 +141,42 @@ struct TransferEditor: View {
                     Section { RefusalNotice(refusal: refusal) }
                 }
 
-                if let legId {
-                    Section {
-                        Button(role: .destructive) { confirmingDelete = true } label: {
-                            Label("Delete this transfer", systemImage: "trash")
-                        }
-                        .confirmationDialog(
-                            "Delete this transfer?", isPresented: $confirmingDelete,
-                            titleVisibility: .visible
-                        ) {
-                            Button("Delete both halves", role: .destructive) {
-                                Task { await delete(legId) }
-                            }
-                            Button("Keep it", role: .cancel) {}
-                        } message: {
-                            Text(
-                                "Both halves go together \u{2014} half a transfer is money that "
-                                    + "appears to have vanished. You will be offered an undo."
-                            )
-                        }
-                    }
-                }
             }
             .navigationTitle(editingGroupId == nil ? "New transfer" : "Edit transfer")
             #if os(iOS)
                 .navigationBarTitleDisplayMode(.inline)
             #endif
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") { Task { await save() } }.disabled(!canSave)
+            .safeAreaInset(edge: .bottom) {
+                SaveBar(
+                    title: "Save",
+                    isEnabled: canSave,
+                    probe: "Transfer editor \u{2014} Save",
+                    save: { Task { await save() } },
+                    delete: legId == nil
+                        ? nil
+                        : (title: "Delete this transfer", run: { confirmingDelete = true })
+                )
+            }
+            .confirmationDialog(
+                "Delete this transfer?", isPresented: $confirmingDelete,
+                titleVisibility: .visible
+            ) {
+                if let legId {
+                    Button("Delete both halves", role: .destructive) {
+                        Task { await delete(legId) }
+                    }
                 }
+                Button("Keep it", role: .cancel) {}
+            } message: {
+                Text(
+                    "Both halves go together \u{2014} half a transfer is money that appears to "
+                        + "have vanished. You will be offered an undo, and only this device is "
+                        + "changed \u{2014} your web app is untouched."
+                )
+            }
+            .toolbar {
+                // Cancel stays top-left. See `ActionBar`.
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
             }
         }
     }

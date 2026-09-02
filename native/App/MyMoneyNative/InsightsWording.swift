@@ -91,8 +91,19 @@ enum InsightsWording {
     }
 
     /// The counts, and the yearly figure, in the smallest type on the row.
+    ///
+    /// THE COUNT SAYS "SO FAR" AND THAT WORD IS LOAD-BEARING. This line used to
+    /// read "24 payments \u{00B7} about £528.00 a year", which puts two numbers
+    /// side by side that mean different things: 24 is how many payments have
+    /// been seen, 12 is how many there are in a year. Next to "a year", the
+    /// first reads as the rate behind the second -- and multiplying it out gives
+    /// twice the annual figure, so a reader checking the arithmetic would
+    /// conclude the app was wrong about their money. The detail screen prints
+    /// the multiplication in full and cannot be misread; this row is a summary
+    /// and has no room for it, so the count names itself instead. The phrase is
+    /// `SeriesEvidence.observedPhrase`, in the kit, with a test on it.
     static func evidenceLine(_ series: RecurringSeries) -> String {
-        var parts: [String] = ["\(Display.count(series.evidence.matched, "payment"))"]
+        var parts: [String] = [series.evidence.observedPhrase]
         if series.evidence.missed > 0 {
             parts.append("\(series.evidence.missed) missed")
         }

@@ -31,7 +31,7 @@ extension LedgerStore {
     /// interpolated; the TABLE name is checked against the schema's own list,
     /// because SQLite cannot bind one.
     func liveRowExists(_ table: String, id: String) throws -> Bool {
-        guard StoreSchema.tombstonedTables.contains(table) else {
+        guard StoreSchema.allTombstonedTables.contains(table) else {
             throw StoreError.corrupt("\"\(table)\" has no live view")
         }
         let statement = try connection.prepare("SELECT 1 FROM live_\(table) WHERE id = ?")

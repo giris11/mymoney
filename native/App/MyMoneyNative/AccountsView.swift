@@ -46,6 +46,22 @@ struct AccountsView<ImportLink: View>: View {
 
     private var netWorth: NetWorth { summary.snapshot.netWorth }
 
+    /// How many payments are waiting or due soon. Read from the model rather
+    /// than counted here -- it comes from the same `Upcoming.plan` the screen
+    /// itself draws, so the badge cannot disagree with what is behind it.
+    private var dueBadge: Int { app.dueCount + app.overdueCount }
+    private var overdueCount: Int { app.overdueCount }
+
+    private var scheduledAccessibilityLabel: String {
+        guard dueBadge > 0 else { return "Scheduled payments" }
+        if overdueCount > 0 {
+            return
+                "Scheduled payments, \(Display.count(dueBadge, "payment")) waiting, "
+                + "\(overdueCount) of them overdue"
+        }
+        return "Scheduled payments, \(Display.count(dueBadge, "payment")) due"
+    }
+
     /// Visible (non-archived) accounts, grouped and ordered exactly as the web
     /// app's sidebar groups and orders them: groups in `sortOrder`, then the
     /// ungrouped ones, and within a group by the account's own sort order.
@@ -103,6 +119,22 @@ struct AccountsView<ImportLink: View>: View {
                 NavigationLink(value: Route.budgets) {
                     Label("Budgets", systemImage: "chart.pie")
                 }
+                // WHAT IS DUE, WITH A COUNT ON IT. The count is the reason this
+                // row is here rather than buried in a menu: a scheduled payment
+                // nobody looks at is a scheduled payment that does not happen,
+                // and the badge is what makes the screen worth opening.
+                NavigationLink(value: Route.scheduled) {
+                    HStack {
+                        Label("Scheduled", systemImage: "calendar.badge.clock")
+                        Spacer()
+                        if dueBadge > 0 {
+                            Text("\(dueBadge)")
+                                .monospacedDigit()
+                                .foregroundStyle(overdueCount > 0 ? Color.orange : .secondary)
+                        }
+                    }
+                }
+                .accessibilityLabel(scheduledAccessibilityLabel)
                 NavigationLink(value: Route.reports) {
                     Label("Reports", systemImage: "chart.xyaxis.line")
                 }
@@ -180,6 +212,9 @@ struct AccountsView<ImportLink: View>: View {
 
             Section {
                 importLink()
+                NavigationLink(value: Route.settings) {
+                    Label("Settings\u{2026}", systemImage: "gearshape")
+                }
             }
 
             Section {

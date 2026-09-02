@@ -67,6 +67,24 @@ struct BarList: View {
     /// Named for a screen reader, so the list announces what it is a list of.
     let label: String
 
+    /// Which of the two label layouts to use.
+    ///
+    /// THIS USED TO BE `ViewThatFits`, AND THAT WAS THE BUG. `ViewThatFits`
+    /// measures a candidate's IDEAL size, and the ideal width of a `Text` is the
+    /// width of the whole string on one line -- `lineLimit(1)` does not reduce
+    /// it, it only decides what happens afterwards. So a long payee name made
+    /// the horizontal candidate "not fit" at a perfectly ordinary text size, and
+    /// the row silently fell back to the stacked layout: the amount dropped onto
+    /// a second line, and one row in a list of otherwise-aligned figures was
+    /// twice as tall with its number in a different place.
+    ///
+    /// The layout is chosen by the thing it is actually for -- the text size --
+    /// and the name truncates instead. On a bar chart the name is the label and
+    /// the amount is the figure; when one of them has to give, it is the label,
+    /// and the whole name is still in the accessibility label and on the
+    /// transaction itself.
+    @Environment(\.dynamicTypeSize) private var typeSize
+
     var body: some View {
         VStack(spacing: 0) {
             ForEach(items) { item in
@@ -86,15 +104,7 @@ struct BarList: View {
         VStack(alignment: .leading, spacing: 5) {
             // THE LABEL LINE. Name and value on the mark; this is the whole
             // point of the component.
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 8) {
-                    dot(item)
-                    nameText(item)
-                    Spacer(minLength: 8)
-                    shareText(item)
-                    valueText(item)
-                    if drillable { chevron }
-                }
+            if typeSize.isAccessibilitySize {
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 8) {
                         dot(item)
@@ -106,6 +116,18 @@ struct BarList: View {
                         shareText(item)
                         valueText(item)
                     }
+                }
+            } else {
+                HStack(spacing: 8) {
+                    dot(item)
+                    nameText(item)
+                    Spacer(minLength: 8)
+                    // THE FIGURES KEEP THEIR WIDTH; the name yields. Without
+                    // these priorities a long name compresses the amount
+                    // instead, which is the same defect one step further on.
+                    shareText(item).layoutPriority(1)
+                    valueText(item).layoutPriority(1)
+                    if drillable { chevron }
                 }
             }
             ProportionBar(fraction: item.fraction, colourHex: item.colourHex)
@@ -133,13 +155,20 @@ struct BarList: View {
             Text(item.name)
                 .font(.callout)
                 .lineLimit(1)
+                .truncationMode(.tail)
             if let chip = item.chip {
+                // The chip is never truncated and never dropped: it is the word
+                // that explains why the bar beside it is empty, and half of
+                // "net refund" would be worse than none of it.
                 Text(chip)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
                     .padding(.horizontal, 5)
                     .padding(.vertical, 1)
                     .background(.quaternary, in: Capsule())
+                    .fixedSize()
+                    .layoutPriority(1)
             }
         }
     }
@@ -223,25 +252,52 @@ struct MonthFlowRow: View {
             Text(monthLabel(month))
                 .font(.footnote.weight(.medium))
                 .foregroundStyle(.secondary)
-            bar(label: "In", minor: incomeMinor, colour: .green)
-            bar(label: "Out", minor: expenseMinor, colour: .red)
+            bar(label: "In", minor: incomeMinor, colour: .green, chip: FlowWords.incomeChip(incomeMinor))
+            bar(label: "Out", minor: expenseMinor, colour: .red, chip: FlowWords.spendChip(expenseMinor))
         }
         .padding(.vertical, 6)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(monthLabel(month))
-        .accessibilityValue(
-            "In \(Display.moneySpoken(incomeMinor, currency)), "
-                + "out \(Display.moneySpoken(expenseMinor, currency))"
-        )
+        .accessibilityValue(spoken)
     }
 
-    private func bar(label: String, minor: Int64, colour: Color) -> some View {
+    /// THE SAME FACT THE CHIP CARRIES, SAID OUT LOUD. A screen reader gets no
+    /// bar at all, so "out minus five thousand four hundred" with nothing after
+    /// it is the version of the blank grey bar that a blind reader is left with.
+    private var spoken: String {
+        var parts = ["In \(Display.moneySpoken(incomeMinor, currency))"]
+        if let chip = FlowWords.incomeChip(incomeMinor) { parts.append(chip) }
+        parts.append("out \(Display.moneySpoken(expenseMinor, currency))")
+        if let chip = FlowWords.spendChip(expenseMinor) { parts.append(chip) }
+        return parts.joined(separator: ", ")
+    }
+
+    /// One series' bar.
+    ///
+    /// A NEGATIVE FIGURE DRAWS NO BAR AND NEEDS A WORD. There is no length to
+    /// draw for a month whose refunds beat its spending, and a real figure
+    /// beside an empty grey track reads as missing data. The by-category and
+    /// by-tag reports have labelled exactly this condition with a "net refund"
+    /// chip since they were written; this row printed nothing, which made one
+    /// fact look like three different things depending on which report you were
+    /// reading. The word comes from `FlowWords`, so it is now literally the same
+    /// string.
+    private func bar(label: String, minor: Int64, colour: Color, chip: String?) -> some View {
         HStack(spacing: 8) {
             // THE WORD, not the colour, is what says which series this is.
             Text(label)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .frame(width: 26, alignment: .leading)
+            if let chip {
+                Text(chip)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1)
+                    .background(.quaternary, in: Capsule())
+            }
             GeometryReader { geometry in
                 let fraction = scaleMinor > 0 ? Double(minor) / Double(scaleMinor) : 0
                 ZStack(alignment: .leading) {
@@ -345,6 +401,29 @@ struct NetWorthChart: View {
     private var lowest: Int64 { values.min() ?? 0 }
     private var highest: Int64 { values.max() ?? 0 }
 
+    /// The band at the top of the plot that the two end labels occupy, so the
+    /// LINE is never drawn underneath them.
+    ///
+    /// It used to be a flat 18 points, and the labels are two lines of text
+    /// about 28 points tall: whenever the series ended high -- which it does in
+    /// a book that is growing -- the date under the right-hand figure sat
+    /// directly on the line it was labelling. Two marks in the same pixels, one
+    /// of them the chart's own data.
+    ///
+    /// `@ScaledMetric` rather than a constant because the labels are text: at an
+    /// accessibility size they are three times as tall, and a fixed reserve
+    /// would put the overlap straight back for the readers least able to pick it
+    /// apart.
+    @ScaledMetric(relativeTo: .caption) private var labelReserve: CGFloat = 34
+    /// Room under the line for the last point's dot.
+    private let bottomInset: CGFloat = 16
+
+    /// The height actually drawn: what was asked for, unless the labels would
+    /// leave the line no room to move in. At the largest text sizes the reserve
+    /// alone is more than a 132pt chart, and a line squeezed into an 11pt band
+    /// is a flat line that is not flat.
+    private var drawnHeight: CGFloat { max(height, labelReserve + bottomInset + 64) }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             if points.count >= 2 {
@@ -367,10 +446,11 @@ struct NetWorthChart: View {
     /// fill and the dots.
     private func positions(in size: CGSize) -> [CGPoint] {
         let span = max(1, highest - lowest)
-        // Inset so the two end labels have somewhere to sit without being
-        // clipped by the edge of the card.
-        let top: CGFloat = 18
-        let bottom: CGFloat = 16
+        // Inset so the two end labels have somewhere to sit -- see
+        // `labelReserve`. The top inset is the labels' own height, not a guess
+        // at it, so the line cannot reach the band they are drawn in.
+        let top = labelReserve
+        let bottom = bottomInset
         let plot = max(1, size.height - top - bottom)
         return values.indices.map { index in
             let x = values.count == 1
@@ -431,7 +511,7 @@ struct NetWorthChart: View {
                 }
             }
         }
-        .frame(height: height)
+        .frame(height: drawnHeight)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Net worth over time")
         .accessibilityValue(accessibilitySentence)
@@ -630,16 +710,15 @@ func monthLabel(_ month: String) -> String {
 
 /// The word a NEGATIVE spend row needs.
 ///
-/// `spendingByCategory` and its siblings drop zero rows and keep negative ones,
-/// because a category whose refunds beat its spending this period is a real
-/// thing that happened and hiding it would make the rows stop adding up to the
-/// total. But a negative row draws no bar -- there is no length to draw -- and
-/// a row with a figure and an empty bar reads as missing data.
-///
-/// So it gets a word instead. Seen on a real screen: a month where "Food"
-/// showed -£7,362.43 against a blank bar and nothing said why.
+/// THIS IS A FORWARDER ON PURPOSE. The word itself now lives in
+/// `MyMoneyKit.FlowWords`, because it is not the property of this file: the
+/// by-category, by-payee and by-tag lists here, the month rows in "Income vs
+/// expense", and the dashboard's month card all describe the same condition, and
+/// while each decided its own wording they described it in three different ways
+/// -- a chip, silence, and a red figure contradicting the sentence under it.
+/// There is one string now, with a test on it.
 func spendChip(_ spentMinor: Int64) -> String? {
-    spentMinor < 0 ? "net refund" : nil
+    FlowWords.spendChip(spentMinor)
 }
 
 /// A share of a total, rendered as the web app renders it: whole percents from

@@ -1,0 +1,346 @@
+// The three things this app can be told to do differently, and what each of
+// them actually does.
+//
+// EVERY SECTION HERE SAYS WHAT IT DOES *NOT* DO. That is the pattern the rest
+// of the app already follows -- the copy banner counts rather than warns, the
+// import screen lists what was checked rather than saying "verified" -- and it
+// matters most on this screen, because these three features are the ones a
+// person is most likely to assume more of than they deliver:
+//
+//   * the lock hides the screen; it does not encrypt the book;
+//   * the widget shows figures from the last time the app ran; it is not live;
+//   * Siri writes to the copy on this device, exactly like every other button
+//     in the app, and never to the web app.
+import AppIntents
+import MyMoneyKit
+import SwiftUI
+
+struct SettingsView: View {
+    @Environment(AppModel.self) private var app
+    let lock: AppLockModel
+
+    @State private var enabling = false
+    @State private var lastPublished: SnapshotSummary?
+
+    var body: some View {
+        List {
+            lockSection
+            remindersSection
+            widgetSection
+            siriSection
+        }
+        .navigationTitle("Settings")
+        .task {
+            lastPublished = SnapshotSummary.read()
+            await app.reminders.refreshPendingCount()
+        }
+        .onChange(of: app.revision) { _, _ in lastPublished = SnapshotSummary.read() }
+    }
+
+    // MARK: - Lock
+
+    private var lockSection: some View {
+        Section {
+            Toggle(
+                isOn: Binding(
+                    get: { lock.isEnabled },
+                    set: { wanted in
+                        if wanted {
+                            enabling = true
+                            Task {
+                                _ = await lock.enable()
+                                enabling = false
+                            }
+                        } else {
+                            lock.disable()
+                        }
+                    }
+                )
+            ) {
+                Label("Lock this app", systemImage: "lock")
+            }
+            .disabled(enabling)
+
+            if lock.isEnabled {
+                Picker(selection: Binding(get: { lock.grace }, set: { lock.setGrace($0) })) {
+                    ForEach(AppLockGrace.allCases) { grace in
+                        Text(grace.label).tag(grace)
+                    }
+                } label: {
+                    Label("Lock when I leave", systemImage: "clock")
+                }
+                Text(lock.grace.detail)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if let message = lock.message, !lock.isEnabled {
+                Label(message, systemImage: "exclamationmark.triangle")
+                    .font(.footnote)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        } header: {
+            Text("Locking")
+        } footer: {
+            VStack(alignment: .leading, spacing: 8) {
+                // THE SENTENCE THAT MUST TRAVEL WITH THE FEATURE. It comes from
+                // the kit, where a test asserts it still says "does not
+                // encrypt" -- so it cannot be softened into a promise by a
+                // later edit of this view.
+                Text(AppLockSettings.honestyLine)
+                Text(
+                    "It always opens on launch, and it always offers your passcode when Face ID "
+                        + "will not do. If neither works, it stays shut."
+                )
+                Text(lock.biometryDescription)
+                    .foregroundStyle(.secondary)
+            }
+            .font(.footnote)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    // MARK: - Widgets
+
+    private var widgetSection: some View {
+        Section {
+            if let published = lastPublished {
+                FigureRow(label: "Last published", value: published.freshness.phrase)
+                FigureRow(
+                    label: "Net worth on the widget",
+                    value: Display.money(published.netWorthMinor, published.baseCurrency)
+                )
+                if published.freshness.isStale {
+                    Label(
+                        "The widget is showing figures from \(published.freshness.phrase). "
+                            + "Opening the app brings it up to date.",
+                        systemImage: "clock.arrow.circlepath"
+                    )
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+            } else {
+                Label(
+                    SharedContainer.isAvailable
+                        ? "Nothing published yet. Import a backup and it will appear."
+                        : "Not available in this build.",
+                    systemImage: "square.grid.2x2"
+                )
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+        } header: {
+            Text("Widgets")
+        } footer: {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(SharedContainer.explanation)
+                Text(
+                    "A widget is never live. It shows what the book said when you last opened "
+                        + "the app, and it prints how long ago that was underneath every figure."
+                )
+            }
+            .font(.footnote)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    // MARK: - Reminders
+
+    /// Local notifications for what is due. Off until asked for, like the lock.
+    private var remindersSection: some View {
+        Section {
+            Toggle(
+                isOn: Binding(
+                    get: { app.reminders.settings.enabled },
+                    set: { wanted in
+                        Task {
+                            if wanted {
+                                // The switch moves only if iOS grants
+                                // permission -- a setting that says it is on
+                                // while doing nothing is worse than one that is
+                                // off.
+                                if await app.reminders.enable() {
+                                    await app.remindersSettingsChanged()
+                                }
+                            } else {
+                                app.reminders.disable()
+                            }
+                        }
+                    }
+                )
+            ) {
+                Label("Remind me what is due", systemImage: "bell")
+            }
+            .disabled(app.reminders.isWorking)
+
+            if app.reminders.settings.enabled {
+                Picker(selection: leadBinding) {
+                    Text("On the day").tag(0)
+                    Text("The day before").tag(1)
+                    Text("Two days before").tag(2)
+                    Text("Three days before").tag(3)
+                    Text("A week before").tag(7)
+                } label: {
+                    Label("When", systemImage: "calendar")
+                }
+                DatePicker(
+                    selection: timeBinding, displayedComponents: .hourAndMinute
+                ) {
+                    Label("At", systemImage: "clock")
+                }
+                Toggle(isOn: detailBinding) {
+                    Label("Show what is due", systemImage: "eye")
+                }
+                FigureRow(
+                    label: "Reminders set",
+                    value: Display.grouped(app.reminders.pendingCount)
+                )
+            }
+
+            if let message = app.reminders.message {
+                Label(message, systemImage: "exclamationmark.triangle")
+                    .font(.footnote)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        } header: {
+            Text("Reminders")
+        } footer: {
+            VStack(alignment: .leading, spacing: 8) {
+                // WHAT IT IS NOT, first. These are set by the app while it is
+                // running, on this phone, from the book this phone holds.
+                Text(
+                    "These are set by this app on this phone. There is no server: nothing about "
+                        + "your money leaves the device, and a payment you enter in your web app "
+                        + "will not stop a reminder here until you open this app again."
+                )
+                Text(
+                    "One notification per day that has something due, not one per payment "
+                        + "\u{2014} iOS keeps a limited number and silently drops the rest."
+                )
+                Text(
+                    app.reminders.settings.showsDetail
+                        ? "Notifications will name the schedules and their amounts. That text is "
+                            + "drawn on your lock screen, where other people can see it."
+                        : "Notifications say how many are due and nothing else. A lock screen is "
+                            + "a public surface, so no names and no figures unless you ask."
+                )
+                .foregroundStyle(.secondary)
+            }
+            .font(.footnote)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var leadBinding: Binding<Int> {
+        Binding(
+            get: { app.reminders.settings.leadDays },
+            set: { days in
+                app.reminders.setLeadDays(days)
+                Task { await app.remindersSettingsChanged() }
+            }
+        )
+    }
+
+    private var detailBinding: Binding<Bool> {
+        Binding(
+            get: { app.reminders.settings.showsDetail },
+            set: { shows in
+                app.reminders.setShowsDetail(shows)
+                Task { await app.remindersSettingsChanged() }
+            }
+        )
+    }
+
+    /// The reminder time, as a `Date` for the picker and as two integers
+    /// everywhere else.
+    ///
+    /// A REMINDER IS A WALL-CLOCK EVENT, not an instant, so what is stored is
+    /// an hour and a minute. The `Date` exists for the picker's sake alone and
+    /// is thrown away -- the same trick `CalendarDateField` plays, and for the
+    /// same reason.
+    private var timeBinding: Binding<Date> {
+        Binding(
+            get: {
+                var components = DateComponents()
+                components.year = 2000
+                components.month = 1
+                components.day = 1
+                components.hour = app.reminders.settings.hour
+                components.minute = app.reminders.settings.minute
+                return Calendar.current.date(from: components) ?? Date()
+            },
+            set: { date in
+                let parts = Calendar.current.dateComponents([.hour, .minute], from: date)
+                app.reminders.setTime(hour: parts.hour ?? 8, minute: parts.minute ?? 0)
+                Task { await app.remindersSettingsChanged() }
+            }
+        )
+    }
+
+    // MARK: - Siri
+
+    private var siriSection: some View {
+        Section {
+            // `SiriTipView` is iOS-only. On the Mac the same two phrases are
+            // just written out, rather than the section quietly disappearing
+            // and leaving a feature nobody knows exists.
+            #if os(iOS)
+                SiriTipView(intent: AddExpenseIntent())
+                    .padding(.vertical, 4)
+                SiriTipView(intent: NetWorthIntent())
+                    .padding(.vertical, 4)
+            #else
+                Label("\u{201C}Add a four pound expense to MyMoney\u{201D}", systemImage: "mic")
+                Label("\u{201C}What am I worth in MyMoney\u{201D}", systemImage: "mic")
+            #endif
+        } header: {
+            Text("Siri and Shortcuts")
+        } footer: {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(
+                    "\u{201C}Add a four pound expense to MyMoney\u{201D} writes a payment without "
+                        + "opening the app. It goes to the account you used last, under the "
+                        + "category that payee usually goes under, and Siri reads back which "
+                        + "account it landed in."
+                )
+                Text(
+                    "A spoken phrase can carry one figure, so to say the payee in the same breath "
+                        + "build a shortcut in the Shortcuts app with the payee filled in \u{2014} "
+                        + "once, and then it is one phrase for ever."
+                )
+                Text(
+                    "It writes to the copy on this device and counts as one more change your web "
+                        + "app does not have, exactly like every button in the app."
+                )
+            }
+            .font(.footnote)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
+
+/// What the settings screen shows about the published snapshot, read straight
+/// from the file the widget reads -- so this screen cannot claim something was
+/// published that the widget cannot see.
+struct SnapshotSummary {
+    let netWorthMinor: Int64
+    let baseCurrency: String
+    let freshness: SnapshotFreshness
+
+    static func read() -> SnapshotSummary? {
+        guard let directory = SharedContainer.url,
+            let snapshot = SnapshotFile.read(from: directory),
+            let freshness = SnapshotFreshness.of(asOf: snapshot.asOf, now: Date())
+        else { return nil }
+        return SnapshotSummary(
+            netWorthMinor: snapshot.netWorthMinor,
+            baseCurrency: snapshot.baseCurrency,
+            freshness: freshness
+        )
+    }
+}

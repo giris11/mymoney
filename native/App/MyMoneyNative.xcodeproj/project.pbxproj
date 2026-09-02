@@ -1,4 +1,4 @@
-// !$*UTF8*$!
+/* !$*UTF8*$! */
 {
 	archiveVersion = 1;
 	classes = {
@@ -8,15 +8,33 @@
 
 /* Begin PBXBuildFile section */
 		9F0000000000000000000014 /* MyMoneyKit in Frameworks */ = {isa = PBXBuildFile; productRef = 9F0000000000000000000013 /* MyMoneyKit */; };
+		9F000000000000000000002A /* MyMoneyKit in Frameworks */ = {isa = PBXBuildFile; productRef = 9F0000000000000000000029 /* MyMoneyKit */; };
+		9F000000000000000000002C /* MyMoneyWidgets.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 9F0000000000000000000020 /* MyMoneyWidgets.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		9F000000000000000000002D /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 9F0000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 9F0000000000000000000022;
+			remoteInfo = MyMoneyWidgets;
+		};
+/* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
 		9F0000000000000000000007 /* MyMoneyNative.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MyMoneyNative.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		9F0000000000000000000008 /* MyMoneyNative.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = MyMoneyNative.entitlements; sourceTree = "<group>"; };
+		9F0000000000000000000020 /* MyMoneyWidgets.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = MyMoneyWidgets.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		9F000000000000000000002F /* AppGroup.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = AppGroup.entitlements; sourceTree = "<group>"; };
+		9F0000000000000000000030 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		9F0000000000000000000031 /* Widgets-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = "Widgets-Info.plist"; sourceTree = "<group>"; };
+		9F0000000000000000000032 /* MyMoneyWidgets.macOS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = MyMoneyWidgets.macOS.entitlements; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		9F0000000000000000000006 /* MyMoneyNative */ = {isa = PBXFileSystemSynchronizedRootGroup; path = MyMoneyNative; sourceTree = "<group>"; };
+		9F0000000000000000000021 /* MyMoneyWidgets */ = {isa = PBXFileSystemSynchronizedRootGroup; path = MyMoneyWidgets; sourceTree = "<group>"; };
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -28,6 +46,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		9F0000000000000000000024 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				9F000000000000000000002A /* MyMoneyKit in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -35,6 +61,7 @@
 			isa = PBXGroup;
 			children = (
 				9F0000000000000000000006 /* MyMoneyNative */,
+				9F0000000000000000000021 /* MyMoneyWidgets */,
 				9F0000000000000000000005 /* Support */,
 				9F0000000000000000000004 /* Products */,
 			);
@@ -44,6 +71,7 @@
 			isa = PBXGroup;
 			children = (
 				9F0000000000000000000007 /* MyMoneyNative.app */,
+				9F0000000000000000000020 /* MyMoneyWidgets.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -51,7 +79,11 @@
 		9F0000000000000000000005 /* Support */ = {
 			isa = PBXGroup;
 			children = (
+				9F0000000000000000000030 /* Info.plist */,
+				9F0000000000000000000031 /* Widgets-Info.plist */,
+				9F000000000000000000002F /* AppGroup.entitlements */,
 				9F0000000000000000000008 /* MyMoneyNative.entitlements */,
+				9F0000000000000000000032 /* MyMoneyWidgets.macOS.entitlements */,
 			);
 			path = Support;
 			sourceTree = "<group>";
@@ -66,10 +98,12 @@
 				9F0000000000000000000009 /* Sources */,
 				9F000000000000000000000A /* Frameworks */,
 				9F000000000000000000000B /* Resources */,
+				9F000000000000000000002B /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				9F000000000000000000002E /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				9F0000000000000000000006 /* MyMoneyNative */,
@@ -82,6 +116,29 @@
 			productReference = 9F0000000000000000000007 /* MyMoneyNative.app */;
 			productType = "com.apple.product-type.application";
 		};
+		9F0000000000000000000022 /* MyMoneyWidgets */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 9F0000000000000000000026 /* Build configuration list for PBXNativeTarget "MyMoneyWidgets" */;
+			buildPhases = (
+				9F0000000000000000000023 /* Sources */,
+				9F0000000000000000000024 /* Frameworks */,
+				9F0000000000000000000025 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				9F0000000000000000000021 /* MyMoneyWidgets */,
+			);
+			name = MyMoneyWidgets;
+			packageProductDependencies = (
+				9F0000000000000000000029 /* MyMoneyKit */,
+			);
+			productName = MyMoneyWidgets;
+			productReference = 9F0000000000000000000020 /* MyMoneyWidgets.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -93,6 +150,9 @@
 				LastUpgradeCheck = 2660;
 				TargetAttributes = {
 					9F0000000000000000000002 = {
+						CreatedOnToolsVersion = 26.6;
+					};
+					9F0000000000000000000022 = {
 						CreatedOnToolsVersion = 26.6;
 					};
 				};
@@ -115,12 +175,34 @@
 			projectRoot = "";
 			targets = (
 				9F0000000000000000000002 /* MyMoneyNative */,
+				9F0000000000000000000022 /* MyMoneyWidgets */,
 			);
 		};
 /* End PBXProject section */
 
+/* Begin PBXCopyFilesBuildPhase section */
+		9F000000000000000000002B /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				9F000000000000000000002C /* MyMoneyWidgets.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXResourcesBuildPhase section */
 		9F000000000000000000000B /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		9F0000000000000000000025 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -137,7 +219,22 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		9F0000000000000000000023 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		9F000000000000000000002E /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 9F0000000000000000000022 /* MyMoneyWidgets */;
+			targetProxy = 9F000000000000000000002D /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		9F000000000000000000000E /* Debug */ = {
@@ -155,6 +252,11 @@
 				ENABLE_TESTABILITY = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu17;
+				/* THE APP GROUP, DEFINED IN ONE PLACE.  Read by three things that must agree: both entitlements files (which interpolate it), both Info.plists (under MyMoneyAppGroup), and SharedGroup in the kit, which reads it back out of whichever bundle is asking. A second spelling anywhere shows up as an empty widget and nothing else, so there is only one.  macOS wants the team prefix: a sandboxed Mac app's group container identifier must begin with the team id. iOS must NOT have it. */
+				MYMONEY_APP_GROUP = group.com.gs.MyMoneyNative;
+				"MYMONEY_APP_GROUP[sdk=macosx*]" = "AQ5Z6U57L5.group.com.gs.MyMoneyNative";
+				/* THE ONE SWITCH THAT TURNS THE WIDGETS ON, and it is OFF. 0 = no target declares an App Group at all. 1 = both do, on every platform. IT IS A SINGLE SWITCH RATHER THAN A PER-PLATFORM ONE BECAUSE XCODE MADE IT ONE. Automatic signing works out which capabilities a target needs by reading EVERY entitlements file that target's settings can resolve to -- on any platform, not just the one being built. So a group declared for the Mac, or for the simulator, is a group the iPhone's provisioning profile is then required to carry, and this machine's wildcard team profile does not carry it. Measured rather than assumed: with the group in the macOS file alone, a device build fails with "Provisioning profile ... doesn't include the App Groups capability". The consequence of 0, stated rather than hidden: the app and the widget both build and sign for the phone, the app publishes no snapshot, and the widget draws "Open MyMoney once" instead of a figure. Nothing crashes and no number is invented -- SharedGroup returns nil and every caller handles it. TO TURN IT ON: in Xcode, Signing & Capabilities -> + App Groups -> the identifier in MYMONEY_APP_GROUP, on BOTH targets (which needs an Apple ID signed in, and is why it is not done here), then set this to 1. No code changes. Passing MYMONEY_WIDGETS=1 on an xcodebuild command line is enough for the simulator, which needs no profile, and that is how the whole path was verified. */
+				MYMONEY_WIDGETS = 0;
 				GCC_DYNAMIC_NO_PIC = NO;
 				GCC_NO_COMMON_BLOCKS = YES;
 				GCC_OPTIMIZATION_LEVEL = 0;
@@ -188,6 +290,11 @@
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu17;
+				/* THE APP GROUP, DEFINED IN ONE PLACE.  Read by three things that must agree: both entitlements files (which interpolate it), both Info.plists (under MyMoneyAppGroup), and SharedGroup in the kit, which reads it back out of whichever bundle is asking. A second spelling anywhere shows up as an empty widget and nothing else, so there is only one.  macOS wants the team prefix: a sandboxed Mac app's group container identifier must begin with the team id. iOS must NOT have it. */
+				MYMONEY_APP_GROUP = group.com.gs.MyMoneyNative;
+				"MYMONEY_APP_GROUP[sdk=macosx*]" = "AQ5Z6U57L5.group.com.gs.MyMoneyNative";
+				/* THE ONE SWITCH THAT TURNS THE WIDGETS ON, and it is OFF. 0 = no target declares an App Group at all. 1 = both do, on every platform. IT IS A SINGLE SWITCH RATHER THAN A PER-PLATFORM ONE BECAUSE XCODE MADE IT ONE. Automatic signing works out which capabilities a target needs by reading EVERY entitlements file that target's settings can resolve to -- on any platform, not just the one being built. So a group declared for the Mac, or for the simulator, is a group the iPhone's provisioning profile is then required to carry, and this machine's wildcard team profile does not carry it. Measured rather than assumed: with the group in the macOS file alone, a device build fails with "Provisioning profile ... doesn't include the App Groups capability". The consequence of 0, stated rather than hidden: the app and the widget both build and sign for the phone, the app publishes no snapshot, and the widget draws "Open MyMoney once" instead of a figure. Nothing crashes and no number is invented -- SharedGroup returns nil and every caller handles it. TO TURN IT ON: in Xcode, Signing & Capabilities -> + App Groups -> the identifier in MYMONEY_APP_GROUP, on BOTH targets (which needs an Apple ID signed in, and is why it is not done here), then set this to 1. No code changes. Passing MYMONEY_WIDGETS=1 on an xcodebuild command line is enough for the simulator, which needs no profile, and that is how the whole path was verified. */
+				MYMONEY_WIDGETS = 0;
 				GCC_NO_COMMON_BLOCKS = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
@@ -204,7 +311,12 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = Support/MyMoneyNative.entitlements;
+				/* One entitlements file per platform. The simulator gets the App Group for free; the device gets whatever MYMONEY_IOS_DEVICE_ENTITLEMENTS says, which is nothing until the capability exists. See the project-level settings. */
+				CODE_SIGN_ENTITLEMENTS = "$(MYMONEY_ENT_$(PLATFORM_NAME)_$(MYMONEY_WIDGETS))";
+				MYMONEY_ENT_macosx_0 = Support/MyMoneyNative.entitlements;
+				MYMONEY_ENT_macosx_1 = Support/MyMoneyNative.Group.entitlements;
+				MYMONEY_ENT_iphonesimulator_1 = Support/AppGroup.entitlements;
+				MYMONEY_ENT_iphoneos_1 = Support/AppGroup.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_ASSET_PATHS = "";
@@ -212,7 +324,11 @@
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				/* MERGED with the generated one: this file carries only the keys a build setting cannot express -- the document types that put MyMoney in another app's share sheet, and the App Group identifier. */
+				INFOPLIST_FILE = Support/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = MyMoney;
+				/* Shown by iOS on its own Face ID prompt. It has to say what the app wants it FOR, because that dialog is the only thing on screen at that moment. */
+				INFOPLIST_KEY_NSFaceIDUsageDescription = "So MyMoney can keep your accounts behind Face ID. It hides the app; it does not encrypt your book.";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.finance";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -243,7 +359,12 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = Support/MyMoneyNative.entitlements;
+				/* One entitlements file per platform. The simulator gets the App Group for free; the device gets whatever MYMONEY_IOS_DEVICE_ENTITLEMENTS says, which is nothing until the capability exists. See the project-level settings. */
+				CODE_SIGN_ENTITLEMENTS = "$(MYMONEY_ENT_$(PLATFORM_NAME)_$(MYMONEY_WIDGETS))";
+				MYMONEY_ENT_macosx_0 = Support/MyMoneyNative.entitlements;
+				MYMONEY_ENT_macosx_1 = Support/MyMoneyNative.Group.entitlements;
+				MYMONEY_ENT_iphonesimulator_1 = Support/AppGroup.entitlements;
+				MYMONEY_ENT_iphoneos_1 = Support/AppGroup.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_ASSET_PATHS = "";
@@ -251,7 +372,11 @@
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				/* MERGED with the generated one: this file carries only the keys a build setting cannot express -- the document types that put MyMoney in another app's share sheet, and the App Group identifier. */
+				INFOPLIST_FILE = Support/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = MyMoney;
+				/* Shown by iOS on its own Face ID prompt. It has to say what the app wants it FOR, because that dialog is the only thing on screen at that moment. */
+				INFOPLIST_KEY_NSFaceIDUsageDescription = "So MyMoney can keep your accounts behind Face ID. It hides the app; it does not encrypt your book.";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.finance";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -269,6 +394,90 @@
 				PRODUCT_BUNDLE_IDENTIFIER = com.gs.MyMoneyNative;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = auto;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		9F0000000000000000000027 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				/* The widget signs exactly as the app does: the App Group on the simulator, and whatever MYMONEY_IOS_DEVICE_ENTITLEMENTS says on a device -- nothing, until the capability exists. A widget with no container is not broken; it draws "open MyMoney" and says nothing it cannot prove. */
+				CODE_SIGN_ENTITLEMENTS = "$(MYMONEY_ENT_$(PLATFORM_NAME)_$(MYMONEY_WIDGETS))";
+				MYMONEY_ENT_macosx_0 = Support/MyMoneyWidgets.macOS.entitlements;
+				MYMONEY_ENT_macosx_1 = Support/MyMoneyWidgets.macOS.Group.entitlements;
+				MYMONEY_ENT_iphonesimulator_1 = Support/AppGroup.entitlements;
+				MYMONEY_ENT_iphoneos_1 = Support/AppGroup.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = AQ5Z6U57L5;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Support/Widgets-Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = MyMoney;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@executable_path/../../../../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.gs.MyMoneyNative.Widgets;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = auto;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		9F0000000000000000000028 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				/* The widget signs exactly as the app does: the App Group on the simulator, and whatever MYMONEY_IOS_DEVICE_ENTITLEMENTS says on a device -- nothing, until the capability exists. A widget with no container is not broken; it draws "open MyMoney" and says nothing it cannot prove. */
+				CODE_SIGN_ENTITLEMENTS = "$(MYMONEY_ENT_$(PLATFORM_NAME)_$(MYMONEY_WIDGETS))";
+				MYMONEY_ENT_macosx_0 = Support/MyMoneyWidgets.macOS.entitlements;
+				MYMONEY_ENT_macosx_1 = Support/MyMoneyWidgets.macOS.Group.entitlements;
+				MYMONEY_ENT_iphonesimulator_1 = Support/AppGroup.entitlements;
+				MYMONEY_ENT_iphoneos_1 = Support/AppGroup.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = AQ5Z6U57L5;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Support/Widgets-Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = MyMoney;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@executable_path/../../../../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.gs.MyMoneyNative.Widgets;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = auto;
+				SKIP_INSTALL = YES;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
 				SUPPORTS_MACCATALYST = NO;
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -298,6 +507,15 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
+		9F0000000000000000000026 /* Build configuration list for PBXNativeTarget "MyMoneyWidgets" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				9F0000000000000000000027 /* Debug */,
+				9F0000000000000000000028 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
@@ -309,6 +527,10 @@
 
 /* Begin XCSwiftPackageProductDependency section */
 		9F0000000000000000000013 /* MyMoneyKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MyMoneyKit;
+		};
+		9F0000000000000000000029 /* MyMoneyKit */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = MyMoneyKit;
 		};

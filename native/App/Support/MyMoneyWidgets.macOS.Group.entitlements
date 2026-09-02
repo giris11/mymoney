@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- The widget on macOS, WITH the shared container.
+	     The container holds one small JSON snapshot and nothing else -- the
+	     ledger is NOT in it; see LedgerSnapshot's header on why a widget must
+	     not open a database. The identifier comes from MYMONEY_APP_GROUP,
+	     which on macOS carries the team prefix a sandboxed Mac app's group
+	     container identifier must begin with.
+	     There is deliberately no file-access entitlement: a widget that could
+	     open a file the owner picked would be a widget that could open the
+	     ledger. -->
+	<key>com.apple.security.app-sandbox</key>
+	<true/>
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>$(MYMONEY_APP_GROUP)</string>
+	</array>
+</dict>
+</plist>

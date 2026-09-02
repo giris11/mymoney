@@ -9,6 +9,17 @@
 //   * THE AMOUNT IS FIRST AND HAS ITS OWN KEYPAD. It is the one field that
 //     always has to be typed, so it is what the sheet opens on, with digits
 //     that are minor units -- "3", "5", "0" is £3.50, no decimal point to find.
+//   * AND THE KEYPAD AND SAVE ARE BOTH PINNED TO THE BOTTOM, which is the
+//     difference between one hand and two on a 6.9" phone. The figure is read
+//     at the top, where the eye is; the keys and the Save are in the bottom
+//     third, where the thumb is, and they never move. Typing a coffee and
+//     saving it is one contiguous stretch of thumb travel with no re-grip.
+//     Everything else on the screen -- the categories, the account, the date,
+//     the extra fields -- scrolls between them and is optional by design.
+//   * THE KEYPAD FOLDS AWAY WHEN THE SYSTEM KEYBOARD COMES UP. Opening the note
+//     field puts a second keyboard on screen, and two stacked leave the sheet
+//     no room at all; the Save button rides up above the keyboard on its own,
+//     which is the only part that has to stay visible.
 //   * THE ACCOUNT IS ALREADY RIGHT. It defaults to the one last written to
 //     (`settings.lastUsedAccountId`, which every save updates), so the common
 //     case is no tap at all.
@@ -42,6 +53,9 @@ struct QuickAddView: View {
     @State private var showingMore = false
     @State private var refusal: EditRefusal?
     @State private var saving = false
+    /// Whether the SYSTEM keyboard is up -- the app's own keypad never sets
+    /// this. See the header: the two cannot share the bottom of the screen.
+    @State private var systemKeyboardUp = false
 
     init(context: QuickAddContext) {
         self.context = context
@@ -63,8 +77,10 @@ struct QuickAddView: View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 18) {
-                    AmountKeypad(currency: currency, digits: $digits, direction: $direction)
-                        .padding(.horizontal)
+                    AmountKeypadReadout(
+                        currency: currency, digits: digits, direction: $direction
+                    )
+                    .padding(.horizontal)
 
                     categoryButtons
 
@@ -111,14 +127,26 @@ struct QuickAddView: View {
             #if os(iOS)
                 .navigationBarTitleDisplayMode(.inline)
             #endif
+            .safeAreaInset(edge: .bottom) {
+                ActionBar(spacing: 14) {
+                    if !systemKeyboardUp {
+                        AmountKeypadKeys(digits: $digits)
+                            .reachProbe("Quick add \u{2014} keypad")
+                    }
+                    PrimaryAction(title: "Save", isEnabled: canSave) {
+                        Task { await save() }
+                    }
+                    .reachProbe("Quick add \u{2014} Save")
+                }
+                .animation(.default, value: systemKeyboardUp)
+            }
+            .onKeyboardChange { systemKeyboardUp = $0 }
             .toolbar {
+                // CANCEL STAYS TOP-LEFT. It is pressed rarely, a downward swipe
+                // already does it, and the bottom of this screen is spoken for
+                // by the two controls that are pressed every time.
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") { Task { await save() } }
-                        .disabled(!canSave)
-                        .fontWeight(.semibold)
                 }
             }
         }

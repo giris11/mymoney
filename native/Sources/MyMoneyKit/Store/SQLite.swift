@@ -51,6 +51,18 @@
 import Foundation
 import SQLite3
 
+/// SQLITE_TRANSIENT: tell SQLite to COPY the bytes it has just been handed.
+///
+/// The alternative, SQLITE_STATIC, promises the buffer outlives the statement
+/// -- which a Swift `String` bridged into a C string for the duration of one
+/// call does NOT. Getting this wrong reads freed memory, and the symptom is a
+/// row that is right today and garbage next week.
+///
+/// At file scope rather than inside `SQLiteStatement` because the custom SQL
+/// function in `SQLiteConnection` needs it too, and two `unsafeBitCast(-1, …)`
+/// in one file is two chances to write `0` in one of them.
+let sqliteTransient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+
 /// SQLite's own answer when it refuses something, kept whole.
 ///
 /// The EXTENDED code is carried as well as the primary one, because they are
@@ -141,10 +153,58 @@ final class SQLiteConnection {
         // Extended codes on, from the first statement: without this every
         // constraint failure is an indistinguishable 19.
         sqlite3_extended_result_codes(handle, 1)
+        try registerLowercase()
     }
 
     deinit {
         if !isClosed { sqlite3_close_v2(handle) }
+    }
+
+    // MARK: - mm_lower
+
+    /// `mm_lower(x)` -- Swift's `lowercased()`, available to SQL.
+    ///
+    /// WHY SQLite's OWN `lower()` IS NOT ENOUGH, and why this is worth thirty
+    /// lines of C-function plumbing. Built-in `lower()` and the built-in `LIKE`
+    /// both fold case for ASCII ONLY; the documentation says so plainly, and it
+    /// is a size decision rather than an oversight -- full Unicode folding is a
+    /// table SQLite deliberately does not carry.
+    ///
+    /// Everything ELSE the register search matches on already folds in Swift,
+    /// through `Names.key`, which is full Unicode: payee names, tag names,
+    /// account names and category paths are resolved to ids up in Swift and
+    /// arrive here as an `IN` list. Notes are the one field big enough to be
+    /// worth leaving in the database -- and if notes were the one field that
+    /// folded differently, a search for a payee written in the note instead of
+    /// the payee field would find it in one book and not in another, with
+    /// nothing on screen to say why. One rule everywhere is worth the plumbing.
+    ///
+    /// SQLITE_DETERMINISTIC lets the planner treat it as a constant for a
+    /// constant argument. The closure is non-capturing on purpose: it is passed
+    /// as a C function pointer, and a capturing closure cannot be.
+    private func registerLowercase() throws {
+        let rc = sqlite3_create_function_v2(
+            handle,
+            "mm_lower",
+            1,
+            SQLITE_UTF8 | SQLITE_DETERMINISTIC,
+            nil,
+            { context, argc, argv in
+                guard argc == 1, let argv, let bytes = sqlite3_value_text(argv[0]) else {
+                    sqlite3_result_null(context)
+                    return
+                }
+                let folded = String(cString: bytes).lowercased()
+                // TRANSIENT: SQLite must copy, because `folded` is gone the
+                // moment this function returns. The alternative promises a
+                // buffer that does not exist, and reads freed memory.
+                sqlite3_result_text(context, folded, -1, sqliteTransient)
+            },
+            nil,
+            nil,
+            nil
+        )
+        guard rc == SQLITE_OK else { throw lastError(sql: "create function mm_lower") }
     }
 
     /// Close now rather than whenever the last reference goes.
@@ -308,15 +368,9 @@ final class SQLiteStatement {
     // rather than hidden: the call site reads in the same order as the SQL it
     // sits next to.
 
-    /// SQLITE_TRANSIENT: tell SQLite to copy the bytes.
-    ///
-    /// The alternative, SQLITE_STATIC, promises the buffer outlives the
-    /// statement -- which a Swift `String` bridged into a C string for the
-    /// duration of one call does NOT. Getting this wrong reads freed memory,
-    /// and the symptom is a row that is right today and garbage next week.
-    private static let transient = unsafeBitCast(
-        -1, to: sqlite3_destructor_type.self
-    )
+    /// SQLITE_TRANSIENT, defined once at file scope -- see `sqliteTransient`.
+    /// Named here as well so every binding below reads as it always did.
+    private static let transient = sqliteTransient
 
     func bind(_ index: Int32, text value: String) {
         sqlite3_bind_text(handle, index, value, -1, Self.transient)

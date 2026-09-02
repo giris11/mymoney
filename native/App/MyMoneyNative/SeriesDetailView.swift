@@ -31,10 +31,13 @@ struct SeriesDetailView: View {
     let baseCurrency: String
     let onSelectTransaction: (String) -> Void
 
+    @State private var prefilled: PrefilledSchedule?
+
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 14) {
                 headline
+                makeASchedule
                 reasoning
                 if !series.levels.isEmpty { priceHistory }
                 payments
@@ -49,6 +52,45 @@ struct SeriesDetailView: View {
         #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
         #endif
+        .sheet(item: $prefilled) { offer in
+            ScheduleEditor(existing: nil, prefill: offer.draft)
+        }
+    }
+
+    // MARK: - Turning a pattern into a plan
+
+    /// The one place where the two halves of this feature meet.
+    ///
+    /// The detector has just said "this is monthly and the next one is on the
+    /// 12th". A schedule made from it inherits BOTH of those, from the same
+    /// arithmetic -- `ScheduleDraft.from(series:today:)` anchors at the last
+    /// payment, which is where the detector anchors its own grid, so the first
+    /// date the schedule offers is the date this screen has just printed. A
+    /// test asserts that rather than this comment.
+    ///
+    /// It is not offered for a PAIR: two payments are not a pattern, the
+    /// detector refuses to predict a third, and this must not invent one.
+    @ViewBuilder private var makeASchedule: some View {
+        if let draft = ScheduleDraft.from(series: series, today: todayISO()) {
+            CardSection(title: "Make this a schedule") {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(
+                        "A schedule puts this in your upcoming list, warns you if it would take "
+                            + "the account below zero, and enters it when you say so. Nothing is "
+                            + "entered until you confirm it."
+                    )
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    Button {
+                        prefilled = PrefilledSchedule(draft: draft)
+                    } label: {
+                        Label("Set up a schedule\u{2026}", systemImage: "calendar.badge.plus")
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+        }
     }
 
     // MARK: - What it says
@@ -453,4 +495,10 @@ struct OccurrenceRow: View {
         if !occurrence.accountName.isEmpty { parts.append(occurrence.accountName) }
         return parts.isEmpty ? nil : parts.joined(separator: " \u{00B7} ")
     }
+}
+
+/// A schedule the app has offered to make, wrapped so it can drive a sheet.
+struct PrefilledSchedule: Identifiable {
+    let id = UUID()
+    let draft: ScheduleDraft
 }

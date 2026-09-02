@@ -30,6 +30,11 @@ struct TransactionEditor: View {
     @State private var refusal: EditRefusal?
     @State private var saving = false
     @State private var confirmingDelete = false
+    /// Which schedule entered this row, when one did. Read when the sheet
+    /// opens: a transaction cannot work this out for itself, and "where did
+    /// this come from" is exactly the question somebody asks of a row they do
+    /// not remember typing.
+    @State private var origin: ScheduleOrigin?
 
     init(context: QuickAddContext, draft: TransactionDraft) {
         self.context = context
@@ -136,45 +141,83 @@ struct TransactionEditor: View {
                     lines: $lines
                 )
 
+                if let origin {
+                    Section {
+                        Label {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(origin.scheduleName)
+                                Text(
+                                    "The payment due \(Display.dateText(origin.occurrenceDate))."
+                                )
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                            }
+                        } icon: {
+                            Image(systemName: "calendar.badge.clock")
+                        }
+                    } header: {
+                        Text("Entered from a schedule")
+                    } footer: {
+                        // Both directions of the link matter: this row came
+                        // from that schedule, and deleting this row makes that
+                        // occurrence due again.
+                        Text(
+                            "Editing this transaction changes only the transaction. Deleting it "
+                                + "makes that payment due again on the schedule."
+                        )
+                    }
+                }
+
                 if let refusal {
                     Section { RefusalNotice(refusal: refusal) }
                 }
 
+            }
+            .task {
                 if let editing {
-                    Section {
-                        Button(role: .destructive) {
-                            confirmingDelete = true
-                        } label: {
-                            Label("Delete this transaction", systemImage: "trash")
-                        }
-                        .confirmationDialog(
-                            "Delete this transaction?",
-                            isPresented: $confirmingDelete, titleVisibility: .visible
-                        ) {
-                            Button("Delete", role: .destructive) { Task { await delete(editing) } }
-                            Button("Keep it", role: .cancel) {}
-                        } message: {
-                            Text(
-                                "It is kept in this copy so it can be brought back, and you will "
-                                    + "be offered an undo."
-                            )
-                        }
-                    } footer: {
-                        Text("Deleting here changes only this device. Your web app is untouched.")
-                    }
+                    origin = try? await app.service.scheduleOrigin(forTransactionId: editing)
                 }
             }
             .navigationTitle(editing == nil ? "New transaction" : "Edit transaction")
             #if os(iOS)
                 .navigationBarTitleDisplayMode(.inline)
             #endif
+            .safeAreaInset(edge: .bottom) {
+                SaveBar(
+                    title: "Save",
+                    isEnabled: canSave,
+                    probe: "Transaction editor \u{2014} Save",
+                    save: { Task { await save() } },
+                    delete: editing == nil
+                        ? nil
+                        : (title: "Delete this transaction", run: { confirmingDelete = true })
+                )
+            }
+            .confirmationDialog(
+                "Delete this transaction?",
+                isPresented: $confirmingDelete, titleVisibility: .visible
+            ) {
+                if let editing {
+                    Button("Delete", role: .destructive) { Task { await delete(editing) } }
+                }
+                Button("Keep it", role: .cancel) {}
+            } message: {
+                // THE TWO SENTENCES THAT USED TO BE A FORM FOOTER, said here
+                // instead. With the button in the bottom bar the footer would
+                // have been an explanation on a different part of the screen
+                // from the thing it explains; in the dialog they are read at
+                // the moment the decision is actually made.
+                Text(
+                    "It is kept in this copy so it can be brought back, and you will be offered "
+                        + "an undo. Deleting here changes only this device \u{2014} your web app "
+                        + "is untouched."
+                )
+            }
             .toolbar {
+                // Cancel stays top-left: rarely pressed, and swipe-down already
+                // does it. See `ActionBar`.
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") { Task { await save() } }
-                        .disabled(!canSave)
                 }
             }
         }

@@ -181,6 +181,25 @@ public struct SeriesEvidence: Sendable, Hashable {
     /// spending by amount. The detail screen must say so.
     public let otherPaymentsInRun: Int
 
+    /// "24 payments so far", and never "24 payments".
+    ///
+    /// TWO NUMBERS ON ONE LINE THAT MEAN DIFFERENT THINGS. The insights row
+    /// printed "24 payments \u{00B7} about £528.00 a year": 24 is how many
+    /// payments have been SEEN, and 12 is how many there are in a year -- so the
+    /// first number sat next to "a year" and read as the rate behind the second.
+    /// It is not; multiplying it by the typical payment gives twice the annual
+    /// figure, and a reader who did that would conclude the app's arithmetic was
+    /// wrong.
+    ///
+    /// The detail screen writes the multiplication out in full ("£44.00 ×
+    /// 12 payments a year = about £528.00 a year") and cannot be misread. The
+    /// row is a summary and has no room for that, so the count says what it is
+    /// counting instead: "so far" is two words that cannot be read as a rate.
+    public var observedPhrase: String {
+        let count = matched.formatted(.number.grouping(.automatic))
+        return "\(count) payment\(matched == 1 ? "" : "s") so far"
+    }
+
     /// matched / (matched + missed): how complete the run is.
     public var coverage: Double {
         let total = matched + missed

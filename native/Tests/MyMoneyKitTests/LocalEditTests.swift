@@ -29,6 +29,45 @@ struct LocalEditTests {
         #expect(edits.summary.contains("web app still holds the real ledger"))
     }
 
+    @Test("THE COUNT SURVIVES THE COMPACT BANNER, at every count")
+    func countLineAlwaysCarriesTheNumber() {
+        // The banner is compact by default now, because at the largest
+        // accessibility text size the two-sentence version took about 80% of the
+        // viewport and left the account list a sliver. The explanation moved
+        // behind a disclosure; the COUNT did not, and must not.
+        //
+        // So this asserts the line's shape rather than its prose: the number
+        // first, in the same place every time, so a reader glancing at it is
+        // checking one character rather than reading a sentence to find it.
+        #expect(LocalEdits(count: 0, firstAt: nil, lastAt: nil).countLine
+            == "0 changes not in your web app")
+        #expect(LocalEdits(count: 1, firstAt: "t", lastAt: "t").countLine
+            == "1 change not in your web app")
+        #expect(LocalEdits(count: 2, firstAt: "t", lastAt: "t").countLine
+            == "2 changes not in your web app")
+        #expect(LocalEdits(count: 143, firstAt: "t", lastAt: "t").countLine
+            == "143 changes not in your web app")
+
+        // And the full sentence is still there for the disclosure to show. The
+        // compact form replaces what is permanently on screen, not what the app
+        // is willing to say.
+        #expect(LocalEdits(count: 3, firstAt: "t", lastAt: "t").summary
+            .contains("only on this device"))
+    }
+
+    @Test("the compact line and the sentence quote the SAME number")
+    func theTwoFormsCannotDisagree() throws {
+        let scratch = try ScratchDirectory()
+        let store = try EditFixture.store(scratch)
+        _ = try store.saveTransaction(EditFixture.expense())
+        let edits = try store.localEdits()
+        #expect(edits.count == 1)
+        // Both are derived from `count`, and a screen showing one above the
+        // other must never be able to show two different figures.
+        #expect(edits.countLine.hasPrefix("1 change "))
+        #expect(edits.summary.hasPrefix("1 change made here"))
+    }
+
     @Test("EVERY KIND OF CHANGE COUNTS, exactly once")
     func everyMutationCounts() throws {
         let scratch = try ScratchDirectory()

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- The widget on macOS, WITHOUT the shared container.
+	     Sandboxed, with no file access of any kind. This is the file the widget
+	     signs with while MYMONEY_WIDGETS is 0 (see the project's build
+	     settings): the widget still builds, installs and draws, and what it
+	     draws is "Open MyMoney once", because with no group container there is
+	     no snapshot for it to read.
+	     There is deliberately no file-access entitlement here even in the
+	     other variant: a widget that could open a file the owner picked would
+	     be a widget that could open the ledger, and it has no business doing
+	     so. -->
+	<key>com.apple.security.app-sandbox</key>
+	<true/>
+</dict>
+</plist>

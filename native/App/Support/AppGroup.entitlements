@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- iOS SIMULATOR ONLY, and shared by the app and the widget targets.
+
+	     An App Group is the one way an app and its widget can share a file.
+	     The identifier is NOT written here: it comes from the MYMONEY_APP_GROUP
+	     build setting, which is also what each target's Info.plist carries in
+	     MyMoneyAppGroup and what SharedGroup reads back. One definition, three
+	     users, no chance of a typo that shows up as an empty widget.
+
+	     WHY THE SIMULATOR ONLY. On a device this entitlement needs a
+	     provisioning profile that carries the App Groups capability, and this
+	     machine's Xcode has no Apple ID signed in to create one -- so the
+	     device build uses MYMONEY_IOS_DEVICE_ENTITLEMENTS, which is empty.
+	     That build simply has no shared container: it publishes no snapshot and
+	     the widget says "open MyMoney". Nothing crashes and no figure is
+	     invented. Set MYMONEY_IOS_DEVICE_ENTITLEMENTS to this file once the
+	     capability exists, and the whole path lights up with no code change. -->
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>$(MYMONEY_APP_GROUP)</string>
+	</array>
+</dict>
+</plist>

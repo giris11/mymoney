@@ -89,6 +89,23 @@ public enum EditError: Error, Sendable, Hashable, CustomStringConvertible {
     /// wonderfully.
     case budgetNeedsACategory
 
+    // MARK: - Schedules
+
+    case unknownSchedule(String)
+    /// A schedule for nothing. Refused by the schema too -- see migration 4.
+    case scheduleAmountIsZero
+    /// An end date before the start date: a schedule with no occurrences.
+    case scheduleEndsBeforeItStarts(start: String, end: String)
+    /// "Ends after 0 payments", which is not an arrangement.
+    case scheduleCountNotPositive(Int)
+    /// Entering a payment from a schedule that is switched off.
+    case scheduleIsPaused(name: String)
+    /// A date that is not on the schedule's calendar at all. Usually means the
+    /// schedule's dates were changed since the screen was drawn.
+    case notAnOccurrence(scheduleName: String, date: String)
+    /// This occurrence has already been entered, or already skipped.
+    case occurrenceAlreadySettled(scheduleName: String, date: String, posted: Bool)
+
     // MARK: - Undo
 
     /// An undo for something that is not deleted (already restored, or never
@@ -192,6 +209,36 @@ public enum EditError: Error, Sendable, Hashable, CustomStringConvertible {
                 "Choose at least one category. A budget over no categories would match no "
                 + "spending, and would report nothing spent for ever."
 
+        case .unknownSchedule(let id):
+            return "That schedule is not in this copy of the book (\(short(id)))."
+        case .scheduleAmountIsZero:
+            return
+                "A schedule needs an amount. A standing payment of nothing would sit in your "
+                + "list looking real and enter rows of zero for ever."
+        case .scheduleEndsBeforeItStarts(let start, let end):
+            return
+                "This schedule would end on \(end), before it starts on \(start), so it has no "
+                + "payments in it at all."
+        case .scheduleCountNotPositive(let count):
+            return
+                "\u{201C}Ends after \(count) payments\u{201D} is not an arrangement. Enter how "
+                + "many there are, or choose an end date instead."
+        case .scheduleIsPaused(let name):
+            return
+                "\u{201C}\(name)\u{201D} is paused, so its payments are not due. Resume it "
+                + "first if you want to enter this one."
+        case .notAnOccurrence(let name, let date):
+            return
+                "\(date) is not a date \u{201C}\(name)\u{201D} falls on. Its dates may have "
+                + "been changed since this screen was drawn \u{2014} open it again to see what "
+                + "is due now."
+        case .occurrenceAlreadySettled(let name, let date, let posted):
+            return posted
+                ? "The \(date) payment for \u{201C}\(name)\u{201D} is already in your book. "
+                    + "Delete that transaction if it should not be."
+                : "The \(date) payment for \u{201C}\(name)\u{201D} was skipped. Take the skip "
+                    + "back if you want to enter it after all."
+
         case .nothingToRestore(let what):
             return "That \(what) is not in the bin \u{2014} there is nothing to bring back."
         }
@@ -218,6 +265,12 @@ public enum EditError: Error, Sendable, Hashable, CustomStringConvertible {
             return "Nothing was saved \u{2014} the transaction is still as it was."
         case .budgetAmountNotPositive, .budgetNeedsACategory:
             return "Nothing was saved \u{2014} the budget is still as it was."
+        case .scheduleAmountIsZero, .scheduleEndsBeforeItStarts, .scheduleCountNotPositive:
+            return "Nothing was saved \u{2014} the schedule is still as it was."
+        case .scheduleIsPaused, .notAnOccurrence, .occurrenceAlreadySettled:
+            // The half that matters most here: somebody who taps Enter twice
+            // must know the second tap did not enter a second payment.
+            return "No transaction was entered, and your book is unchanged."
         default:
             return "Nothing was changed."
         }

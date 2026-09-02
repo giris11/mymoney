@@ -11,5 +11,12 @@
 	<true/>
 	<key>com.apple.security.files.user-selected.read-only</key>
 	<true/>
+
+	<!-- NO APP GROUP. This is the file the Mac app signs with while
+	     MYMONEY_WIDGETS is 0 -- the shipping default, because an App Group
+	     declared for ANY platform makes iOS device signing demand a capability
+	     this machine's profile does not carry. MyMoneyNative.Group.entitlements
+	     is the same file with the group added; the project's build settings
+	     choose between them. -->
 </dict>
 </plist>

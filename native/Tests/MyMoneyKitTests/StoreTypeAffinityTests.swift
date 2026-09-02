@@ -132,8 +132,23 @@ struct StoreTypeAffinityTests {
         let scratch = try ScratchDirectory()
         let store = try scratch.store()
         try store.importBackup(text: StoreFixture.backupText)
-
+        // A COLUMN WITH NO ROWS IN IT CANNOT REFUSE ANYTHING. An UPDATE over an
+        // empty table touches nothing, no CHECK fires, and the loop below would
+        // pass vacuously -- which is how a money column ends up "covered" by a
+        // test that never reaches it. `schedules` is not in the backup file
+        // (schedules are this app's own, not the book's), so one is made here,
+        // and the count assertion is what keeps the next such column honest.
+        try store.saveSchedule(
+            ScheduleDraft(
+                name: "A standing payment", accountId: "w-a", amountMinor: -1234,
+                cadence: .monthly, startDate: "2026-09-03"
+            )
+        )
         for (table, column) in StoreSchema.moneyColumns {
+            #expect(
+                try store.connection.scalarInt("SELECT count(*) FROM \(table)") ?? 0 > 0,
+                "\(table).\(column) has no rows here, so nothing below tests it"
+            )
             #expect(
                 throws: SQLiteError.self,
                 "\(table).\(column) accepted a float"

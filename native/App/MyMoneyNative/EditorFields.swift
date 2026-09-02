@@ -126,59 +126,76 @@ struct AmountField: View {
 /// The number of places comes from `Money.decimals(for:)`, so the same three
 /// taps in JPY are ¥350 rather than ¥3.50 -- a currency with no minor units
 /// gets no decimal point, rather than a wrong one.
-struct AmountKeypad: View {
-    let currency: String
-    @Binding var digits: String
-    @Binding var direction: MoneyDirection
-
+///
+/// IT IS IN TWO PIECES, WHICH IS A REACH DECISION rather than a tidiness one.
+/// The FIGURE is read and the KEYS are pressed, and on a 6.9" phone those two
+/// jobs want opposite ends of the screen: the figure belongs up where the eye
+/// already is, and the keys belong in the bottom third with the Save button, so
+/// that logging a coffee is one thumb from first digit to saved. Quick Add pins
+/// `AmountKeypadKeys` into its bottom bar for exactly that reason. `AmountKeypad`
+/// keeps the two together for anywhere that wants the whole thing in the flow.
+enum AmountKeypad {
     /// The magnitude the digits currently mean. Capped while typing rather
     /// than allowed to overflow: 19 digits of pounds is not an amount anyone
     /// is entering, and a wrapped Int64 is a negative balance with no error.
     static func magnitude(_ digits: String) -> Int64 {
         Int64(digits.prefix(15)) ?? 0
     }
+}
 
-    var minorMagnitude: Int64 { Self.magnitude(digits) }
+/// The figure, big, and which way it goes. Read, not pressed -- except for the
+/// direction control, which is two taps a month rather than four a minute.
+struct AmountKeypadReadout: View {
+    let currency: String
+    let digits: String
+    @Binding var direction: MoneyDirection
+
+    private var signed: Int64 { direction.signed(AmountKeypad.magnitude(digits)) }
 
     var body: some View {
         VStack(spacing: 14) {
-            Text(Display.money(direction.signed(minorMagnitude), currency))
+            Text(Display.money(signed, currency))
                 .font(.system(size: 44, weight: .semibold, design: .rounded))
                 .monospacedDigit()
                 .lineLimit(1)
                 .minimumScaleFactor(0.4)
-                .foregroundStyle(amountColour(direction.signed(minorMagnitude)))
+                .foregroundStyle(amountColour(signed))
                 .frame(maxWidth: .infinity)
                 .accessibilityLabel("Amount")
-                .accessibilityValue(
-                    Display.moneyFlowSpoken(direction.signed(minorMagnitude), currency)
-                )
+                .accessibilityValue(Display.moneyFlowSpoken(signed, currency))
 
             Picker("Direction", selection: $direction) {
                 ForEach(MoneyDirection.allCases) { Text($0.label).tag($0) }
             }
             .pickerStyle(.segmented)
+        }
+    }
+}
 
-            Grid(horizontalSpacing: 10, verticalSpacing: 10) {
-                ForEach([["1", "2", "3"], ["4", "5", "6"], ["7", "8", "9"]], id: \.first) { row in
-                    GridRow {
-                        ForEach(row, id: \.self) { key(  $0) }
-                    }
-                }
+/// The keys. Nothing else, so that a screen can put them wherever the thumb is.
+struct AmountKeypadKeys: View {
+    @Binding var digits: String
+
+    var body: some View {
+        Grid(horizontalSpacing: 10, verticalSpacing: 10) {
+            ForEach([["1", "2", "3"], ["4", "5", "6"], ["7", "8", "9"]], id: \.first) { row in
                 GridRow {
-                    // No decimal point: the digits ARE minor units. A key that
-                    // did nothing would be worse than no key.
-                    Color.clear.gridCellUnsizedAxes([.horizontal, .vertical])
-                    key("0")
-                    Button {
-                        if !digits.isEmpty { digits.removeLast() }
-                    } label: {
-                        Image(systemName: "delete.left")
-                            .frame(maxWidth: .infinity, minHeight: 52)
-                    }
-                    .buttonStyle(.bordered)
-                    .accessibilityLabel("Delete last digit")
+                    ForEach(row, id: \.self) { key($0) }
                 }
+            }
+            GridRow {
+                // No decimal point: the digits ARE minor units. A key that
+                // did nothing would be worse than no key.
+                Color.clear.gridCellUnsizedAxes([.horizontal, .vertical])
+                key("0")
+                Button {
+                    if !digits.isEmpty { digits.removeLast() }
+                } label: {
+                    Image(systemName: "delete.left")
+                        .frame(maxWidth: .infinity, minHeight: 52)
+                }
+                .buttonStyle(.bordered)
+                .accessibilityLabel("Delete last digit")
             }
         }
     }
@@ -281,12 +298,27 @@ struct PayeeField: View {
 
 /// The category picker: the ones this book actually uses, then all of them,
 /// searchable.
+///
+/// CHOOSING CLOSES IT. It used to set the binding and stay put, which left the
+/// owner looking at a list with a tick in it and no signal that anything had
+/// happened -- the natural readings are "that did not work" (so tap again) or
+/// "there is more to do here" (so hunt for a Done button that does not exist).
+/// Either way the way out was the back arrow at the top left of a 6.9" phone,
+/// which is the hardest place on the screen to reach, for a screen whose work
+/// was already finished.
+///
+/// A picker is a question. Answering it is the end of it.
 struct CategoryPicker: View {
     let categories: [CategoryChoice]
     let frequentIds: [String]
     @Binding var selection: String?
     var allowsNone = true
 
+    /// Pops this screen off whatever pushed it. Works for both callers: the
+    /// `CategoryRow` in a form and the "All categories" link in Quick Add are
+    /// both `NavigationLink`s, and `dismiss` in a pushed view pops rather than
+    /// closing the sheet around it.
+    @Environment(\.dismiss) private var dismiss
     @State private var query = ""
 
     private var frequent: [CategoryChoice] {
@@ -304,6 +336,7 @@ struct CategoryPicker: View {
             if allowsNone {
                 Button {
                     selection = nil
+                    dismiss()
                 } label: {
                     row(title: "No category", selected: selection == nil, depth: 0, archived: false)
                 }
@@ -329,6 +362,7 @@ struct CategoryPicker: View {
     private func button(_ choice: CategoryChoice, showFullPath: Bool) -> some View {
         Button {
             selection = choice.id
+            dismiss()
         } label: {
             row(
                 title: showFullPath ? choice.path : choice.name,

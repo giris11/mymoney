@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- MERGED WITH THE GENERATED ONE. GENERATE_INFOPLIST_FILE stays YES, so
+	     every INFOPLIST_KEY_* build setting still applies; this file carries
+	     only the keys that are arrays of dictionaries, which a build setting
+	     cannot express. -->
+
+	<!-- The App Group identifier, from the one build setting that defines it.
+	     SharedGroup reads it back out of this bundle, so the entitlements and
+	     the code cannot come to disagree about the spelling. -->
+	<key>MyMoneyAppGroup</key>
+	<string>$(MYMONEY_APP_GROUP)</string>
+
+	<!-- WHAT THIS APP WILL BE OFFERED FROM THE SHARE SHEET AND FROM FILES.
+
+	     Declaring the types is what puts MyMoney in another app's share sheet
+	     and in "Open with" in Files. It is a claim about what CAN be handed
+	     over, not about what will be done with it: a file that arrives is
+	     identified from its BYTES (IncomingFile), shown on the Import screen,
+	     and imported only when the owner says so. A .json goes through the
+	     manifest check like every other backup; a .csv is described and NOT
+	     written.
+
+	     LSHandlerRank is Alternate, not Owner. This app does not own JSON or
+	     CSV on anybody's phone, and claiming to would make it the default
+	     opener for every .json file on the device. -->
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>MyMoney backup</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>public.json</string>
+			</array>
+		</dict>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Statement</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>public.comma-separated-values-text</string>
+				<string>public.tab-separated-values-text</string>
+				<string>public.delimited-values-text</string>
+			</array>
+		</dict>
+	</array>
+
+	<!-- Open the file WHERE IT IS rather than taking a copy into the app's
+	     Inbox. The app only ever reads it, and a copy of a backup left behind
+	     in this app's container would be a second copy of the owner's ledger
+	     that nobody asked for and nobody would remember to delete. Inbox
+	     copies still happen for some senders, and IncomingDocument tidies
+	     those up itself. -->
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
+</dict>
+</plist>

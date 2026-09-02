@@ -211,11 +211,83 @@ actor LedgerService {
         try opened().registerCount(scope: scope)
     }
 
+    func registerCount(
+        scope: RegisterScope, search: RegisterSearch, lookups: RegisterLookups
+    ) throws -> Int {
+        try opened().registerCount(scope: scope, search: search, lookups: lookups)
+    }
+
     func registerPage(
-        scope: RegisterScope, after cursor: RegisterCursor?, limit: Int,
-        lookups: RegisterLookups
+        scope: RegisterScope, search: RegisterSearch = .none, after cursor: RegisterCursor?,
+        limit: Int, lookups: RegisterLookups
     ) throws -> RegisterPage {
-        try opened().registerPage(scope: scope, after: cursor, limit: limit, lookups: lookups)
+        try opened().registerPage(
+            scope: scope, search: search, after: cursor, limit: limit, lookups: lookups
+        )
+    }
+
+    // MARK: - What the widget is given
+
+    /// Publish the widget's snapshot, and say whether any FIGURE moved.
+    ///
+    /// The file is rewritten every time -- its `asOf` stamp is newer, and that
+    /// stamp is the whole reason a widget is allowed to show an old number --
+    /// but the answer is about the figures alone, because waking WidgetKit is
+    /// rationed and spending a wake on "nothing changed" costs a later one that
+    /// mattered.
+    ///
+    /// `directory` nil means this build has no shared container; nothing is
+    /// written and nothing pretends to have been. See `SharedContainer`.
+    @discardableResult
+    func publishSnapshot(today: String, to directory: URL?, asOf: Date = Date()) -> Bool {
+        guard let directory else { return false }
+        let stamp = Self.stamp(asOf)
+        do {
+            let store = try opened()
+            guard try !store.isEmpty() else {
+                // NO BOOK MEANS NO WIDGET. A widget still showing last month's
+                // net worth for a book that is not on the device any more is
+                // the most misleading state this feature has.
+                let had = SnapshotFile.read(from: directory) != nil
+                SnapshotFile.remove(from: directory)
+                return had
+            }
+            // The SAME `Book` the dashboard and the reports were drawn from --
+            // cached against SQLite's own write counter, so this costs a read
+            // only when something actually changed.
+            let book = try reportBook()
+            guard let snapshot = try store.ledgerSnapshot(book: book, today: today, asOf: stamp)
+            else { return false }
+            let previous = SnapshotFile.read(from: directory)
+            try SnapshotFile.write(snapshot, to: directory)
+            return previous.map { !$0.sameFigures(as: snapshot) } ?? true
+        } catch {
+            // A snapshot that could not be written is not an error the owner
+            // needs to see: the app is unaffected and the widget says how old
+            // its figures are, which is the honest answer either way.
+            return false
+        }
+    }
+
+    /// The ISO instant `SnapshotFreshness` reads back.
+    private nonisolated static func stamp(_ date: Date) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        formatter.timeZone = TimeZone(identifier: "UTC")
+        return formatter.string(from: date)
+    }
+
+    // MARK: - What an intent writes through
+
+    /// Everything a spoken entry needs to resolve itself, in one read.
+    ///
+    /// The intent runs with no screen and, often, no running app. It gets the
+    /// SAME context the Quick Add sheet gets -- the same default account, the
+    /// same payee index with its learned categories, the same category list --
+    /// because a transaction added by voice must land where a transaction added
+    /// by hand would have landed.
+    func intentContext() throws -> QuickAddContext {
+        try opened().quickAddContext()
     }
 
     /// Read a backup file into the local copy, replacing whatever was there.
@@ -440,6 +512,139 @@ actor LedgerService {
 
     func deleteBudget(id: String) throws -> DeletedRecord {
         try opened().deleteBudget(id: id)
+    }
+
+    // MARK: Schedules
+
+    /// Everything the scheduled-payments screen needs, from one read.
+    ///
+    /// The plan and the schedule list come out of the SAME read of the store,
+    /// so a row on screen and the warning above it are always about the same
+    /// book -- the reason `accountsSnapshot` is one call rather than three.
+    func schedulesScreen(
+        today: String, horizonDays: Int = Upcoming.defaultHorizonDays
+    ) throws -> SchedulesScreen {
+        let store = try opened()
+        return SchedulesScreen(
+            plan: try store.upcoming(today: today, horizonDays: horizonDays),
+            schedules: try store.schedules(),
+            accounts: try store.accountBalances().map(\.account),
+            today: today,
+            horizonDays: horizonDays
+        )
+    }
+
+    func scheduleDetail(id: String, today: String) throws -> ScheduleDetailScreen? {
+        let store = try opened()
+        guard let schedule = try store.schedule(id: id) else { return nil }
+        let accounts = try store.accountBalances().map(\.account)
+        let account = accounts.first { $0.id == schedule.accountId }
+        let categories = try store.categoryChoices()
+        let calendar = schedule.calendar
+        var next: [String] = []
+        if let calendar, let start = CalendarDate(iso: today) {
+            var index = calendar.firstIndex(onOrAfter: start) ?? 0
+            while next.count < 6, let date = calendar.date(at: index) {
+                next.append(date.iso)
+                index += 1
+            }
+        }
+        var remaining: Int? = nil
+        if let calendar, let last = calendar.lastIndex, let start = CalendarDate(iso: today),
+            let from = calendar.firstIndex(onOrAfter: start)
+        {
+            remaining = max(0, last - from + 1)
+        }
+        return ScheduleDetailScreen(
+            schedule: schedule,
+            history: try store.scheduleHistory(id: id),
+            nextDates: next,
+            // The account's currency, never a guess: a schedule's amount is in
+            // the account's currency and in no other.
+            currency: account?.currency ?? "",
+            accountName: account?.name ?? "an account not in this copy",
+            categoryPath: schedule.categoryId.flatMap { id in
+                categories.first { $0.id == id }?.path
+            },
+            remainingCount: remaining
+        )
+    }
+
+    @discardableResult
+    func save(_ draft: ScheduleDraft) throws -> Schedule {
+        try opened().saveSchedule(draft)
+    }
+
+    func setSchedulePaused(id: String, paused: Bool) throws {
+        try opened().setSchedulePaused(id: id, paused: paused)
+    }
+
+    func setScheduleAutoPost(id: String, autoPost: Bool) throws {
+        try opened().setScheduleAutoPost(id: id, autoPost: autoPost)
+    }
+
+    func setScheduleRemind(id: String, remind: Bool) throws {
+        try opened().setScheduleRemind(id: id, remind: remind)
+    }
+
+    func deleteSchedule(id: String) throws -> DeletedRecord {
+        try opened().deleteSchedule(id: id)
+    }
+
+    @discardableResult
+    func postScheduled(_ posting: SchedulePosting) throws -> Transaction {
+        try opened().postScheduled(posting)
+    }
+
+    func skipOccurrence(scheduleId: String, occurrenceDate: String) throws {
+        try opened().skipOccurrence(scheduleId: scheduleId, occurrenceDate: occurrenceDate)
+    }
+
+    func unskipOccurrence(scheduleId: String, occurrenceDate: String) throws {
+        try opened().unskipOccurrence(scheduleId: scheduleId, occurrenceDate: occurrenceDate)
+    }
+
+    /// The schedules that enter themselves, entered.
+    ///
+    /// Returns nothing to do when this device holds no book at all -- opening
+    /// the app on a fresh install must not create a store's worth of anything.
+    func postDue(today: String) throws -> AutoPostResult {
+        let store = try opened()
+        if try store.isEmpty() { return AutoPostResult(posted: [], heldBack: 0, refusals: []) }
+        return try store.postDue(today: today)
+    }
+
+    /// Which schedule made this transaction, for the badge on the editor.
+    func scheduleOrigin(forTransactionId id: String) throws -> ScheduleOrigin? {
+        try opened().scheduleOrigin(forTransactionId: id)
+    }
+
+    /// How much is waiting, for the badge in the sidebar.
+    ///
+    /// The same `Upcoming.plan` every other schedule figure comes from, asked
+    /// for a count. A cheaper query that counted rows some other way would be a
+    /// second definition of "due", and the badge would eventually disagree with
+    /// the screen it points at.
+    func dueCounts(today: String) throws -> (due: Int, overdue: Int, warnings: Int) {
+        let store = try opened()
+        if try store.isEmpty() { return (0, 0, 0) }
+        let plan = try store.upcoming(today: today)
+        return (plan.due.count, plan.overdue.count, plan.warnings.count)
+    }
+
+    /// What is due over the reminder horizon, with the schedules that asked to
+    /// be reminded about.
+    ///
+    /// A SEPARATE, LONGER WINDOW from the screen's. The screen shows the next
+    /// thirty days because that is a useful thing to look at; the reminders
+    /// need to reach as far as the last day a notification could usefully be
+    /// set for, which is further.
+    func reminderInput(today: String) throws -> (occurrences: [DueOccurrence], reminding: Set<String>) {
+        let store = try opened()
+        if try store.isEmpty() { return ([], []) }
+        let plan = try store.upcoming(today: today, horizonDays: 90)
+        let reminding = Set(try store.schedules().filter(\.remind).map(\.id))
+        return (plan.all, reminding)
     }
 
     // MARK: Reports

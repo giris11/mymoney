@@ -18,26 +18,90 @@ import SwiftUI
 ///
 /// It is permanent, it is not dismissible, and it sits ABOVE the scrolling
 /// list so it cannot be scrolled away. The wording comes from
-/// `LocalEdits.summary` in the kit, so the sentence and the number it quotes
-/// are produced by the same thing.
+/// `LocalEdits` in the kit, so the sentence and the number it quotes are
+/// produced by the same thing.
+///
+/// IT IS COMPACT BY DEFAULT, AND THAT IS A FIX RATHER THAN A PREFERENCE.
+/// It used to print `LocalEdits.summary` -- two sentences -- permanently. At
+/// the largest accessibility text size those two sentences are eight lines: the
+/// banner took roughly 80% of an iPhone viewport and the account list underneath
+/// it became a ~180pt sliver. A ledger you cannot see is its own kind of
+/// dishonesty.
+///
+/// The two obvious escapes were both refused, and rightly: shortening the
+/// sentence weakens what it explains, and letting the banner scroll away removes
+/// the one guarantee it exists to give. So the banner SPLITS instead. What stays
+/// on screen at every text size is the COUNT -- one line, the number first --
+/// and the explanation is one tap behind a disclosure. That division follows
+/// what each half is for: the sentence is read once, when somebody first wonders
+/// what this app is; the number is read every day, and it is the number that
+/// changes.
 struct LocalCopyBanner: View {
     let edits: LocalEdits
+    /// Closed on every launch. This is deliberately NOT remembered: the
+    /// explanation is a thing you go and read, not a setting, and a banner whose
+    /// height depended on a tap made six weeks ago would be a banner nobody
+    /// could predict the size of.
+    @State private var showingExplanation = false
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 10) {
-            Image(systemName: edits.hasDiverged ? "arrow.triangle.branch" : "iphone.and.arrow.forward")
-                .foregroundStyle(edits.hasDiverged ? .orange : .secondary)
-                .accessibilityHidden(true)
-            Text(edits.summary)
-                .font(.footnote)
-                .foregroundStyle(edits.hasDiverged ? .primary : .secondary)
-                .fixedSize(horizontal: false, vertical: true)
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                withAnimation(.snappy(duration: 0.2)) { showingExplanation.toggle() }
+            } label: {
+                countRow
+            }
+            .buttonStyle(.plain)
+            .accessibilityElement(children: .combine)
+            .accessibilityAddTraits(.isButton)
+            .accessibilityHint(
+                showingExplanation ? "Hides what this means" : "Explains what this means"
+            )
+
+            if showingExplanation {
+                Text(edits.summary)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.top, 8)
+                    .transition(.opacity)
+            }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(edits.hasDiverged ? AnyShapeStyle(.orange.opacity(0.12)) : AnyShapeStyle(.quaternary.opacity(0.4)))
-        .accessibilityElement(children: .combine)
+        .background(
+            edits.hasDiverged
+                ? AnyShapeStyle(.orange.opacity(0.12)) : AnyShapeStyle(.quaternary.opacity(0.4))
+        )
+    }
+
+    private var countRow: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Image(
+                systemName: edits.hasDiverged
+                    ? "arrow.triangle.branch" : "iphone.and.arrow.forward"
+            )
+            .foregroundStyle(edits.hasDiverged ? .orange : .secondary)
+            .accessibilityHidden(true)
+            // THE COUNT, AND NOTHING ELSE. `.medium` because this is now the
+            // whole message rather than the first half of a paragraph, and it
+            // still wraps rather than truncating: a count that ran off the edge
+            // of the screen at a large text size would be the same bug in a
+            // smaller costume.
+            Text(edits.countLine)
+                .font(.footnote.weight(.medium))
+                .foregroundStyle(edits.hasDiverged ? .primary : .secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 8)
+            Image(systemName: "chevron.down")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .rotationEffect(.degrees(showingExplanation ? 180 : 0))
+                .accessibilityHidden(true)
+        }
+        .contentShape(Rectangle())
     }
 }
 
@@ -239,4 +303,23 @@ struct Notice: View {
 /// information.
 func amountColour(_ minor: Int64) -> Color {
     minor < 0 ? .red : .primary
+}
+
+/// The colour a figure printed under a DIRECTIONAL heading is drawn in.
+///
+/// The heading does not decide it; `FlowWords.Movement` does, and that follows
+/// the money. "Out −£5,438.08" used to be red because the column is called Out
+/// -- directly above a sentence saying the money came back. Colour that argues
+/// with the words beside it is worse than no colour, because the reader has to
+/// decide which of the two the app means.
+///
+/// Zero is neither, and is drawn as neither: a month with nothing out of it has
+/// not sent money anywhere, and the colour of a departure would be emphasis on
+/// an event that did not happen.
+func flowColour(_ movement: FlowWords.Movement) -> Color {
+    switch movement {
+    case .inward: return .green
+    case .outward: return .red
+    case .still: return .secondary
+    }
 }

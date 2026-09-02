@@ -63,6 +63,19 @@ public struct MonthlyIncomeExpense: Sendable, Hashable {
     public let month: String  // 'YYYY-MM'
     public let incomeMinor: Int64   // positive
     public let expenseMinor: Int64  // positive, net of refunds
+
+    /// A month in which refunds came to MORE than the spending.
+    ///
+    /// The same fact `MonthFlow.refundsExceededSpending` reports for the
+    /// dashboard's current month, and named identically on purpose: it is one
+    /// condition, and the two screens that show it must not describe it in two
+    /// different ways. A month like this draws no "Out" bar -- there is no
+    /// length to draw -- so the row says `FlowWords.spendChip` instead, exactly
+    /// as the by-category and by-tag reports already did.
+    public var refundsExceededSpending: Bool { expenseMinor < 0 }
+
+    /// The same on the income side: more taken back than came in.
+    public var clawbacksExceededIncome: Bool { incomeMinor < 0 }
 }
 
 public struct MonthlyCashFlow: Sendable, Hashable {

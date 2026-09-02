@@ -536,15 +536,19 @@ struct CustomRangeSheet: View {
             #if os(iOS)
                 .navigationBarTitleDisplayMode(.inline)
             #endif
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Apply") {
+            .safeAreaInset(edge: .bottom) {
+                ActionBar {
+                    PrimaryAction(title: "Apply") {
                         apply(DateRange(from: from, to: to))
                         dismiss()
                     }
+                    .reachProbe("Date range \u{2014} Apply")
+                }
+            }
+            .toolbar {
+                // Cancel stays top-left. See `ActionBar`.
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
                 }
             }
         }

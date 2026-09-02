@@ -52,9 +52,35 @@ public struct LocalEdits: Sendable, Hashable {
 
     public static let none = LocalEdits(count: 0, firstAt: nil, lastAt: nil)
 
+    /// THE ONE LINE THAT MUST NEVER LEAVE THE SCREEN.
+    ///
+    /// `summary` below is the whole explanation, and it is two sentences long.
+    /// At the largest accessibility text size those two sentences are eight
+    /// lines: the banner took about 80% of an iPhone viewport and left the
+    /// account list a ~180pt sliver. The two obvious ways out -- shortening the
+    /// sentence, or letting the banner scroll away -- both weaken the machinery
+    /// this file exists to protect, so the banner is SPLIT instead. This line is
+    /// permanent at every text size; `summary` is one tap behind a disclosure.
+    ///
+    /// THE COUNT IS THE LOAD-BEARING HALF, which is why it is the half that
+    /// stays. A fixed sentence saying "this is a copy" reads identically before
+    /// the first edit and after the hundredth, and fades into furniture within a
+    /// week; a number that grows is arithmetic. The number is also in the SAME
+    /// PLACE every time -- first, before any word -- so the eye lands on the
+    /// digit rather than reading a sentence to find it. That is why zero is
+    /// "0 changes" and not "No changes yet": the shape does not change, only the
+    /// figure does, and a reader who glances at this a hundred times a month is
+    /// checking one character.
+    public var countLine: String {
+        "\(count) change\(count == 1 ? "" : "s") not in your web app"
+    }
+
     /// The sentence the app puts under the net-worth figure. One sentence, in
     /// plain words, that answers "which of my two apps is right about this
     /// number?" without needing the reader to already know the answer.
+    ///
+    /// Shown behind the disclosure on the banner, and in full wherever there is
+    /// room for it. `countLine` is the part that is always on screen.
     public var summary: String {
         guard count > 0 else {
             return "This copy matches the backup you imported. Your web app still holds the "

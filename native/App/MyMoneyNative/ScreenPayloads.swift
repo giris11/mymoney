@@ -167,3 +167,44 @@ struct InsightsScreen: Sendable {
     /// "3,476 of 5,127 payments were looked at" rather than a bare figure.
     let transactionCount: Int
 }
+
+/// The scheduled-payments screen: what is due, and the arrangements behind it.
+///
+/// ONE VALUE, DECIDED IN THE STORE. `plan` is `Upcoming.plan`'s answer -- the
+/// due list, the totals and the below-zero warnings -- carried here unchanged.
+/// The view chooses words for it and nothing else; there is no arithmetic in
+/// this file and none in the screens that read it.
+struct SchedulesScreen: Sendable {
+    let plan: UpcomingPlan
+    /// Every schedule, paused ones included, by name.
+    let schedules: [Schedule]
+    /// The accounts, for the currency and the name beside each row. Taken from
+    /// the same read as everything else, so a row cannot be labelled with an
+    /// account the plan was not built from.
+    let accounts: [Account]
+    let today: String
+    /// How far ahead this plan looked.
+    let horizonDays: Int
+
+    func account(_ id: String) -> Account? { accounts.first { $0.id == id } }
+
+    /// The account's currency, which is the only currency a schedule's amount
+    /// is ever in. Falls back to the base currency's absence rather than to a
+    /// guess: an amount shown in the wrong currency is a wrong figure.
+    func currency(of accountId: String) -> String? { account(accountId)?.currency }
+}
+
+/// One schedule, opened.
+struct ScheduleDetailScreen: Sendable {
+    let schedule: Schedule
+    /// Every decision taken about it, newest first, with orphans marked.
+    let history: [ScheduleHistoryRow]
+    /// The next few dates it falls on, whatever their state.
+    let nextDates: [String]
+    let currency: String
+    let accountName: String
+    let categoryPath: String?
+    /// What the whole schedule will have cost by the time it ends, when it
+    /// ends. nil for one that carries on.
+    let remainingCount: Int?
+}

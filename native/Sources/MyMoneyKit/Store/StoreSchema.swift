@@ -125,7 +125,7 @@ public enum StoreSchema {
     /// SEPARATE FROM `Schema.version`, which is the BACKUP FILE's version and
     /// belongs to the web app. Conflating them would mean the store could never
     /// gain an index without claiming every backup file had changed format.
-    public static let version = 3
+    public static let version = 4
 
     /// The ledger tables that carry a tombstone, in the order a restore writes
     /// them (parents before children, so a store with foreign keys switched on
@@ -148,9 +148,40 @@ public enum StoreSchema {
         "transaction_splits", "transaction_tags", "budget_categories",
     ]
 
+    /// THIS APP'S OWN TABLES, WHICH ARE NOT PART OF THE BOOK.
+    ///
+    /// A schedule is a plan, and the web app has never heard of it. That has
+    /// three consequences, and they are the reason this is a separate list
+    /// rather than two more entries in `tombstonedTables`:
+    ///
+    ///   1. THEY ARE NOT EXPORTED. The backup file's format has no place to put
+    ///      them, and inventing one would produce a file the web app would
+    ///      either reject or silently drop half of. So a schedule lives on this
+    ///      device only, and the app says so.
+    ///   2. AN IMPORT MUST NOT WIPE THEM. `clearAllRows` empties every table in
+    ///      `tombstonedTables` before writing the incoming book; a schedule
+    ///      swept away by a routine re-import of the owner's own backup would
+    ///      be work destroyed by a refresh, which is exactly the failure this
+    ///      project does not accept. They are absent from that list on purpose.
+    ///   3. THEY STILL CARRY TOMBSTONES AND LIVE VIEWS, because deleting a
+    ///      schedule is a delete like any other and the sync-safety finding in
+    ///      this file's header applies to every row a person can remove.
+    ///
+    /// `isEmpty()` deliberately does not look at them either: a device holding
+    /// schedules and no book is still a device with no book, and must be able
+    /// to take its first import without being told it is not empty.
+    public static let nativeTombstonedTables: [String] = ["schedules", "schedule_events"]
+
+    /// Every table whose rows are removed by tombstone, wherever they came
+    /// from. What `softDelete`, `undelete` and the live views are keyed to.
+    public static var allTombstonedTables: [String] {
+        tombstonedTables + nativeTombstonedTables
+    }
+
     /// Every table this schema defines, bookkeeping included.
     public static let allTables: [String] =
-        tombstonedTables + childTables + ["settings", "schema_migrations", "store_meta"]
+        tombstonedTables + nativeTombstonedTables + childTables
+        + ["settings", "schema_migrations", "store_meta"]
 
     /// The SQL table a BACKUP FILE's table name corresponds to.
     ///
@@ -183,6 +214,10 @@ public enum StoreSchema {
         ("transactions", "amount_minor"),
         ("transaction_splits", "amount_minor"),
         ("budgets", "amount_minor"),
+        // A schedule's amount is money that has not moved yet, which makes it
+        // no less money: it is what will be written into a transaction, and a
+        // float here would become a float there.
+        ("schedules", "amount_minor"),
     ]
 
     /// The two columns that legitimately hold a Double, named here so that
@@ -435,9 +470,7 @@ public enum StoreSchema {
     /// the matching view -- `SELECT *` is expanded and frozen when the view is
     /// created, so a new column would otherwise be invisible to every read.
     static var liveViewStatements: [String] {
-        tombstonedTables.map { table in
-            "CREATE VIEW live_\(table) AS SELECT * FROM \(table) WHERE deleted_at IS NULL"
-        }
+        tombstonedTables.map { liveView($0) }
     }
 
     // MARK: - Migration 2: provenance and the indexes real data needs
@@ -540,6 +573,141 @@ public enum StoreSchema {
         ]
     )
 
+    // MARK: - Migration 4: schedules, and the decisions taken about them
+
+    static let migration4 = StoreMigration(
+        version: 4,
+        name: "schedules and their occurrence decisions",
+        statements: [
+            // A STANDING ARRANGEMENT. Not a transaction, not in any balance,
+            // and not in the backup file -- see `nativeTombstonedTables`.
+            //
+            // THE CHECKS ARE THE POINT OF WRITING IT HERE RATHER THAN ONLY IN
+            // SWIFT. Three of them close holes that would otherwise be found
+            // months later, on a phone, by a payment that did not happen:
+            //
+            //   * `amount_minor <> 0` -- a schedule for nothing would sit in
+            //     the list looking real and post rows of zero for ever.
+            //   * the end-shape pair -- "ends after a count" with no count in
+            //     it is a row whose meaning has to be guessed, and a guess
+            //     here decides whether a schedule stops.
+            //   * `end_count >= 1` -- a schedule with zero occurrences is not
+            //     a schedule.
+            """
+            CREATE TABLE schedules (
+                id             TEXT    NOT NULL PRIMARY KEY,
+                name           TEXT    NOT NULL,
+                account_id     TEXT    NOT NULL,
+                -- MONEY. Signed, in the ACCOUNT's currency, exactly as a
+                -- transaction's amount is. `ANY` + typeof is the strict form;
+                -- the header explains at length why.
+                amount_minor   ANY     NOT NULL
+                               CHECK (typeof(amount_minor) = 'integer'
+                                      AND amount_minor <> 0),
+                -- A NAME, not a payee id: a schedule has to survive a re-import
+                -- that gave every payee a new id, and posting resolves the name
+                -- the same way typing it by hand does.
+                payee_name     TEXT    NOT NULL,
+                category_id    TEXT,
+                notes          TEXT    NOT NULL,
+                cadence        TEXT    NOT NULL
+                               CHECK (cadence IN ('weekly', 'fortnightly', 'four_weekly',
+                                                  'monthly', 'quarterly', 'annual')),
+                -- The anchor. Every occurrence is measured from this date, so a
+                -- schedule on the 31st stays on the 31st. See ScheduleCalendar.
+                start_date     TEXT    NOT NULL,
+                end_kind       TEXT    NOT NULL
+                               CHECK (end_kind IN ('never', 'on_date', 'after_count')),
+                end_date       TEXT,
+                end_count      INTEGER CHECK (end_count IS NULL OR end_count >= 1),
+                -- The first date the app EXPECTS this schedule to have been
+                -- entered from, which is not the anchor: an anchor in 2024 is
+                -- how you get "the 3rd of the month", and must not arrive with
+                -- two years of overdue payments.
+                expects_from   TEXT    NOT NULL,
+                auto_post      INTEGER NOT NULL CHECK (auto_post IN (0, 1)),
+                -- Auto-post cannot reach back past the day it was switched on.
+                auto_post_from TEXT,
+                paused         INTEGER NOT NULL CHECK (paused IN (0, 1)),
+                remind         INTEGER NOT NULL CHECK (remind IN (0, 1)),
+                created_at     TEXT    NOT NULL,
+                updated_at     TEXT    NOT NULL,
+                deleted_at     TEXT,
+                -- TABLE constraints, which SQLite requires after the last
+                -- column: an end shape that does not carry its own value is a
+                -- row whose meaning would have to be guessed, and a guess here
+                -- decides whether a schedule ever stops.
+                CHECK ((end_kind = 'on_date') = (end_date IS NOT NULL)),
+                CHECK ((end_kind = 'after_count') = (end_count IS NOT NULL))
+            ) STRICT
+            """,
+            // WHAT THE APP DECIDED ABOUT ONE OCCURRENCE. One row per (schedule,
+            // occurrence date): a decision about the payment due on 3 September
+            // is a single fact, and the last one taken stands.
+            //
+            // `transaction_id` IS A CLAIM, NOT A STATE. Nothing here says
+            // "done" -- it says "the book contains transaction t for this
+            // occurrence", and whether that is still true is answered by
+            // looking, on every read (`live_transactions`). A transaction the
+            // owner deleted, or one wiped by a fresh import, turns the
+            // occurrence back into something due, which is what the ledger
+            // actually shows.
+            //
+            // REFERENCES schedules(id) WITH NO CASCADE, deliberately: a
+            // schedule is never physically deleted, so the only thing this
+            // could cascade from is a bug, and refusing is better than
+            // quietly discarding the record of every payment it made.
+            //
+            // AND `transaction_id` HAS NO FOREIGN KEY AT ALL, which is
+            // load-bearing rather than an omission. An import physically empties
+            // the transactions table (`clearAllRows`); a foreign key here would
+            // either make that DELETE fail or, with a cascade, silently destroy
+            // the record of every payment this app has ever entered. The column
+            // is a claim to be checked by looking, and the LEFT JOIN in
+            // `scheduleDecisions` is where it is checked.
+            """
+            CREATE TABLE schedule_events (
+                schedule_id     TEXT NOT NULL REFERENCES schedules(id),
+                occurrence_date TEXT NOT NULL,
+                kind            TEXT NOT NULL CHECK (kind IN ('posted', 'skipped')),
+                transaction_id  TEXT,
+                at              TEXT NOT NULL,
+                deleted_at      TEXT,
+                CHECK ((kind = 'posted') = (transaction_id IS NOT NULL)),
+                PRIMARY KEY (schedule_id, occurrence_date)
+            ) STRICT
+            """,
+            liveView("schedules"),
+            liveView("schedule_events"),
+            // The upcoming screen reads every live schedule and then every
+            // decision belonging to it. Two indexes, both partial like the
+            // rest of this schema:
+            //
+            //   * by schedule, which is how the decisions are fetched;
+            //   * by TRANSACTION, which is the other direction entirely -- it
+            //     is what makes a posted transaction traceable back to the
+            //     schedule that made it, from the register, in one seek
+            //     rather than a scan.
+            """
+            CREATE INDEX idx_schedule_events_schedule
+                ON schedule_events(schedule_id, occurrence_date)
+                WHERE deleted_at IS NULL
+            """,
+            """
+            CREATE INDEX idx_schedule_events_transaction
+                ON schedule_events(transaction_id)
+                WHERE deleted_at IS NULL AND transaction_id IS NOT NULL
+            """,
+        ]
+    )
+
+    /// One live view, by name. `liveViewStatements` builds the ledger's set;
+    /// this is the same sentence for a table added later, so the two can never
+    /// be written differently.
+    static func liveView(_ table: String) -> String {
+        "CREATE VIEW live_\(table) AS SELECT * FROM \(table) WHERE deleted_at IS NULL"
+    }
+
     /// The chain, in order. Each entry runs exactly once, inside one
     /// transaction with the row that records it, so a migration that fails
     /// halfway leaves a store at the version it was at before.
@@ -556,5 +724,5 @@ public enum StoreSchema {
     ///   * Adding a column to a table with a `live_*` view means DROPping and
     ///     recreating that view in the same migration; `SELECT *` was expanded
     ///     when the view was created and will not see the new column.
-    static let all: [StoreMigration] = [migration1, migration2, migration3]
+    static let all: [StoreMigration] = [migration1, migration2, migration3, migration4]
 }

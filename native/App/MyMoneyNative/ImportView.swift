@@ -27,7 +27,6 @@ import UniformTypeIdentifiers
 struct ImportView: View {
     @Environment(AppModel.self) private var app
     @State private var picking = false
-    @State private var confirmingReplace = false
 
     var body: some View {
         List {
@@ -43,20 +42,17 @@ struct ImportView: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-
-                    Button {
-                        if app.hasBook {
-                            confirmingReplace = true
-                        } else {
-                            picking = true
-                        }
-                    } label: {
-                        Label("Choose a backup file\u{2026}", systemImage: "doc.badge.plus")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(isReading)
                 }
                 .padding(.vertical, 4)
+            }
+
+            if let document = app.incoming {
+                IncomingSection(
+                    document: document,
+                    importIt: { Task { await app.importIncoming() } },
+                    dismiss: { app.clearIncoming() },
+                    replacesABook: app.hasBook
+                )
             }
 
             if isReading {
@@ -125,25 +121,32 @@ struct ImportView: View {
             }
         }
         .navigationTitle("Import")
+        // The one action this screen has, at the bottom rather than three
+        // paragraphs down the list where it used to be. The explanation above
+        // is read once; the button is what the screen is for.
+        .safeAreaInset(edge: .bottom) {
+            ActionBar {
+                PrimaryAction(
+                    title: "Choose a backup file\u{2026}",
+                    systemImage: "doc.badge.plus",
+                    isEnabled: !isReading
+                ) {
+                    picking = true
+                }
+                .reachProbe("Import \u{2014} Choose a file")
+            }
+        }
+        // BOTH KINDS ARE OFFERED IN THE PANEL, and what a file IS is decided
+        // from its bytes afterwards -- see `IncomingFile`. A picker restricted
+        // to .json would refuse a perfectly good backup that somebody's mail
+        // client had saved as .txt, and would still have to check the contents
+        // of the ones it did accept.
         .fileImporter(
             isPresented: $picking,
-            allowedContentTypes: [.json, .init(filenameExtension: "json") ?? .json],
+            allowedContentTypes: [.json, .commaSeparatedText, .plainText, .data],
             allowsMultipleSelection: false
         ) { result in
             handle(result)
-        }
-        .confirmationDialog(
-            "Replace the copy on this device?",
-            isPresented: $confirmingReplace,
-            titleVisibility: .visible
-        ) {
-            Button("Choose a file\u{2026}") { picking = true }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text(
-                "This device already holds a copy of your book. Importing replaces it. "
-                    + "Your web app is untouched either way \u{2014} it is the real ledger."
-            )
         }
     }
 
@@ -173,7 +176,19 @@ struct ImportView: View {
                 // arrive dressed as a corrupt backup. A few megabytes in memory
                 // is the right price for that not happening.
                 let data = try Data(contentsOf: url)
-                Task { await app.importBackup(data: data, fileName: name) }
+                // IDENTIFIED BY ITS BYTES, exactly like a shared file, and
+                // shown before it is imported. A picked file used to import
+                // itself the moment the panel closed; now the panel chooses
+                // the FILE and the owner still chooses the import, which is
+                // the same rule the share sheet has to follow.
+                let kind = IncomingFile.kind(of: data, fileName: name)
+                let preview = kind == .csv
+                    ? String(data: data, encoding: .utf8).flatMap(CSVPreview.of)
+                    : nil
+                app.incoming = IncomingDocument(
+                    fileName: name, data: data, kind: kind, preview: preview
+                )
+                app.importPhase = .idle
             } catch {
                 app.importPhase = .failed(
                     "\(name) could not be read: \(error.localizedDescription)"
@@ -343,6 +358,132 @@ private struct RefusedSection: View {
                 "Nothing on this device was changed. Take a fresh backup from the web app and "
                     + "try that one."
             )
+        }
+    }
+}
+
+/// A file that has arrived -- picked here, or handed over by another app -- and
+/// what can be done with it.
+///
+/// THE CONFIRMATION LIVES HERE, ON THE FILE, rather than on the button that
+/// opened the panel. An import replaces the copy on this device, and the
+/// sentence asking about that should be next to the name of the file that is
+/// about to do it. The old dialog fired before a file had even been chosen,
+/// which meant confirming the replacement of a book with a file nobody had
+/// seen yet.
+private struct IncomingSection: View {
+    let document: IncomingDocument
+    let importIt: () -> Void
+    let dismiss: () -> Void
+    let replacesABook: Bool
+
+    @State private var confirming = false
+
+    var body: some View {
+        Section {
+            VStack(alignment: .leading, spacing: 6) {
+                Label {
+                    Text(document.fileName).font(.headline)
+                } icon: {
+                    Image(systemName: symbol)
+                        .foregroundStyle(tint)
+                }
+                Text(headline)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.vertical, 2)
+            .accessibilityElement(children: .combine)
+
+            if case .unreadable(let why) = document.kind {
+                Text(why)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if let preview = document.preview {
+                FigureRow(label: "Rows", value: Display.grouped(preview.rowCount))
+                FigureRow(
+                    label: "Columns",
+                    value: preview.columnNames.isEmpty
+                        ? "\u{2014}" : preview.columnNames.joined(separator: ", ")
+                )
+                // SAID PLAINLY, not softened. This app can read a statement and
+                // cannot yet write one into the book; half a write path for
+                // real money is worse than none.
+                Label(
+                    "Nothing was added. Bringing a statement's rows into your book is not built "
+                        + "here yet \u{2014} import them in your web app, then take a fresh backup "
+                        + "and bring that here.",
+                    systemImage: "info.circle"
+                )
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+
+            HStack(spacing: 12) {
+                if document.kind.isBackup {
+                    Button {
+                        if replacesABook { confirming = true } else { importIt() }
+                    } label: {
+                        Label("Check and import this file", systemImage: "checkmark.seal")
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+                Button(role: .cancel, action: dismiss) {
+                    Text(document.kind.isBackup ? "Not now" : "Dismiss")
+                }
+                .buttonStyle(.bordered)
+            }
+            .padding(.vertical, 4)
+        } header: {
+            Text("This file")
+        }
+        .confirmationDialog(
+            "Replace the copy on this device?",
+            isPresented: $confirming,
+            titleVisibility: .visible
+        ) {
+            Button("Import \u{201C}\(document.fileName)\u{201D}", role: .destructive, action: importIt)
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(
+                "This device already holds a copy of your book, and importing replaces it. The "
+                    + "file is checked against its own summary first, and is refused if anything "
+                    + "disagrees. Your web app is untouched either way \u{2014} it is the real "
+                    + "ledger."
+            )
+        }
+    }
+
+    private var symbol: String {
+        switch document.kind {
+        case .backup: return "doc.badge.gearshape"
+        case .csv: return "tablecells"
+        case .unreadable: return "xmark.octagon.fill"
+        }
+    }
+
+    private var tint: Color {
+        switch document.kind {
+        case .backup: return .accentColor
+        case .csv: return .secondary
+        case .unreadable: return .red
+        }
+    }
+
+    private var headline: String {
+        switch document.kind {
+        case .backup:
+            return "This looks like a MyMoney backup. Nothing has been read into your book yet "
+                + "\u{2014} importing checks it against its own summary first."
+        case .csv:
+            return "This is a spreadsheet or a bank statement, not a backup."
+        case .unreadable:
+            return "This is not something this app can read."
         }
     }
 }

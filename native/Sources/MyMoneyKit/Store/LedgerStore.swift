@@ -215,12 +215,12 @@ public final class LedgerStore {
     /// does not already know.
     public func liveCount(_ table: String) throws -> Int {
         try requireKnownTable(table)
-        let source = StoreSchema.tombstonedTables.contains(table) ? "live_\(table)" : table
+        let source = StoreSchema.allTombstonedTables.contains(table) ? "live_\(table)" : table
         return Int(try connection.scalarInt("SELECT count(*) FROM \(source)") ?? 0)
     }
 
     public func deletedCount(_ table: String) throws -> Int {
-        guard StoreSchema.tombstonedTables.contains(table) else { return 0 }
+        guard StoreSchema.allTombstonedTables.contains(table) else { return 0 }
         return Int(try connection.scalarInt(
             "SELECT count(*) FROM \(table) WHERE deleted_at IS NOT NULL"
         ) ?? 0)
@@ -295,10 +295,10 @@ public final class LedgerStore {
     }
 
     private func requireTombstoned(_ table: String) throws {
-        guard StoreSchema.tombstonedTables.contains(table) else {
+        guard StoreSchema.allTombstonedTables.contains(table) else {
             throw StoreError.corrupt(
                 "\"\(table)\" is not a table with tombstones; deletable tables are "
-                    + StoreSchema.tombstonedTables.joined(separator: ", ")
+                    + StoreSchema.allTombstonedTables.joined(separator: ", ")
             )
         }
     }

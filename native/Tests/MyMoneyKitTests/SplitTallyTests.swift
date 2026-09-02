@@ -23,10 +23,46 @@ struct SplitTallyTests {
         #expect(tally.isSavable)
         #expect(tally.refusal == nil)
         #expect(tally.message == nil)
-        // The whole amount is unallocated, which is what a first split line
-        // should be pre-filled with.
+        // The whole amount IS unallocated, and the tally still says so.
         #expect(tally.remainderMinor == -2500)
-        #expect(tally.suggestedNextLineMinor == -2500)
+        // ...but it is NOT what the first line should be pre-filled with. See
+        // `firstLineIsNotPreFilled` below.
+        #expect(tally.suggestedNextLineMinor == nil)
+    }
+
+    @Test("THE FIRST LINE IS NOT PRE-FILLED; THE SECOND ONE IS")
+    func firstLineIsNotPreFilled() {
+        // A £25.00 expense about to be split in two.
+        //
+        // Pre-filling line one with the whole £25.00 helped a case that does not
+        // exist -- nobody splits £25 into a single £25 line -- and taxed the one
+        // that does: every two-line split started by clearing a field the app
+        // had just filled in, and line two then offered £0.00 because line one
+        // had already claimed everything.
+        let nothingYet = SplitTally.of(amountMinor: -2500, splits: [], currency: "GBP")
+        #expect(nothingYet.suggestedNextLineMinor == nil)
+
+        // Type the part you know...
+        let oneLine = SplitTally.of(amountMinor: -2500, splits: [split(-1200)], currency: "GBP")
+        // ...and the next line arrives holding exactly what is left, which is
+        // the subtraction worth doing for somebody.
+        #expect(oneLine.suggestedNextLineMinor == -1300)
+
+        let finished = SplitTally.of(
+            amountMinor: -2500, splits: [split(-1200), split(-1300)], currency: "GBP"
+        )
+        #expect(finished.isBalanced)
+        #expect(finished.suggestedNextLineMinor == nil)
+    }
+
+    @Test("an income split pre-fills the right way round too")
+    func positiveParentPreFill() {
+        // The signs are the easy thing to get backwards, and a pre-fill that
+        // arrived negative inside a positive transaction would be a split that
+        // could never balance.
+        let oneLine = SplitTally.of(amountMinor: 9_000, splits: [split(2_500)], currency: "GBP")
+        #expect(oneLine.status == .short(6_500))
+        #expect(oneLine.suggestedNextLineMinor == 6_500)
     }
 
     @Test("THE REMAINDER IS EXACT, and it is what the next line should say")

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- The same App Group identifier the app carries, from the same build
+	     setting. This is what makes the widget look in the directory the app
+	     writes to rather than in one that merely sounds like it. -->
+	<key>MyMoneyAppGroup</key>
+	<string>$(MYMONEY_APP_GROUP)</string>
+
+	<key>NSExtension</key>
+	<dict>
+		<key>NSExtensionPointIdentifier</key>
+		<string>com.apple.widgetkit-extension</string>
+	</dict>
+</dict>
+</plist>

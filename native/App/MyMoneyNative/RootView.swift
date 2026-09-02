@@ -29,12 +29,14 @@ import SwiftUI
 enum Route: Hashable {
     case dashboard
     case budgets
+    case scheduled
     case reports
     case insights
     case allTransactions
     case account(String)
     case importBackup
     case groups
+    case settings
 }
 
 /// Which editor is open. One enum rather than five booleans: two sheets can
@@ -60,6 +62,12 @@ enum EditorSheet: Identifiable {
 
 struct RootView: View {
     @Environment(AppModel.self) private var app
+    /// The lock. Owned by the App so that it exists before the first frame --
+    /// see `AppLockModel.init`, which decides "locked" there rather than in a
+    /// `.task`, so there is no moment in which the book is drawn behind an
+    /// arriving lock screen.
+    let lock: AppLockModel
+    @Environment(\.scenePhase) private var scenePhase
     @State private var selection: Route?
     /// The register currently open in the detail column, rebuilt whenever the
     /// route changes -- or whenever the book changes -- so its paging and its
@@ -79,15 +87,29 @@ struct RootView: View {
     private var groups: [AccountGroup] { app.summary?.snapshot.groups ?? [] }
 
     var body: some View {
-        NavigationSplitView {
-            sidebar
-                .navigationSplitViewColumnWidth(min: 280, ideal: 340)
-        } detail: {
-            NavigationStack {
-                detail
+        // THE UNDO BAR IS A VSTACK ROW, NOT A `safeAreaInset`, AND THAT IS A BUG
+        // FIX RATHER THAN A STYLE. It used to be a bottom safe-area inset on the
+        // `NavigationSplitView`. Now that the screens INSIDE the split view have
+        // bottom bars of their own, the two did not stack: the outer inset was
+        // drawn over the inner one, and an undo bar arriving after a delete
+        // sliced the Quick Add button in half. Nested safe-area insets across a
+        // split view's columns do not compose, and this was found by taking a
+        // screenshot of an actual delete rather than by reasoning about it.
+        //
+        // A `VStack` composes by construction. The split view is proposed the
+        // height that is left, so every bar inside it -- Quick Add, Save, New
+        // budget -- lands ABOVE the undo bar instead of underneath it, and the
+        // undo bar keeps the very bottom of the screen, which is the easiest
+        // place on the phone to reach and the right place for "put that back".
+        VStack(spacing: 0) {
+            NavigationSplitView {
+                sidebar
+                    .navigationSplitViewColumnWidth(min: 280, ideal: 340)
+            } detail: {
+                NavigationStack {
+                    detail
+                }
             }
-        }
-        .safeAreaInset(edge: .bottom) {
             if let pending = app.pendingUndo {
                 UndoBar(
                     message: pending.message,
@@ -98,6 +120,38 @@ struct RootView: View {
             }
         }
         .animation(.default, value: app.pendingUndo?.id)
+        // THE COVER IS OVER EVERYTHING, INCLUDING THE UNDO BAR AND ANY SHEET.
+        // Placed on the outermost view for that reason: a lock that left one
+        // strip of the register visible would be a lock that had not worked.
+        .overlay {
+            if lock.isObscured {
+                LockCover(lock: lock)
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeInOut(duration: 0.15), value: lock.isObscured)
+        .onChange(of: scenePhase) { _, phase in
+            lock.scenePhaseChanged(to: phase)
+            // COMING BACK ON A NEW DAY runs the automatic postings, because
+            // "the next time you open the app" has to include the time somebody
+            // comes back to it rather than launching it cold. Coming back ten
+            // minutes later does nothing -- `AppModel.foregrounded` checks the
+            // day.
+            if phase == .active { Task { await app.foregrounded() } }
+        }
+        // A file handed over by another app -- the share sheet, Files, AirDrop,
+        // a mail attachment. It lands on the Import screen with its own
+        // description and the ordinary confirmation; it does NOT import itself.
+        .onOpenURL { url in
+            app.receive(url)
+            selection = .importBackup
+        }
+        // Something wrote to the book from outside these screens: an App Intent
+        // run by Siri while the app was open. Re-read rather than let the
+        // register go quietly out of date.
+        .onReceive(NotificationCenter.default.publisher(for: .ledgerChangedOutsideTheApp)) { _ in
+            Task { await app.load() }
+        }
         .task {
             await app.load()
             await loadContext()
@@ -127,45 +181,26 @@ struct RootView: View {
             content
         }
         .navigationTitle("MyMoney")
-        .toolbar {
-            ToolbarItem {
-                Menu {
-                    Button {
-                        sheet = .quickAdd
-                    } label: {
-                        Label("Quick add", systemImage: "bolt")
-                    }
-                    Button {
-                        sheet = .newTransaction
-                    } label: {
-                        Label("Transaction\u{2026}", systemImage: "square.and.pencil")
-                    }
-                    Button {
-                        sheet = .transfer(nil, legId: nil)
-                    } label: {
-                        Label("Transfer\u{2026}", systemImage: "arrow.left.arrow.right")
-                    }
-                    Divider()
-                    Button {
-                        sheet = .account(nil)
-                    } label: {
-                        Label("Account\u{2026}", systemImage: "building.columns")
-                    }
-                } label: {
-                    Label("Add", systemImage: "plus")
-                }
-                .disabled(context == nil || !app.hasBook)
-                .help("Add a transaction, a transfer or an account")
-            }
-            ToolbarItem {
-                Button {
-                    selection = .importBackup
-                } label: {
-                    Label("Import a backup", systemImage: "square.and.arrow.down")
-                }
-                .help("Import a backup file exported from the web app")
+        // THE ADD MENU USED TO BE A "+" IN THE NAVIGATION BAR. It is the single
+        // most-pressed control in the app -- it is the only door to Quick Add,
+        // which is the reason the app exists -- and it was in the one place a
+        // thumb on a 6.9" phone cannot get to. It is a bar now, and Quick Add
+        // is its own button rather than the first item of a menu, so the fast
+        // path is one tap from the accounts screen instead of two.
+        //
+        // Nothing is shown while there is no book: a disabled bar under a
+        // screen whose whole message is "import a backup" would be a dead grey
+        // slab arguing with it.
+        .safeAreaInset(edge: .bottom) {
+            if app.hasBook, context != nil {
+                AddActionBar(probe: "Accounts \u{2014} Quick add") { sheet = $0 }
             }
         }
+        // THE IMPORT BUTTON IS GONE FROM THE TOOLBAR AND NOT REPLACED. It was
+        // already duplicated as a row in the accounts list, and in the empty
+        // and failed states as the one route out of them; a second copy of a
+        // once-a-year action was not worth a permanent seat at the top of the
+        // screen. Every path to it still exists.
     }
 
     @ViewBuilder private var content: some View {
@@ -251,6 +286,8 @@ struct RootView: View {
             )
         case .budgets:
             BudgetsView(revision: app.revision)
+        case .scheduled:
+            SchedulesView(revision: app.revision)
         case .reports:
             ReportsView(revision: app.revision)
         case .insights:
@@ -259,11 +296,24 @@ struct RootView: View {
             ImportView()
         case .groups:
             AccountGroupsView(groups: groups, counts: accountCountsByGroup)
+        case .settings:
+            SettingsView(lock: lock)
         case .none:
             placeholder
         case .allTransactions, .account:
             if let register {
-                RegisterView(model: register, openEditor: openEditor(for:))
+                RegisterView(
+                    model: register,
+                    openEditor: openEditor(for:),
+                    // ON A PHONE THE REGISTER HAD NO ADD BUTTON AT ALL. The
+                    // split view collapses to a stack, the sidebar's toolbar
+                    // goes with it, and adding a transaction from the screen
+                    // that shows transactions meant navigating back first. The
+                    // register gets its own bar in the collapsed layout;
+                    // `RegisterView` hides it when the sidebar is on screen
+                    // beside it, so an iPad never shows two.
+                    openSheet: { sheet = $0 }
+                )
                 // A new model means a new register: without an identity the
                 // list would keep the previous account's rows while the new
                 // ones loaded, and for a moment show one account's
@@ -393,8 +443,59 @@ struct RootView: View {
                 service: app.service,
                 lookups: lookups
             )
-        case .dashboard, .budgets, .reports, .insights, .importBackup, .groups, .none:
+        case .dashboard, .budgets, .scheduled, .reports, .insights, .importBackup, .groups,
+            .settings, .none:
             register = nil
+        }
+    }
+}
+
+/// The bar that adds things, wherever adding things makes sense.
+///
+/// QUICK ADD IS THE BUTTON, not the first line of a menu. It is the one action
+/// this app is built around, so it gets the wide filled target on the right,
+/// where a thumb lands without aiming. The other three kinds -- a full
+/// transaction, a transfer, an account -- are behind the small menu at the far
+/// end, because between them they are a handful of taps a month.
+struct AddActionBar: View {
+    /// What this bar's primary button is called in the reach log.
+    let probe: String
+    let open: (EditorSheet) -> Void
+
+    var body: some View {
+        ActionBar {
+            HStack(spacing: 16) {
+                Menu {
+                    Button {
+                        open(.newTransaction)
+                    } label: {
+                        Label("Transaction\u{2026}", systemImage: "square.and.pencil")
+                    }
+                    Button {
+                        open(.transfer(nil, legId: nil))
+                    } label: {
+                        Label("Transfer\u{2026}", systemImage: "arrow.left.arrow.right")
+                    }
+                    Divider()
+                    Button {
+                        open(.account(nil))
+                    } label: {
+                        Label("Account\u{2026}", systemImage: "building.columns")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .frame(minWidth: 28, minHeight: 24)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+                .accessibilityLabel("Add a transaction, a transfer or an account")
+                .help("Add a transaction, a transfer or an account")
+
+                PrimaryAction(title: "Quick add", systemImage: "bolt.fill") {
+                    open(.quickAdd)
+                }
+                .reachProbe(probe)
+            }
         }
     }
 }

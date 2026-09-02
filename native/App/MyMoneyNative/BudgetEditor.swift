@@ -148,13 +148,18 @@ struct BudgetEditor: View {
             #if os(iOS)
                 .navigationBarTitleDisplayMode(.inline)
             #endif
+            .safeAreaInset(edge: .bottom) {
+                SaveBar(
+                    title: "Save",
+                    isEnabled: canSave,
+                    probe: "Budget editor \u{2014} Save",
+                    save: { Task { await save() } }
+                )
+            }
             .toolbar {
+                // Cancel stays top-left. See `ActionBar`.
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") { Task { await save() } }
-                        .disabled(!canSave)
                 }
             }
             .task { await prepare() }

@@ -261,6 +261,43 @@ struct InsightsTests {
         #expect(insights.coverage.moneyInSkipped == 12)
     }
 
+    @Test("THE OBSERVED COUNT SAYS IT IS OBSERVED, so it cannot read as a rate")
+    func observedPhraseIsNotARate() throws {
+        // Two years of a monthly payment: 24 seen, 12 a year. The row printed
+        // "24 payments \u{00B7} about £528.00 a year", where the first number sat
+        // next to "a year" and looked like the rate behind the second. It is
+        // not -- 24 × the typical payment is twice the annual figure -- and a
+        // reader who checked the arithmetic that way would conclude the app was
+        // wrong about their money.
+        var book = BookBuilder()
+        book.account("a1")
+        book.pay("Redstart Broadband", 4_400, on: Dates.monthly(from: "2024-09-05", count: 24))
+
+        let insights = try report(book)
+        let series = try #require(insights.recurring.first)
+        #expect(series.evidence.matched == 24)
+        #expect(series.cadence.occurrencesPerYear == 12)
+        #expect(series.annualCostMinor == 52_800)  // 4,400 × 12, not × 24
+
+        // The two numbers now describe themselves.
+        #expect(series.evidence.observedPhrase == "24 payments so far")
+        #expect(series.cadence.perYearPhrase == "12 payments a year")
+    }
+
+    @Test("one payment is one payment, not one payments")
+    func observedPhraseSingular() {
+        let one = SeriesEvidence(
+            matched: 1, missed: 0, extras: 0, missedDates: [], toleranceDays: 4,
+            typicalSlipDays: 0, worstSlipDays: 0, earlierPayments: 0, otherPaymentsInRun: 0
+        )
+        #expect(one.observedPhrase == "1 payment so far")
+        let none = SeriesEvidence(
+            matched: 0, missed: 0, extras: 0, missedDates: [], toleranceDays: 4,
+            typicalSlipDays: 0, worstSlipDays: 0, earlierPayments: 0, otherPaymentsInRun: 0
+        )
+        #expect(none.observedPhrase == "0 payments so far")
+    }
+
     @Test("an empty book says nothing at all")
     func emptyBook() throws {
         var book = BookBuilder()

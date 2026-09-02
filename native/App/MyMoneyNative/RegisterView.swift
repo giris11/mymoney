@@ -28,14 +28,41 @@ import SwiftUI
 
 struct RegisterView: View {
     @Environment(AppModel.self) private var app
+    /// Compact means the split view has collapsed onto a stack -- an iPhone, or
+    /// a narrow window -- which is exactly the case where the sidebar's add bar
+    /// is not on screen and this one is needed. On an iPad or a Mac the sidebar
+    /// is beside the register and carries the bar already, so showing a second
+    /// one here would be two Quick Add buttons in the same window.
+    #if os(iOS)
+        @Environment(\.horizontalSizeClass) private var sizeClass
+    #endif
     @State private var model: RegisterModel
     /// Handed in by the shell, which owns the sheet.
     let openEditor: (String) -> Void
+    /// Also the shell's: the register asks for an editor, it never opens one.
+    let openSheet: (EditorSheet) -> Void
     @State private var refusal: EditRefusal?
+    /// What is in the search field. Separate from the model's `RegisterSearch`
+    /// because this changes on every keystroke and that changes once the typing
+    /// settles -- see the `.task(id:)` below.
+    @State private var query = ""
 
-    init(model: RegisterModel, openEditor: @escaping (String) -> Void) {
+    init(
+        model: RegisterModel,
+        openEditor: @escaping (String) -> Void,
+        openSheet: @escaping (EditorSheet) -> Void
+    ) {
         _model = State(initialValue: model)
         self.openEditor = openEditor
+        self.openSheet = openSheet
+    }
+
+    private var showsAddBar: Bool {
+        #if os(iOS)
+            return sizeClass == .compact
+        #else
+            return false
+        #endif
     }
 
     var body: some View {
@@ -51,10 +78,18 @@ struct RegisterView: View {
                     .frame(maxWidth: .infinity)
                 } else if model.entries.isEmpty && !model.isLoading {
                     Notice(
-                        symbol: "tray",
-                        title: "No transactions",
-                        message:
-                            "Nothing here yet in the copy on this device. Use Add to enter one."
+                        symbol: model.isSearching ? "magnifyingglass" : "tray",
+                        title: model.isSearching ? "Nothing matches" : "No transactions",
+                        message: model.isSearching
+                            // NAMES WHAT WAS SEARCHED FOR AND WHAT WAS SEARCHED
+                            // IN. "No results" leaves somebody wondering whether
+                            // the box even works; this says what was looked at,
+                            // so an empty answer is information rather than a
+                            // shrug.
+                            ? "Nothing matches \u{201C}\(model.search.raw)\u{201D}. Payees, "
+                                + "notes, amounts, categories, accounts, tags and dates were all "
+                                + "looked at, and every word has to match."
+                            : "Nothing here yet in the copy on this device. Use Add to enter one."
                     )
                     .frame(maxWidth: .infinity)
                 }
@@ -120,18 +155,54 @@ struct RegisterView: View {
             }
         }
         .navigationTitle(model.title)
-        .task { await model.start() }
+        // SEARCH IS SQL, NOT A FILTER OVER WHAT IS LOADED. The list holds one
+        // page; the search runs over every row in the book. Filtering the
+        // loaded array would search the eighty rows that happen to be on screen
+        // and quietly call that "no results".
+        .searchable(text: $query, prompt: "Payee, note, amount, category\u{2026}")
+        // DEBOUNCED BY `.task(id:)`, which cancels the previous run on the next
+        // keystroke. A query per keystroke would be six queries for "coffee",
+        // five of which nobody waits for.
+        .task(id: query) {
+            if !query.isEmpty {
+                try? await Task.sleep(for: .milliseconds(220))
+                guard !Task.isCancelled else { return }
+            }
+            await model.apply(search: query)
+        }
+        .safeAreaInset(edge: .bottom) {
+            if showsAddBar {
+                AddActionBar(probe: "Register \u{2014} Quick add", open: openSheet)
+            }
+        }
     }
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(
-                model.totalCount > 0
-                    ? "\(Display.count(model.totalCount, "transaction")), newest first"
-                        + (model.showsRunningBalance ? ", with the balance after each one" : "")
-                    : "Newest first"
-            )
-            if !model.showsRunningBalance {
+            if model.isSearching {
+                // "12 matches in 5,127 transactions" rather than a bare count,
+                // which on its own reads as though the book had shrunk.
+                Text(
+                    "\(Display.count(model.totalCount, "match", "matches")) in "
+                        + "\(Display.count(model.unfilteredCount, "transaction"))"
+                )
+            } else {
+                Text(
+                    model.totalCount > 0
+                        ? "\(Display.count(model.totalCount, "transaction")), newest first"
+                            + (model.showsRunningBalance ? ", with the balance after each one" : "")
+                        : "Newest first"
+                )
+            }
+            if model.isSearching {
+                // Said out loud rather than left as a column that silently
+                // vanished. The reasoning is on `RegisterModel.showsRunningBalance`.
+                Text(
+                    "No running balance while searching \u{2014} a balance is the account's own "
+                        + "figure minus every newer row, and a filtered list has gaps in it."
+                )
+                .foregroundStyle(.secondary)
+            } else if !model.showsRunningBalance {
                 // Said once, at the top, rather than left as a missing column
                 // somebody has to wonder about.
                 Text(

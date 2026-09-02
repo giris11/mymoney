@@ -437,7 +437,7 @@ extension LedgerStore {
     /// there is nothing in the bin.
     public func undoDelete(_ receipt: DeletedRecord) throws {
         try connection.transaction {
-            guard StoreSchema.tombstonedTables.contains(receipt.table) else {
+            guard StoreSchema.allTombstonedTables.contains(receipt.table) else {
                 throw StoreError.corrupt("\"\(receipt.table)\" has no tombstones")
             }
             let statement = try connection.prepare(
@@ -462,6 +462,7 @@ extension LedgerStore {
         case "accounts": return "account"
         case "account_groups": return "group"
         case "budgets": return "budget"
+        case "schedules": return "schedule"
         default: return "record"
         }
     }

@@ -71,8 +71,13 @@ struct BudgetsView: View {
                             message:
                                 "A budget sets a spending limit for chosen categories each week, "
                                 + "month or year, and tracks how you are doing against it. "
-                                + "Subcategories count towards it too.",
-                            action: ("Create your first budget", { editing = .creating })
+                                + "Subcategories count towards it too."
+                            // NO BUTTON IN THIS NOTICE. It used to carry
+                            // "Create your first budget", which now sits in the
+                            // bar at the bottom of the screen -- and a centred
+                            // button halfway up saying the same thing would be
+                            // both a duplicate and the one of the two that a
+                            // thumb cannot reach.
                         )
                         .frame(maxWidth: .infinity)
                     }
@@ -96,14 +101,16 @@ struct BudgetsView: View {
             }
         }
         .navigationTitle("Budgets")
-        .toolbar {
-            ToolbarItem {
-                Button {
-                    editing = .creating
-                } label: {
-                    Label("New budget", systemImage: "plus")
+        // The "+" that used to sit in the navigation bar. It is the only thing
+        // this screen is for other than reading, so it goes where the thumb is.
+        .safeAreaInset(edge: .bottom) {
+            if screen != nil {
+                ActionBar {
+                    PrimaryAction(title: "New budget", systemImage: "plus") {
+                        editing = .creating
+                    }
+                    .reachProbe("Budgets \u{2014} New budget")
                 }
-                .disabled(screen == nil)
             }
         }
         .navigationDestination(for: BudgetRoute.self) { route in
@@ -325,14 +332,14 @@ struct BudgetDetailView: View {
         #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
         #endif
-        .toolbar {
-            ToolbarItem {
-                Button {
-                    if let budget = screen?.budget { editing = .editing(budget) }
-                } label: {
-                    Label("Edit", systemImage: "pencil")
+        .safeAreaInset(edge: .bottom) {
+            if let budget = screen?.budget {
+                ActionBar {
+                    PrimaryAction(title: "Edit this budget", systemImage: "pencil") {
+                        editing = .editing(budget)
+                    }
+                    .reachProbe("Budget detail \u{2014} Edit")
                 }
-                .disabled(screen == nil)
             }
         }
         .sheet(item: $editing) { which in
