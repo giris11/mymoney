@@ -61,6 +61,32 @@ public struct NetWorth: Sendable, Hashable {
     public let excludedBaseMinor: Int64?
 }
 
+/// The three fields, and the only three fields, that a balance is made of.
+///
+/// It exists so that a caller which has cheap access to those three -- the
+/// store, streaming columns out of SQLite -- can reach the same arithmetic as
+/// a caller holding fully decoded `Transaction` values, without either of them
+/// owning a private copy of the rule.
+public struct BalanceContribution: Sendable, Hashable {
+    public let accountId: String
+    public let amountMinor: Int64
+    /// `status == .cleared`. Resolved by the caller so this type has no opinion
+    /// about how a status is spelled in whatever it was read from.
+    public let cleared: Bool
+
+    public init(accountId: String, amountMinor: Int64, cleared: Bool) {
+        self.accountId = accountId
+        self.amountMinor = amountMinor
+        self.cleared = cleared
+    }
+
+    public init(_ tx: Transaction) {
+        self.init(
+            accountId: tx.accountId, amountMinor: tx.amountMinor, cleared: tx.status == .cleared
+        )
+    }
+}
+
 public enum Balances {
     /// Has the owner flagged this account out of net-worth totals?
     /// `== true`, never a truthiness test and never `?? false` spelled some
@@ -95,23 +121,39 @@ public enum Balances {
 
     /// accountId -> totals, in one pass.
     static func aggregate(_ transactions: [Transaction]) throws -> [String: Aggregate] {
+        try aggregate(transactions.lazy.map(BalanceContribution.init))
+    }
+
+    /// The same pass, fed by anything that can say which account, how much, and
+    /// whether it cleared.
+    ///
+    /// WHY THIS OVERLOAD EXISTS. The store can stream three columns out of
+    /// SQLite far more cheaply than it can decode a `Transaction` (which pulls
+    /// splits and tags from two child tables per row). It must not therefore
+    /// grow a SECOND way of adding money up: two implementations of "what is
+    /// this account worth" is exactly how a sidebar and a register end up
+    /// disagreeing by a penny. So the cheap path feeds THIS function, and the
+    /// overflow checks, the cleared rule and the counting are stated once.
+    static func aggregate(
+        _ contributions: some Sequence<BalanceContribution>
+    ) throws -> [String: Aggregate] {
         var totals: [String: Aggregate] = [:]
-        for tx in transactions {
-            var entry = totals[tx.accountId] ?? Aggregate()
-            let (sum, sumOverflowed) = entry.sum.addingReportingOverflow(tx.amountMinor)
+        for row in contributions {
+            var entry = totals[row.accountId] ?? Aggregate()
+            let (sum, sumOverflowed) = entry.sum.addingReportingOverflow(row.amountMinor)
             if sumOverflowed {
-                throw MoneyError.overflow("summing transactions for account \(tx.accountId)")
+                throw MoneyError.overflow("summing transactions for account \(row.accountId)")
             }
             entry.sum = sum
-            if tx.status == .cleared {
-                let (cleared, clearedOverflowed) = entry.cleared.addingReportingOverflow(tx.amountMinor)
+            if row.cleared {
+                let (cleared, clearedOverflowed) = entry.cleared.addingReportingOverflow(row.amountMinor)
                 if clearedOverflowed {
-                    throw MoneyError.overflow("summing cleared transactions for account \(tx.accountId)")
+                    throw MoneyError.overflow("summing cleared transactions for account \(row.accountId)")
                 }
                 entry.cleared = cleared
             }
             entry.count += 1
-            totals[tx.accountId] = entry
+            totals[row.accountId] = entry
         }
         return totals
     }
@@ -135,7 +177,18 @@ public enum Balances {
         accounts: [Account],
         transactions: [Transaction]
     ) throws -> [AccountBalance] {
-        let totals = try aggregate(transactions)
+        try accountBalances(
+            accounts: accounts, contributions: transactions.lazy.map(BalanceContribution.init)
+        )
+    }
+
+    /// The same balances from the cheap three-column form. See the note on
+    /// `aggregate(_:)` above: ONE implementation, two feeders.
+    public static func accountBalances(
+        accounts: [Account],
+        contributions: some Sequence<BalanceContribution>
+    ) throws -> [AccountBalance] {
+        let totals = try aggregate(contributions)
         let enGB = Locale(identifier: "en_GB")
         let rows: [(offset: Int, balance: AccountBalance)] = try accounts.enumerated().map { index, account in
             let entry = totals[account.id] ?? Aggregate()

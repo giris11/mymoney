@@ -2,3 +2,18 @@
 .build/
 .swiftpm/
 Package.resolved
+
+# A scratch ledger opened in this directory is a database full of real money.
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# Xcode's per-user state inside the app project: window positions, breakpoints,
+# the last scheme somebody selected. Never shared, and it changes on every open.
+App/**/xcuserdata/
+App/**/*.xcuserstate
+# The demo backups and the demo store the tests can write (MYMONEY_WRITE_DEMO).
+# They are fiction, but they are large and generated, and generated files do not
+# belong in a repository.
+demo-backup*.json
+demo-ledger.sqlite*

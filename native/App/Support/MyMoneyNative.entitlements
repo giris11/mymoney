@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- macOS only. The sandbox is on, and the ONLY thing outside it this app
+	     may touch is a file the owner picks in the open panel, READ-ONLY.
+	     There is no read-write entitlement here on purpose: this app has no
+	     business writing to a backup, and an entitlement it does not have is
+	     a stronger statement than a code path it does not take. -->
+	<key>com.apple.security.app-sandbox</key>
+	<true/>
+	<key>com.apple.security.files.user-selected.read-only</key>
+	<true/>
+</dict>
+</plist>

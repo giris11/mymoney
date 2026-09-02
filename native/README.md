@@ -1,8 +1,9 @@
 # MyMoneyKit
 
-The money rules of the MyMoney PWA, restated in Swift. **Library and tests
-only** — no app, no UI, no persistence. This is the phase where correctness is
-won, and it deliberately has nothing to show for it.
+The money rules of the MyMoney PWA, restated in Swift, a local SQLite store to
+hold them, and — in `App/` — a small **read-only** SwiftUI app for iOS and macOS
+that shows the result. The package is still where correctness is won; the app
+only draws what the package computes and contains no arithmetic of its own.
 
 ## Where this sits
 
@@ -18,8 +19,13 @@ and is *not* SPEC §8's Phase 1/2/3:
   real container with fabricated rows, to find out whether CKSyncEngine can
   sync a ledger without silently losing rows. **Its gate failed on the delete
   path** — see the last section here, and D47–D51 in `../DECISIONS.md`.
-- **Phase 2** is this: the money rules restated in Swift and held to the oracle
-  and to the frozen file.
+- **Phase 2** was the money rules restated in Swift and held to the oracle and
+  to the frozen file.
+- **Phase 3** is `Sources/MyMoneyKit/Store/`: persistence, on the system
+  libsqlite3, with no third-party dependency. Soft delete from the first
+  migration, and one property standing over the whole thing — a backup imported
+  into the store and exported back out reproduces the **same canonical content
+  hash**.
 
 Why a native rewrite is being attempted at all — what it buys, what it costs,
 and the strongest argument against it — is **D46** in `../DECISIONS.md`. The
@@ -49,6 +55,7 @@ No dependencies, so both work offline from a clean checkout.
 | `Domain/Budgets.swift` | period windows that tile the timeline, and spend against them |
 | `Reports/` | the six report aggregations, in base currency, transfers excluded |
 | `Import/` | CSV reading, per-file date and decimal detection, dedupe keys, the two MoneyWiz layouts |
+| `Store/` | the SQLite ledger: a schema mirroring the model, money as INTEGER minor units that SQLite cannot turn into a float, tombstones on every deletable row, versioned migrations, and an atomic all-or-nothing restore |
 
 Each file's header comment explains why it is the way it is, including which
 alternative was rejected. Start there rather than here.
@@ -77,6 +84,20 @@ whether excluding an account changes a spend report) or a cross-implementation
 check whose expectations were captured from the browser's own
 `src/backup/canonical.ts`.
 
+### The store's own tests
+
+Seven suites, none of which touch the owner's data:
+
+| suite | what it pins |
+|---|---|
+| `StoreSchemaTests` | every table is `STRICT`, every money column is `ANY` + typeof CHECK and is listed in `StoreSchema.moneyColumns`, every deletable table has a tombstone and a filtering view — and **a store at the older schema opens, upgrades, and keeps its money exact** |
+| `StoreTypeAffinityTests` | each of SQLite's four coercion behaviours, measured; each of the four defences, fired |
+| `StoreRoundTripTests` | the content-hash property, plus the three fidelity traps: a tri-state flag, absent-versus-empty arrays, and the device-local half of the settings row |
+| `StoreAtomicityTests` | all-or-nothing, from three observers; refusing to overwrite a book unasked; refusing a file that does not add up before any write |
+| `StoreSoftDeleteTests` | a deleted row is still there, comes back, and changes the arithmetic while it is gone |
+| `StoreRegisterTests` | paging returns *exactly* the register — no row twice, none missed, same order as a second statement of the rule in Swift; every running balance equals a sum over the rows below it; the cheap balance read equals `book()`'s; and the register's indexes are shown to be **used**, against SQLite's own query plan |
+| `DemoBookTests` | the invented 58-account, 5,200-row demo book imports, balances and round-trips — and a copy of it with one manifest figure moved by a penny is refused, naming the account |
+
 ## The Phase 2 gate: verifying against the frozen real backup
 
 The strongest check there is, and it is **not** wired into a plain `swift test`
@@ -92,6 +113,22 @@ MYMONEY_FROZEN_NET_WORTH=<minor units> \
 swift test
 ```
 
+The same variable also runs two more gates, both in `StoreFrozenGateTests` and
+both on an `:memory:` store, so the owner's data is never written to a disk
+anywhere — no temporary file, no WAL, nothing to forget to delete.
+
+* **Phase 3** — the real book through the SQLite store and back out to the
+  identical canonical hash, with `requiringExactRoundTrip: true` so a mismatch
+  is a rollback rather than a warning.
+* **Phase 4** — the real book through the *register*: paged sixty at a time, the
+  all-accounts register is exactly as many rows as the file says the
+  transactions table has, strictly descending on the whole sort key, with no id
+  twice. Then, for every account, the running balance is started at that
+  account's balance and stepped down its whole register: the figure left at the
+  bottom must be the opening balance the account row carries. A row missed,
+  repeated, or attributed to the wrong account shows up as a number that does
+  not land.
+
 Only `MYMONEY_FROZEN_BACKUP` is needed; every other expectation is **read out
 of the file's own manifest**, so the test states no balance, no total and no
 hash of its own. `MYMONEY_FROZEN_NET_WORTH`, if you supply it, pins the app's
@@ -99,7 +136,7 @@ hash of its own. `MYMONEY_FROZEN_NET_WORTH`, if you supply it, pins the app's
 backup's manifest is the older per-account total and can be a penny or two
 adrift of it, so take that one off the dashboard rather than out of the file.
 The gate says so out loud when the value it was given is the per-account one. Without the file — on CI, on any other machine, or with a
-stale path — the three real-data tests **skip**, and the suite is green. A gate
+stale path — the four real-data tests **skip**, and the suite is green. A gate
 that went red on a laptop that has never seen the owner's data would be turned
 off within a week, and a turned-off gate proves nothing.
 
@@ -138,7 +175,7 @@ that every report agrees about how many transactions it could not convert, that
 the budget windows tile the book's whole span. It never states a figure, which
 is what lets a real-data test live in a public repository at all.
 
-All three tests open the file read-only and write nothing, anywhere. The
+All four tests open the file read-only and write nothing, anywhere. The
 export exists as a `String` in memory, is compared, and is dropped.
 
 ## One net-worth rule, and a version so old files keep theirs
@@ -187,11 +224,81 @@ currency, which is exactly the shape in which the two rules cannot disagree.
 That is what a real book is for, and the frozen gate now fails if the headline
 figure ever goes back to rounding per account.
 
+## The store
+
+`Store/` is a persistence layer over the libsqlite3 that ships with the OS
+(`import SQLite3` — the SDK's own module map, so the package stays
+dependency-free). Four things in it are worth reading before changing anything:
+
+**Money cannot become a float, and that took more than declaring the column
+`INTEGER`.** SQLite has no column types, only *affinity*, which is a preference
+applied to whatever you hand it. A plain `INTEGER` column stores `100.5` as a
+float and silently converts the string `'100'` to `100`. A `STRICT` table
+refuses both of those — and still accepts `100.0` and `'100'`, because both
+convert *losslessly* and lossless is all `STRICT` asks for. So every money
+column is declared **`ANY` with a `CHECK (typeof(x) = 'integer')` inside a
+`STRICT` table**, which is the one combination that refuses all of them: `ANY`
+applies no affinity conversion, so the `CHECK` finally sees what was actually
+passed. `ANY` here is the *strongest* declaration available, not the weakest.
+`bind(_:minorUnits:)` takes an `Int64` and has no `Double` overload, as a second
+layer that fails at compile time rather than on somebody's phone. Every
+measurement behind that paragraph is executed by `StoreTypeAffinityTests`, so a
+future libsqlite3 that behaves differently turns the suite red instead of
+quietly turning the design off.
+
+**Nothing is ever hard-deleted.** Every table an owner can delete from carries
+`deleted_at`, and reads go through `live_*` views that carry the
+`WHERE deleted_at IS NULL` — so a query written next year cannot forget it. The
+reason is D48, bought with a real CloudKit experiment: a delete carries no
+change tag, gets no conflict protection, and loses an offline device's edit with
+no error at all. Deletion has to be a *save*. Sync is not in this phase; the
+schema is shaped for it now because retrofitting tombstones comes too late for
+every row deleted before the retrofit.
+
+**A restore is all-or-nothing, and it is proved by breaking it.** The file is
+parsed, validated and made to prove itself against its own manifest before the
+database is opened for writing at all; then one transaction clears, writes,
+records provenance, audits every money column and commits.
+`StoreAtomicityTests` injects a failure partway through and then asks three
+different observers what the store contains: the same connection after the
+throw, a *second connection while the import is still running*, and a copy of
+the database and its write-ahead log taken mid-transaction — which is what a
+power cut leaves behind. All three see the previous book, untouched.
+
+**The store remembers how the book arrived.** Two facts cannot be derived from
+the rows and both change the content hash: the file's `schemaVersion`, and its
+manifest version, which *selects the net-worth rule* (v1 rounds per account, v2
+per currency — one penny apart on a book with two counted accounts in a
+currency). They live in `store_meta`, which is why there are two exports:
+`exportBackup…` writes what this build would write today, and
+`exportReproducingSource…` reproduces the file the store was loaded from, under
+its own rule. The second is evidence rather than a feature.
+
+## The app in `App/`
+
+`App/MyMoneyNative.xcodeproj` — one target, iOS 17 and macOS 14, bundle id
+`com.gs.MyMoneyNative`, automatic signing, team `AQ5Z6U57L5`. The project file is
+hand-written (no xcodegen on this machine) and uses a file-system-synchronized
+group, so adding a Swift file to `App/MyMoneyNative/` needs no project edit.
+
+Three screens: **accounts and net worth**, laid out as the web app's sidebar
+lays them out; a **register**, newest first, paged from a cursor; and **import**,
+which shows what it verified afterwards and names what disagreed when it refuses.
+
+Two rules it is built around:
+
+* **Read-only, and it says so on every screen.** There is no editor, no add and
+  no delete, and `LedgerService` exposes no method that could become one. The web
+  app is the system of record and the banner says which app holds the truth.
+* **Every figure comes from `Money`.** No `NumberFormatter` is constructed
+  anywhere in the app target. `Formatting.swift` says so and explains why; a
+  second formatter would be a second answer to "what is this amount".
+
 ## What this package is not
 
-No storage, no sync, no UI. Backups are read **and written** (`BackupWriter`);
-what is missing is somewhere to write them *to*, and the file-picker and
-share-sheet plumbing around it.
+No sync. Backups are read **and written** (`BackupWriter`) and stored (`Store/`);
+what is missing is the share-sheet plumbing for writing one back out — the app
+imports and displays, and deliberately offers no export.
 
 The import side stops at the PARSERS. `buildImportPlan`, `commitImport` and
 `undoImport` are not here, and one consequence is worth knowing: the parsers
@@ -205,10 +312,10 @@ currency read through these parsers alone is only provisionally scaled.
 
 ## What the next phase must carry in from the CloudKit probe
 
-None of this is implemented here — this package has no persistence and no sync —
-but all of it constrains what the storage layer is allowed to look like, and
-every item was paid for with a real experiment against a real server rather than
-reasoned from documentation. Full reasoning in `../DECISIONS.md`; the log is
+Item 1 and item 5 are now implemented, in `Store/`; the rest is still ahead and
+constrains what the sync layer is allowed to look like. Every item was
+paid for with a real experiment against a real server rather than reasoned from
+documentation. Full reasoning in `../DECISIONS.md`; the log is
 `~/CloudKitProbe/results.log`.
 
 1. **A ledger must never hard-delete (D48).** `deleteRecord` carries a record id
