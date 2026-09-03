@@ -1,7 +1,26 @@
-// Importing a backup, and showing what was checked.
+// Two doors, and this screen is both of them.
 //
-// WHAT AN IMPORT ACTUALLY DOES, in the order it does it, because the order is
-// the safety:
+// A BACKUP REPLACES THE BOOK. A STATEMENT ADDS TO IT. Those are different acts
+// with different risks, and this screen keeps them apart: a .json backup goes
+// down the path described below -- checked against its own summary, then the
+// whole book replaced in one transaction. A .csv statement goes to
+// `ImportWizard`, which resolves its rows against the book, shows what WOULD
+// happen, and writes only after a confirmation. Neither can be reached by
+// accident and neither is the other.
+//
+// UNTIL NOW THE SECOND DOOR WAS A WALL. A statement was recognised correctly --
+// the row count, the real column names -- and then refused: bring the rows in
+// using your web app, take a fresh backup, and import that here. True at the
+// time and useless to somebody holding a phone in a shop. The sentence is gone
+// because the thing it described is no longer true.
+//
+// ─────────────────────────────────────────────────────────────────────────────
+// THE STATEMENT HALF is `ImportWizard.swift` and the three step files beside
+// it. The rest of this comment is about the BACKUP half, which is what this
+// screen was originally built to do and which has not changed.
+//
+// WHAT IMPORTING A BACKUP ACTUALLY DOES, in the order it does it, because the
+// order is the safety:
 //
 //   1. The file is parsed and validated, and then made to PROVE ITSELF: every
 //      row count, every account's closing balance and transaction count, and
@@ -29,6 +48,22 @@ struct ImportView: View {
     @State private var picking = false
     /// Asked from the bottom bar, where the import button now lives.
     @State private var confirmingIncoming = false
+    /// The statement wizard, while it is open.
+    @State private var wizard: ImportWizardModel?
+    /// The same model, kept after the sheet closes so that what it DID can be
+    /// acted on -- a sheet's `onDismiss` runs after the binding has gone nil.
+    @State private var lastWizard: ImportWizardModel?
+    /// A statement that could not even be opened as a wizard. Never silent.
+    @State private var wizardProblem: String?
+    /// An undo that would not go through. Its own state rather than sharing
+    /// the one above, because the two are different sentences: one is about a
+    /// file that could not be read, the other about rows that are still there.
+    @State private var undoProblem: String?
+    /// Imports this device made that are still in the book, newest first.
+    @State private var undoable: [ImportHistoryEntry] = []
+    @State private var undoTarget: ImportHistoryEntry?
+    @State private var undoing = false
+    @State private var undoReport: String?
 
     private func importIncoming() {
         Task { await app.importIncoming() }
@@ -38,13 +73,17 @@ struct ImportView: View {
         List {
             Section {
                 VStack(alignment: .leading, spacing: 10) {
-                    Text("Bring a backup onto this device")
+                    Text("Bring a file onto this device")
                         .font(.headline)
                     Text(
-                        "Choose a backup file \u{2014} one your web app exported, or one this app "
-                            + "exported on another device. It is read, checked against its own "
-                            + "summary, and kept as this app's own private copy. The file itself "
-                            + "is opened read-only and is never changed."
+                        "A BACKUP \u{2014} one your web app exported, or one this app exported on "
+                            + "another device \u{2014} is read, checked against its own summary, "
+                            + "and REPLACES the copy of your book on this device.\n\n"
+                            + "A SPREADSHEET OR BANK STATEMENT is read row by row and ADDS to "
+                            + "your book. You see exactly what it would do before anything is "
+                            + "written, and the whole import can be undone.\n\n"
+                            + "Either way the file itself is opened read-only and is never "
+                            + "changed, and nothing here reaches your web app."
                     )
                     .font(.callout)
                     .foregroundStyle(.secondary)
@@ -56,9 +95,53 @@ struct ImportView: View {
             if let document = app.incoming {
                 IncomingSection(
                     document: document,
+                    hasBook: app.hasBook,
                     dismiss: { app.clearIncoming() }
                 )
             }
+
+            if let wizardProblem {
+                Section {
+                    Notice(
+                        symbol: "exclamationmark.triangle",
+                        title: "This statement could not be opened",
+                        message: wizardProblem
+                            + "\n\nNothing was changed \u{2014} your book is as it was.",
+                        tone: .problem
+                    )
+                    .frame(maxWidth: .infinity)
+                }
+            }
+
+            if let undoProblem {
+                Section {
+                    Notice(
+                        symbol: "exclamationmark.triangle",
+                        title: "That import could not be undone",
+                        message: undoProblem
+                            + "\n\nNothing was removed \u{2014} the transactions it added are "
+                            + "still in your book.",
+                        tone: .problem,
+                        action: ("OK", { self.undoProblem = nil })
+                    )
+                    .frame(maxWidth: .infinity)
+                }
+            }
+
+            if let undoReport {
+                Section {
+                    Notice(
+                        symbol: "arrow.uturn.backward.circle",
+                        title: "Import undone",
+                        message: undoReport,
+                        tone: .neutral,
+                        action: ("OK", { self.undoReport = nil })
+                    )
+                    .frame(maxWidth: .infinity)
+                }
+            }
+
+            undoableSection
 
             if isReading {
                 Section {
@@ -112,6 +195,26 @@ struct ImportView: View {
                         ),
                         emphasised: true
                     )
+                    // THE SAME DISCLOSURE THE DASHBOARD AND ACCOUNTS SCREENS
+                    // CARRY, and it belongs here more than anywhere: a
+                    // statement import can CREATE accounts in currencies this
+                    // book has no rate for, and the next thing the owner reads
+                    // is this figure. Without the note it says "0.00" over a
+                    // book that just gained five accounts and seventeen rows,
+                    // which is the one kind of quiet wrong number this project
+                    // exists to refuse.
+                    if !summary.snapshot.netWorth.missingRateCurrencies.isEmpty {
+                        Label(
+                            "Excludes "
+                                + summary.snapshot.netWorth.missingRateCurrencies
+                                .joined(separator: ", ")
+                                + " \u{2014} no exchange rate set",
+                            systemImage: "exclamationmark.triangle"
+                        )
+                        .font(.footnote)
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                    }
                     if let exportedAt = summary.provenance.exportedAt {
                         FigureRow(
                             label: "Backup taken", value: Display.timestampText(exportedAt)
@@ -139,6 +242,12 @@ struct ImportView: View {
         // a 6.9" phone -- above the bottom third, and further up the longer the
         // file's description ran. It was also the one primary action in the app
         // carrying no `reachProbe`, so no measurement could see it.
+        //
+        // AND A STATEMENT NOW HAS ITS OWN PRIMARY. It used to have none: the
+        // card described the file and then explained that nothing could be done
+        // with it, so the bar fell through to "Choose a backup file..." -- the
+        // one screen in the app whose big filled button ignored the file
+        // sitting on it.
         .safeAreaInset(edge: .bottom) {
             ActionBar {
                 if let document = app.incoming, document.kind.isBackup {
@@ -158,9 +267,26 @@ struct ImportView: View {
                         }
                         .reachProbe("Import \u{2014} Check and import")
                     }
+                } else if let document = app.incoming, document.kind == .csv {
+                    HStack(spacing: 16) {
+                        Button(role: .cancel) { app.clearIncoming() } label: {
+                            Text("Not now").frame(minHeight: 24)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.large)
+
+                        PrimaryAction(
+                            title: "Set up this import\u{2026}",
+                            systemImage: "tablecells.badge.ellipsis",
+                            isEnabled: !isReading && app.hasBook
+                        ) {
+                            openWizard(for: document)
+                        }
+                        .reachProbe("Import \u{2014} Set up this import")
+                    }
                 } else {
                     PrimaryAction(
-                        title: "Choose a backup file\u{2026}",
+                        title: "Choose a file\u{2026}",
                         systemImage: "doc.badge.plus",
                         isEnabled: !isReading
                     ) {
@@ -169,6 +295,30 @@ struct ImportView: View {
                     .reachProbe("Import \u{2014} Choose a file")
                 }
             }
+        }
+        // THE STATEMENT WIZARD. A sheet rather than a push: it owns the screen
+        // while it is open, its own bottom bars are not competing with this
+        // one's, and it cannot be navigated away from by a swipe on the wrong
+        // edge. It refuses an interactive dismissal while it holds work.
+        .sheet(item: $wizard, onDismiss: wizardClosed) { model in
+            ImportWizard(model: model)
+        }
+        .task(id: app.revision) { await loadUndoable() }
+        // A reach measurement, and nothing else, brings its own statement and
+        // walks the wizard to the step being measured. `Reach.importMeasurement`
+        // is nil unless MYMONEY_REACH=1 is set, and nothing on this path writes.
+        .task {
+            if let measurement = Reach.importMeasurement { await drive(measurement) }
+        }
+        .confirmationDialog(
+            "Undo this import?", isPresented: undoConfirmation, titleVisibility: .visible
+        ) {
+            if let target = undoTarget {
+                Button("Undo the import", role: .destructive) { undo(target) }
+            }
+            Button("Keep it", role: .cancel) { undoTarget = nil }
+        } message: {
+            Text(undoTarget.map(undoMessage) ?? "")
         }
         // THE CONFIRMATION FOLLOWS THE BUTTON. It used to live on the card, for
         // the good reason that the sentence belongs next to the name of the
@@ -204,6 +354,201 @@ struct ImportView: View {
     private var isReading: Bool {
         if case .reading = app.importPhase { return true }
         return false
+    }
+
+    // MARK: - Statements
+
+    /// Open the wizard on a statement that has arrived.
+    ///
+    /// THE BOOK IS READ FIRST, ONCE, and the wizard is built around that one
+    /// snapshot -- see `LedgerService.importContext`. If the read fails there is
+    /// no wizard and the reason is on this screen; a half-built wizard resolving
+    /// rows against an empty book would show a preview promising to create every
+    /// account the owner already has.
+    private func openWizard(for document: IncomingDocument) {
+        wizardProblem = nil
+        guard let text = String(data: document.data, encoding: .utf8) else {
+            wizardProblem =
+                "\u{201C}\(document.fileName)\u{201D} is not text this app can read."
+            return
+        }
+        Task {
+            do {
+                let context = try await app.service.importContext()
+                guard
+                    let model = ImportWizardModel(
+                        fileName: document.fileName, text: text, context: context,
+                        service: app.service
+                    )
+                else {
+                    wizardProblem =
+                        "There is no table of rows in \u{201C}\(document.fileName)\u{201D} "
+                        + "\u{2014} it needs a header row and at least one row under it."
+                    return
+                }
+                lastWizard = model
+                wizard = model
+            } catch {
+                wizardProblem = AppModel.message(for: error)
+            }
+        }
+    }
+
+    /// The wizard has closed, however it closed.
+    ///
+    /// A FILE THAT WAS IMPORTED IS DONE WITH. Leaving its card on this screen
+    /// would leave a "Set up this import..." button over rows that are already
+    /// in the book -- harmless (a second run matches every one of them as a
+    /// duplicate and refuses to write nothing) but a lie about what is waiting.
+    /// A file that was previewed and abandoned stays, because that is what
+    /// "Cancel" promised.
+    private func wizardClosed() {
+        if lastWizard?.outcome != nil, lastWizard?.undone == nil { app.clearIncoming() }
+        lastWizard = nil
+        Task { await loadUndoable() }
+    }
+
+    // MARK: - Taking one back
+
+    /// The imports made ON THIS DEVICE that are still in the book.
+    ///
+    /// Not every batch the book carries: a book restored from a backup arrives
+    /// with the web app's own import batches in it, and an Undo beside those
+    /// would offer to delete a chunk of somebody's history under the heading of
+    /// taking back something they just did. See `ImportHistory`.
+    @ViewBuilder private var undoableSection: some View {
+        if !undoable.isEmpty {
+            Section {
+                ForEach(undoable) { entry in
+                    HStack(alignment: .firstTextBaseline, spacing: 12) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(entry.fileName)
+                                .font(.subheadline)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Text(
+                                Display.count(entry.transactionCount, "transaction")
+                                    + " \u{00B7} " + Display.timestampText(iso(entry.importedAt))
+                            )
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        }
+                        Spacer(minLength: 8)
+                        Button("Undo") { undoTarget = entry }
+                            .buttonStyle(.bordered)
+                            .disabled(undoing)
+                    }
+                    .padding(.vertical, 2)
+                }
+            } header: {
+                Text("Imports you can still undo")
+            } footer: {
+                Text(
+                    "Only imports made on this device. Undoing one removes the transactions it "
+                        + "added, and any account, category, payee or tag it created that nothing "
+                        + "else has used since."
+                )
+            }
+        }
+    }
+
+    private var undoConfirmation: Binding<Bool> {
+        Binding(get: { undoTarget != nil }, set: { if !$0 { undoTarget = nil } })
+    }
+
+    private func undoMessage(_ entry: ImportHistoryEntry) -> String {
+        "This removes the \(Display.count(entry.transactionCount, "transaction")) that "
+            + "\u{201C}\(entry.fileName)\u{201D} added, INCLUDING any changes you have made to "
+            + "them since. Anything the import created that you have used elsewhere is kept, and "
+            + "nothing else in your book is touched."
+    }
+
+    private func undo(_ entry: ImportHistoryEntry) {
+        guard !undoing else { return }
+        undoTarget = nil
+        undoProblem = nil
+        undoReport = nil
+        undoing = true
+        Task {
+            do {
+                let undone = try await app.service.undoImport(batchId: entry.batchId)
+                ImportHistory.forget(batchId: entry.batchId)
+                let result = ImportUndoOutcome(undone)
+                var text =
+                    "\(Display.count(result.transactionCount, "transaction")) from "
+                    + "\u{201C}\(entry.fileName)\u{201D} removed."
+                if result.keptCount == 1 {
+                    text += " One thing it created was already in use elsewhere and was kept."
+                } else if result.keptCount > 1 {
+                    text += " \(Display.grouped(result.keptCount)) things it created were already "
+                    text += "in use elsewhere and were kept."
+                }
+                undoReport = text
+                await app.rowsImported()
+            } catch {
+                undoProblem = AppModel.message(for: error)
+            }
+            undoing = false
+            await loadUndoable()
+        }
+    }
+
+    private func loadUndoable() async {
+        guard app.hasBook else {
+            undoable = []
+            return
+        }
+        guard let ids = try? await app.service.importBatchIds() else {
+            undoable = []
+            return
+        }
+        undoable = ImportHistory.pruned(toBatchIds: ids)
+    }
+
+    /// `Display.timestampText` speaks ISO instants, which is what every other
+    /// timestamp on this screen is. One formatter, one wording.
+    private func iso(_ date: Date) -> String {
+        ISO8601DateFormatter().string(from: date)
+    }
+
+    // MARK: - Measurement
+
+    /// Put the wizard on the step a reach measurement asked for.
+    ///
+    /// The real path over an invented file -- the real parser, the real guess,
+    /// the real plan against whatever book this device holds. The only thing
+    /// that is faked is the RESULT of the final step, because the alternative
+    /// is a measurement that writes an import into somebody's ledger to take a
+    /// picture of the undo button. See `Reach.ImportMeasurement`.
+    private func drive(_ measurement: Reach.ImportMeasurement) async {
+        let text = measurement.statement
+        let name = measurement == .report ? "report.csv" : "statement.csv"
+        app.incoming = IncomingDocument(
+            fileName: name, data: Data(text.utf8), kind: .csv, preview: CSVPreview.of(text)
+        )
+        guard measurement != .csv, app.hasBook else { return }
+
+        // The same beat every other measurement waits: a sheet presented in the
+        // turn the screen appears is a sheet presented over a view hierarchy
+        // that does not exist yet.
+        try? await Task.sleep(for: .milliseconds(600))
+        guard let context = try? await app.service.importContext(),
+            let model = ImportWizardModel(
+                fileName: name, text: text, context: context, service: app.service
+            )
+        else { return }
+        // The invented plain statement carries no Account column, so its
+        // mapping needs an account chosen for it -- which is what a person
+        // would do here too. The report file names its own accounts and skips
+        // the mapping step entirely.
+        model.fixedAccountId = context.choosableAccounts.first?.id ?? ""
+        lastWizard = model
+        wizard = model
+        guard measurement != .map else { return }
+
+        try? await Task.sleep(for: .milliseconds(500))
+        if model.layout == .generic { await model.continueFromMap() }
+        if measurement == .done { model.presentMeasurementOutcome() }
     }
 
     /// What replacing THIS book actually costs, which is not the same sentence
@@ -458,6 +803,9 @@ private struct RefusedSection: View {
 /// a file that cannot be imported at all, the single Dismiss.
 private struct IncomingSection: View {
     let document: IncomingDocument
+    /// Whether this device holds a book at all. A statement adds rows TO one,
+    /// so with no book there is nothing for it to be added to.
+    let hasBook: Bool
     let dismiss: () -> Void
 
     var body: some View {
@@ -491,13 +839,37 @@ private struct IncomingSection: View {
                     value: preview.columnNames.isEmpty
                         ? "\u{2014}" : preview.columnNames.joined(separator: ", ")
                 )
-                // SAID PLAINLY, not softened. This app can read a statement and
-                // cannot yet write one into the book; half a write path for
-                // real money is worse than none.
+                if !preview.warnings.isEmpty {
+                    DisclosureGroup(Display.count(preview.warnings.count, "note")) {
+                        ForEach(preview.warnings, id: \.self) { warning in
+                            Text(warning)
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
+                // WHAT USED TO BE HERE. A sentence saying that bringing a
+                // statement's rows into the book was not built here yet, and
+                // that the way to do it was the web app. It was true and it was
+                // a dead end; the button in the bar below is what replaced it,
+                // and this line says the one thing that still needs saying --
+                // that pressing it writes nothing on its own.
+                //
+                // AND THE ONE CASE THE BUTTON CANNOT ANSWER. A statement's rows
+                // go INTO a book: they need accounts to land in, categories to
+                // resolve against and existing transactions to be checked for
+                // duplicates against. With no book on this device there is
+                // nothing to add to, so the button is disabled -- and a
+                // disabled button with no sentence beside it is the dead end
+                // this screen has just stopped having.
                 Label(
-                    "Nothing was added. Bringing a statement's rows into your book is not built "
-                        + "here yet \u{2014} import them in your web app, then take a fresh backup "
-                        + "and bring that here.",
+                    hasBook
+                        ? "Nothing has been added. Setting up the import shows you exactly what "
+                            + "it would do first, row by row, and writes only when you say so."
+                        : "There is no book on this device yet, and a statement adds rows to a "
+                            + "book rather than creating one. Import a backup first, or start a "
+                            + "book on this device, and then bring this file back.",
                     systemImage: "info.circle"
                 )
                 .font(.footnote)
@@ -505,13 +877,14 @@ private struct IncomingSection: View {
                 .fixedSize(horizontal: false, vertical: true)
             }
 
-            // A BACKUP'S TWO BUTTONS ARE IN THE BOTTOM BAR, not here -- see the
-            // `safeAreaInset` on `ImportView`. What is left in the card is the
-            // one case the bar has no answer for: a file this app can describe
-            // and cannot import, where "Dismiss" is the only thing to offer and
-            // putting it in the bar would dress a dead end up as a primary
-            // action.
-            if !document.kind.isBackup {
+            // THE BUTTONS FOR A FILE THAT CAN BE IMPORTED ARE IN THE BOTTOM
+            // BAR, not here -- see the `safeAreaInset` on `ImportView`. Both a
+            // backup and a statement have a pair there now. What is left in the
+            // card is the one case the bar has no answer for: a file this app
+            // can describe and cannot read at all, where "Dismiss" is the only
+            // thing to offer and putting it in the bar would dress a dead end
+            // up as a primary action.
+            if case .unreadable = document.kind {
                 Button(role: .cancel, action: dismiss) {
                     Text("Dismiss")
                 }
@@ -545,7 +918,8 @@ private struct IncomingSection: View {
             return "This looks like a MyMoney backup. Nothing has been read into your book yet "
                 + "\u{2014} importing checks it against its own summary first."
         case .csv:
-            return "This is a spreadsheet or a bank statement, not a backup."
+            return "This is a spreadsheet or a bank statement, not a backup. Its rows can be "
+                + "ADDED to your book \u{2014} nothing is replaced."
         case .unreadable:
             return "This is not something this app can read."
         }

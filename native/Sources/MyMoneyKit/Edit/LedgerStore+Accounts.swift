@@ -53,110 +53,127 @@ extension LedgerStore {
     @discardableResult
     public func saveAccount(_ draft: AccountDraft) throws -> Account {
         try connection.transaction {
-            let name = Names.clean(draft.name)
-            guard !name.isEmpty else { throw EditError.blankName(what: "account") }
-            let currency = Names.clean(draft.currency).uppercased()
-            guard Validate.isCurrencyCode(currency) else {
-                throw EditError.badCurrency(draft.currency)
-            }
-            let colour = Names.clean(draft.colour)
-            guard Validate.isHexColour(colour) else { throw EditError.badColour(draft.colour) }
-
-            var existing: Account? = nil
-            if let id = draft.id {
-                guard let found = try liveAccount(id: id) else {
-                    throw EditError.unknownAccount(id)
-                }
-                existing = found
-            }
-
-            if let groupId = draft.groupId, !groupId.isEmpty {
-                guard try liveRowExists("account_groups", id: groupId) else {
-                    throw EditError.unknownGroup(groupId)
-                }
-            }
-
-            // THE CURRENCY IS IMMUTABLE ONCE THERE IS HISTORY. Every stored
-            // amount in this account IS an amount in the old currency; changing
-            // the label would re-denominate all of them at a stroke, silently,
-            // and there is no undo for "all my euros became pounds".
-            if let existing, currency != existing.currency {
-                let count = try liveTransactionCount(accountId: existing.id)
-                if count > 0 {
-                    throw EditError.currencyIsLocked(
-                        accountName: existing.name, from: existing.currency, to: currency,
-                        transactionCount: count
-                    )
-                }
-            }
-
-            let sortOrder = try draft.sortOrder ?? existing?.sortOrder
-                ?? nextSortOrder("accounts")
-            let account = Account(
-                id: existing?.id ?? environment.newId(),
-                name: name,
-                type: draft.type,
-                currency: currency,
-                openingBalanceMinor: draft.openingBalanceMinor,
-                colour: colour,
-                groupId: (draft.groupId?.isEmpty ?? true) ? nil : draft.groupId,
-                sortOrder: sortOrder,
-                archived: draft.archived ?? existing?.archived ?? false,
-                // Preserved, never defaulted. See the note above.
-                excludeFromNetWorth: existing?.excludeFromNetWorth,
-                loanPrincipalMinor: existing?.loanPrincipalMinor,
-                loanRatePct: existing?.loanRatePct,
-                loanTermMonths: existing?.loanTermMonths
-            )
-
-            if existing == nil {
-                let insert = try connection.prepare(
-                    """
-                    INSERT INTO accounts (
-                        id, name, type, currency, opening_balance_minor, colour, group_id,
-                        sort_order, archived, exclude_from_net_worth, loan_principal_minor,
-                        loan_rate_pct, loan_term_months, deleted_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
-                    """
-                )
-                defer { insert.finalize() }
-                bindAccount(account, to: insert)
-                try insert.run()
-            } else {
-                let update = try connection.prepare(
-                    """
-                    UPDATE accounts SET
-                        name = ?2, type = ?3, currency = ?4, opening_balance_minor = ?5,
-                        colour = ?6, group_id = ?7, sort_order = ?8, archived = ?9,
-                        exclude_from_net_worth = ?10, loan_principal_minor = ?11,
-                        loan_rate_pct = ?12, loan_term_months = ?13
-                    WHERE id = ?1 AND deleted_at IS NULL
-                    """
-                )
-                defer { update.finalize() }
-                bindAccount(account, to: update)
-                try update.run()
-                guard try changedRows() > 0 else { throw EditError.unknownAccount(account.id) }
-            }
-
-            // The transactions of an account whose currency just changed are
-            // re-labelled WITH it -- reachable only when there are none, which
-            // the check above has already established, so this is a no-op that
-            // exists so the invariant "tx.currency == its account's" cannot be
-            // broken by a route somebody adds later.
-            if let existing, currency != existing.currency {
-                let relabel = try connection.prepare(
-                    "UPDATE transactions SET currency = ? WHERE account_id = ?"
-                )
-                defer { relabel.finalize() }
-                relabel.bind(1, text: currency)
-                relabel.bind(2, text: account.id)
-                try relabel.run()
-            }
-
+            let account = try writeAccount(draft)
             try recordLocalEdit(at: environment.now())
             return account
         }
+    }
+
+    /// THE ONE PLACE AN ACCOUNT ROW IS VALIDATED AND WRITTEN, and the whole of
+    /// `saveAccount` except the counting.
+    ///
+    /// Called from inside a transaction and does not open one. It exists as a
+    /// separate function for one reason: an IMPORT creates accounts too, and it
+    /// is ONE act by the owner however many accounts a file turns out to name.
+    /// The divergence counter belongs to the act, not to the row, so the
+    /// counting sits in the public entry points and the checks -- the name, the
+    /// currency code, the colour, the group, and the rule that an account's
+    /// currency is immutable once it holds transactions -- sit here, where
+    /// every caller gets them.
+    @discardableResult
+    func writeAccount(_ draft: AccountDraft) throws -> Account {
+        let name = Names.clean(draft.name)
+        guard !name.isEmpty else { throw EditError.blankName(what: "account") }
+        let currency = Names.clean(draft.currency).uppercased()
+        guard Validate.isCurrencyCode(currency) else {
+            throw EditError.badCurrency(draft.currency)
+        }
+        let colour = Names.clean(draft.colour)
+        guard Validate.isHexColour(colour) else { throw EditError.badColour(draft.colour) }
+
+        var existing: Account? = nil
+        if let id = draft.id {
+            guard let found = try liveAccount(id: id) else {
+                throw EditError.unknownAccount(id)
+            }
+            existing = found
+        }
+
+        if let groupId = draft.groupId, !groupId.isEmpty {
+            guard try liveRowExists("account_groups", id: groupId) else {
+                throw EditError.unknownGroup(groupId)
+            }
+        }
+
+        // THE CURRENCY IS IMMUTABLE ONCE THERE IS HISTORY. Every stored
+        // amount in this account IS an amount in the old currency; changing
+        // the label would re-denominate all of them at a stroke, silently,
+        // and there is no undo for "all my euros became pounds".
+        if let existing, currency != existing.currency {
+            let count = try liveTransactionCount(accountId: existing.id)
+            if count > 0 {
+                throw EditError.currencyIsLocked(
+                    accountName: existing.name, from: existing.currency, to: currency,
+                    transactionCount: count
+                )
+            }
+        }
+
+        let sortOrder = try draft.sortOrder ?? existing?.sortOrder
+            ?? nextSortOrder("accounts")
+        let account = Account(
+            id: existing?.id ?? environment.newId(),
+            name: name,
+            type: draft.type,
+            currency: currency,
+            openingBalanceMinor: draft.openingBalanceMinor,
+            colour: colour,
+            groupId: (draft.groupId?.isEmpty ?? true) ? nil : draft.groupId,
+            sortOrder: sortOrder,
+            archived: draft.archived ?? existing?.archived ?? false,
+            // Preserved, never defaulted. See the note above.
+            excludeFromNetWorth: existing?.excludeFromNetWorth,
+            loanPrincipalMinor: existing?.loanPrincipalMinor,
+            loanRatePct: existing?.loanRatePct,
+            loanTermMonths: existing?.loanTermMonths
+        )
+
+        if existing == nil {
+            let insert = try connection.prepare(
+                """
+                INSERT INTO accounts (
+                    id, name, type, currency, opening_balance_minor, colour, group_id,
+                    sort_order, archived, exclude_from_net_worth, loan_principal_minor,
+                    loan_rate_pct, loan_term_months, deleted_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+                """
+            )
+            defer { insert.finalize() }
+            bindAccount(account, to: insert)
+            try insert.run()
+        } else {
+            let update = try connection.prepare(
+                """
+                UPDATE accounts SET
+                    name = ?2, type = ?3, currency = ?4, opening_balance_minor = ?5,
+                    colour = ?6, group_id = ?7, sort_order = ?8, archived = ?9,
+                    exclude_from_net_worth = ?10, loan_principal_minor = ?11,
+                    loan_rate_pct = ?12, loan_term_months = ?13
+                WHERE id = ?1 AND deleted_at IS NULL
+                """
+            )
+            defer { update.finalize() }
+            bindAccount(account, to: update)
+            try update.run()
+            guard try changedRows() > 0 else { throw EditError.unknownAccount(account.id) }
+        }
+
+        // The transactions of an account whose currency just changed are
+        // re-labelled WITH it -- reachable only when there are none, which
+        // the check above has already established, so this is a no-op that
+        // exists so the invariant "tx.currency == its account's" cannot be
+        // broken by a route somebody adds later.
+        if let existing, currency != existing.currency {
+            let relabel = try connection.prepare(
+                "UPDATE transactions SET currency = ? WHERE account_id = ?"
+            )
+            defer { relabel.finalize() }
+            relabel.bind(1, text: currency)
+            relabel.bind(2, text: account.id)
+            try relabel.run()
+        }
+
+        return account
     }
 
     /// Retire an account, or bring it back. Touches ONE column.

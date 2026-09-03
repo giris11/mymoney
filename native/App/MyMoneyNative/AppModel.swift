@@ -633,6 +633,26 @@ final class AppModel {
         }
     }
 
+    /// Rows from a statement have been added to the book, or an import of them
+    /// has been taken back. Re-read.
+    ///
+    /// `refresh`, not `load`: the screen behind the wizard is already showing a
+    /// book and replacing it with a spinner would be a flicker on the one
+    /// screen that must not look unstable. It goes through the same function
+    /// every other mutation does, so an import gets the same treatment as an
+    /// edit -- the register rebuilt from `revision`, the due counts re-read,
+    /// the reminders re-planned and the widget republished. A home screen still
+    /// showing yesterday's net worth after three hundred transactions arrived
+    /// is the same dishonesty as a banner that stopped counting.
+    ///
+    /// It also clears any pending undo bar: that bar offers to take back a
+    /// DELETE, and leaving it up after an import would offer to undo something
+    /// the owner is no longer looking at.
+    func rowsImported() async {
+        pendingUndo = nil
+        await refresh()
+    }
+
     /// Errors from the kit already explain themselves; `error.localizedDescription`
     /// on a plain Swift `Error` does not, and would show the owner a type name.
     ///

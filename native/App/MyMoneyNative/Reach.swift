@@ -102,6 +102,12 @@ enum Reach {
     ///   scheduled.detail   the first schedule, opened -> Edit this schedule
     ///   reports.range      the custom date range      -> Apply
     ///   import             the import screen          -> Choose a file
+    ///   import.csv         a statement waiting        -> Set up this import
+    ///   import.map         the wizard's Columns step  -> Preview the import
+    ///   import.preview     the wizard's Preview step  -> Import N transactions
+    ///   import.report      the same, over an export
+    ///                      that states balances       -> Import N transactions
+    ///   import.done        the wizard's Done step     -> Done, and the undo
     ///   export             the back-up screen         -> Create the file
     ///   groups             the account groups screen  -> Add
     ///   groups.rename      the rename sheet           -> Save
@@ -181,6 +187,108 @@ enum Reach {
         default: return nil
         }
     }
+
+    /// Which of the import wizard's steps a measurement wants on screen.
+    ///
+    /// ─────────────────────────────────────────────────────────────────────
+    /// WHY THIS ONE NEEDS MORE THAN A ROUTE
+    ///
+    /// Every other probe in this app is reachable by pointing the shell at a
+    /// screen. The import wizard is not: it does not exist until a FILE exists,
+    /// and its steps are gated on that file having been read, mapped and
+    /// planned. Measuring it by hand would mean somebody driving the simulator
+    /// with a statement in Files -- which makes the number a thing that
+    /// happened once rather than a thing that can be checked again, and the
+    /// three bars in the wizard are exactly the bars a later change is most
+    /// likely to move.
+    ///
+    /// So a measurement brings its own file: `measurementStatement` below,
+    /// five invented rows including one deliberately unreadable, held in this
+    /// app's own source and never touching the disk. The wizard then runs its
+    /// REAL path over it -- the real parser, the real guess, the real plan
+    /// against whatever book this device holds. Only reads: `buildPlan` is a
+    /// pure function and is not given a database.
+    ///
+    /// NOTHING IS EVER WRITTEN, INCLUDING FOR `done`. That step is put on
+    /// screen with a made-up receipt (`ImportWizardModel.presentMeasurementOutcome`),
+    /// because a measurement that committed an import to get a screenshot of
+    /// the undo button would be the single worst way to lose somebody's money.
+    ///
+    /// It cannot affect a real run: `isMeasuring` is false without
+    /// `MYMONEY_REACH=1`, which no shipped launch sets.
+    enum ImportMeasurement: String {
+        /// The import screen with a statement waiting on it.
+        case csv
+        /// The wizard's column-mapping step.
+        case map
+        /// The wizard's preview step, over a plain CSV.
+        case preview
+        /// The wizard's preview step over a BALANCE-STATING export, which is
+        /// the one that draws the account panel with each account's final
+        /// balance against the figure the file claims. A different screen from
+        /// `preview`, not a variation on it.
+        case report
+        /// The wizard's final step, with a made-up result.
+        case done
+
+        /// Which of the two invented files this measurement is driven with.
+        var statement: String {
+            self == .report ? Reach.measurementReport : Reach.measurementStatement
+        }
+    }
+
+    static var importMeasurement: ImportMeasurement? {
+        guard let opening, opening.hasPrefix("import.") else { return nil }
+        return ImportMeasurement(rawValue: String(opening.dropFirst("import.".count)))
+    }
+
+    /// The invented statement a measurement is driven with.
+    ///
+    /// COMPLETELY MADE UP, and it has to be: this repository is public, and no
+    /// real figure, account, payee or reference of the owner's goes in it. The
+    /// last row is unreadable on purpose -- a partly-unreadable file is one of
+    /// the states this screen exists to handle well, so it is one of the states
+    /// the measurement puts on screen.
+    ///
+    /// Deliberately NOT a MoneyWiz shape: it carries no Account column, so
+    /// `isMoneyWizCsv` rejects it and the wizard offers the mapping step. That
+    /// is the step with no other way to reach it.
+    static let measurementStatement = """
+        Date,Description,Amount
+        04/01/2026,Example row one,-12.34
+        05/01/2026,Example row two,-5.00
+        06/01/2026,Example row three,42.00
+        07/01/2026,Example row four,-7.65
+        not a date,Example row five,-1.00
+        """
+
+    /// The invented BALANCE-STATING export, for the one preview a plain CSV
+    /// cannot produce.
+    ///
+    /// Also completely made up. It is shaped like the layout that interleaves
+    /// account header rows -- a Name and a Current balance, with the account's
+    /// CURRENCY in the "Account" column -- with transaction rows that put the
+    /// account NAME in that same column. That shape is what lets the preview
+    /// check each account against the balance the file states, which is the
+    /// strongest claim this app makes about an import.
+    ///
+    /// It is built to exercise the awkward cases on purpose: two accounts in
+    /// different currencies, a category path written with the separator this
+    /// layout uses, and a transfer leg whose opposite half is not in the file
+    /// -- so the unpaired-transfer disclosure appears in the measurement rather
+    /// than only in somebody's real file.
+    static let measurementReport = """
+        sep=,
+        Name,Current balance,Account,Transfers,Description,Payee,Category,Date,Memo,Amount,\
+        Currency,Cheque N\u{00B0},Tags,Balance
+        Example Account A,100.00,GBP,,,,,,,,,,,
+        ,,Example Account A,,Example one,Example Payee One,Group \u{25BA} Leaf,04/01/2026,,\
+        -10.00,GBP,,,90.00
+        ,,Example Account A,,Example two,Example Payee Two,Other \u{25BA} Leaf,05/01/2026,,\
+        60.00,GBP,,,150.00
+        Example Account B,25.00,EUR,,,,,,,,,,,
+        ,,Example Account B,Example Account A,Example three,,,06/01/2026,,-15.00,EUR,,,10.00
+        """
 
     @MainActor static func report(_ samples: [ReachSample]) {
         guard isMeasuring else { return }

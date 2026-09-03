@@ -212,7 +212,11 @@ extension LedgerStore {
         }
     }
 
-    private func writeImportBatches(_ batches: [ImportBatch]) throws {
+    /// Internal rather than private because the import commit writes its one
+    /// batch row through it: there is one place a batch row is spelled out, and
+    /// a second one would be the place the two optional lists get written as
+    /// `[]` instead of NULL.
+    func writeImportBatches(_ batches: [ImportBatch]) throws {
         let statement = try connection.prepare(
             """
             INSERT INTO import_batches (
@@ -556,7 +560,7 @@ extension LedgerStore {
         return rows
     }
 
-    private func readImportBatches(from table: String) throws -> [ImportBatch] {
+    func readImportBatches(from table: String) throws -> [ImportBatch] {
         let statement = try connection.prepare(
             """
             SELECT id, source, file_name, row_count, imported_at, created_account_ids,

@@ -20,8 +20,9 @@
 	     over, not about what will be done with it: a file that arrives is
 	     identified from its BYTES (IncomingFile), shown on the Import screen,
 	     and imported only when the owner says so. A .json goes through the
-	     manifest check like every other backup; a .csv is described and NOT
-	     written.
+	     manifest check like every other backup and REPLACES the book; a .csv
+	     goes to the import wizard, which shows what its rows would do and ADDS
+	     them only after a confirmation. Neither is written on arrival.
 
 	     LSHandlerRank is Alternate, not Owner. This app does not own JSON or
 	     CSV on anybody's phone, and claiming to would make it the default

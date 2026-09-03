@@ -111,17 +111,18 @@ public enum IncomingFile {
 
 /// What a delimited file appears to contain, without importing any of it.
 ///
-/// WHY A PREVIEW AND NOT AN IMPORT. This package can PARSE a statement -- the
-/// column detection, the date-order guessing and the amount rules are all in
-/// `Import/Generic.swift`, held to the oracle's fixtures -- and it has no way
-/// to WRITE one into the book. Bringing rows in needs an account to put them
-/// in, a column mapping the owner has confirmed, and a dedupe pass against what
-/// is already there; none of that exists yet, and half of it existing would be
-/// the second write path this app is built not to have.
+/// WHAT THIS IS FOR, NOW THAT ROWS CAN BE IMPORTED. This describes a file
+/// WITHOUT deciding anything about it: how many rows, what the columns are
+/// called, and what the first few hold. It is what a screen shows while the
+/// owner is still working out whether this is the file they meant.
 ///
-/// So a shared CSV is read, described honestly, and not written. The owner sees
-/// what the file holds and is told plainly that nothing was added. That is a
-/// smaller feature than importing it, and it is a true one.
+/// The rest of the journey is elsewhere and in this order: `Import/Generic.swift`
+/// and `Import/MoneyWiz*.swift` parse the rows, `Import/ImportPlan.swift`
+/// resolves them against the book and decides what WOULD happen, and
+/// `LedgerStore.commitImport` writes that plan -- in one transaction, through
+/// the same writers the editors use, recorded as an undoable batch. A preview
+/// still writes nothing itself, which is the only reason it is safe to run one
+/// on any file that arrives.
 public struct CSVPreview: Sendable, Hashable {
     /// Rows below the header.
     public let rowCount: Int

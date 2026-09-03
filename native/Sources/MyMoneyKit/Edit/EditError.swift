@@ -110,6 +110,22 @@ public enum EditError: Error, Sendable, Hashable, CustomStringConvertible {
     /// This occurrence has already been entered, or already skipped.
     case occurrenceAlreadySettled(scheduleName: String, date: String, posted: Bool)
 
+    // MARK: - Importing a statement
+
+    /// An import batch that is not in the book: already undone, or never here.
+    case unknownImportBatch(String)
+    /// A preview that would write nothing at all -- every row of the file is
+    /// either already in the book or could not be read, and there is no new
+    /// account to make either. Refused rather than committed as an empty batch:
+    /// "nothing happened" is a sentence, and a batch of nothing in the import
+    /// list is a puzzle.
+    case importWouldWriteNothing(rowsRead: Int, duplicates: Int, unreadable: Int)
+    /// The account a preview worked its figures out against now holds a
+    /// different currency, so the amounts in the preview are at the wrong
+    /// SCALE (D31) -- and a hundredfold error written into a ledger is not
+    /// recoverable by looking at it.
+    case importPlanIsStale(accountName: String, plannedIn: String, nowHolds: String)
+
     // MARK: - Undo
 
     /// An undo for something that is not deleted (already restored, or never
@@ -247,6 +263,30 @@ public enum EditError: Error, Sendable, Hashable, CustomStringConvertible {
                 : "The \(date) payment for \u{201C}\(name)\u{201D} was skipped. Take the skip "
                     + "back if you want to enter it after all."
 
+        case .unknownImportBatch(let id):
+            return
+                "That import is not in this copy of the book (\(short(id))). It may already "
+                + "have been undone."
+        case .importWouldWriteNothing(let rowsRead, let duplicates, let unreadable):
+            var reasons: [String] = []
+            if duplicates > 0 {
+                reasons.append(
+                    "\(duplicates) \(duplicates == 1 ? "is" : "are") already in your book")
+            }
+            if unreadable > 0 {
+                reasons.append("\(unreadable) could not be read")
+            }
+            let because = reasons.isEmpty ? "" : " \u{2014} " + reasons.joined(separator: ", ")
+            return
+                "There is nothing in this file to add. Of \(rowsRead) row"
+                + "\(rowsRead == 1 ? "" : "s")\(because)."
+        case .importPlanIsStale(let name, let plannedIn, let nowHolds):
+            return
+                "\u{201C}\(name)\u{201D} is now held in \(nowHolds), and this preview worked "
+                + "its amounts out in \(plannedIn). Those two do not divide into pence the same "
+                + "way, so importing now could be out by a factor of a hundred. Read the file "
+                + "again to get a fresh preview."
+
         case .nothingToRestore(let what):
             return "That \(what) is not in the bin \u{2014} there is nothing to bring back."
         }
@@ -263,6 +303,11 @@ public enum EditError: Error, Sendable, Hashable, CustomStringConvertible {
             return "Nothing was deleted."
         case .nothingToRestore:
             return "Nothing was changed."
+        case .unknownImportBatch, .importWouldWriteNothing, .importPlanIsStale:
+            // The half that matters most on this path: an import writes money,
+            // so somebody who taps Import, reads a refusal and taps it again
+            // must know the first tap put nothing in.
+            return "Nothing was imported, and your book is unchanged."
         case .transactionIsTransferLeg:
             return "Nothing was saved \u{2014} both halves are still exactly as they were."
         case .currencyIsLocked:

@@ -315,18 +315,44 @@ its own rule. The second is evidence rather than a feature.
 hand-written (no xcodegen on this machine) and uses a file-system-synchronized
 group, so adding a Swift file to `App/MyMoneyNative/` needs no project edit.
 
-Three screens: **accounts and net worth**, laid out as the web app's sidebar
-lays them out; a **register**, newest first, paged from a cursor; and **import**,
-which shows what it verified afterwards and names what disagreed when it refuses.
+Screens: **accounts and net worth**, laid out as the web app's sidebar lays them
+out; a **register**, newest first, paged from a cursor; the editors, budgets,
+schedules, reports and insights; **import**; and **back up**.
 
-Two rules it is built around:
+Rules it is built around:
 
-* **Read-only, and it says so on every screen.** There is no editor, no add and
-  no delete, and `LedgerService` exposes no method that could become one. The web
-  app is the system of record and the banner says which app holds the truth.
 * **Every figure comes from `Money`.** No `NumberFormatter` is constructed
   anywhere in the app target. `Formatting.swift` says so and explains why; a
   second formatter would be a second answer to "what is this amount".
+* **Primary actions live in the bottom third**, and that is a measurement rather
+  than a taste — see `Reach.swift`, `MYMONEY_REACH=1`, and the fractions in the
+  header of `ActionBar.swift`.
+
+### The two import doors
+
+`ImportView` is both of them, and they are not the same act.
+
+* A **backup** (`.json`) is checked against its own summary and then REPLACES the
+  book on this device, in one transaction, with a round-trip check afterwards.
+* A **statement** (`.csv`) goes to the **import wizard** — `ImportWizard.swift`
+  plus `ImportMapStep`, `ImportPreviewStep` and `ImportDoneStep`. File →
+  (columns, for a generic CSV) → preview → confirm → done. The plan is built by
+  `Import.buildPlan`, which is a pure function of the file, a snapshot of the
+  book and the owner's answers, so nothing is written until the confirmation on
+  the preview step; `LedgerStore.commitImport` then writes the whole batch inside
+  one transaction and `undoImport` takes it back.
+
+The preview is the point: how many rows, into which accounts, which accounts
+would be created and at what opening balance, how many rows are already in the
+book, and every awkward thing named out loud — currency mismatches, unpaired
+transfer legs, and unreadable rows with their row numbers.
+
+A generic CSV's column mapping is remembered per file layout, keyed by
+`fileSignature`. It is remembered in this device's own defaults rather than in
+`settings.savedMappings`: the kit exposes no writer for that field, and a
+remembered mapping is not the owner's money — writing one would count as a local
+edit and change the book's content hash because somebody previewed a statement.
+Mappings the BOOK carries (written by the web app) are still read and offered.
 
 ## Scheduled and recurring payments
 
@@ -476,10 +502,13 @@ refuses it.
 identified from its **bytes**, never its name: a backup called `.csv` still goes
 to `BackupImporter` with its manifest check intact. Arriving is not importing —
 the file lands on the Import screen with the ordinary confirmation, because an
-import replaces the copy on this device. A `.csv` is read and described and
-**not** written: there is no validated path from a statement's rows into the
-book yet, and half of one would be the second write path this app is built
-without.
+import replaces the copy on this device. A `.csv` is read and described, and
+then goes down the **other** door: `Import/ImportPlan.swift` resolves its rows
+against a snapshot of the book and `Import/LedgerStore+CommitImport.swift`
+writes them. A backup **replaces** a book; a statement **adds** to one, and is
+undoable afterwards. Both doors are single writers — the commit goes through the
+same `writeTransaction` the editor uses, so D30 (a row is stored in its
+**account's** currency) is structural rather than remembered.
 
 **Search** — `Domain/RegisterSearch.swift` and `Store/LedgerStore+Search.swift`.
 Payees, notes, amounts, categories (including the ones only on a split),

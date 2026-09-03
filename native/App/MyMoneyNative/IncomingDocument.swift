@@ -18,10 +18,19 @@
 // themselves. The share sheet chooses the FILE; the owner still chooses the
 // import.
 //
-// WHAT IS AND IS NOT SUPPORTED, plainly: a .json backup imports. A .csv is
-// read, described -- how many rows, which columns -- and NOT written, because
-// this app has no validated path from a statement's rows into the book yet.
-// Half of one would be the second write path this project is built without.
+// WHAT THE TWO DOORS DO, plainly, because they are not the same act. A .json
+// backup REPLACES the book on this device. A .csv ADDS to it: it is read and
+// described here -- how many rows, which columns -- and then, if the owner asks
+// for it, taken through the import wizard, whose preview says row by row what
+// would be written before anything is. Neither door writes on arrival.
+//
+// The statement path is `Import.buildPlan` then `LedgerStore.commitImport`, and
+// it is a SINGLE writer like the backup path is: the plan is a pure function
+// over a snapshot, the commit goes through the same `writeTransaction` the
+// editor uses, and the whole batch is one transaction that either lands or
+// leaves the book byte for byte as it was. It is undoable afterwards, which the
+// backup door is not -- the asymmetry is the point, and it is why the wizard
+// says which of the two an owner is about to do.
 import Foundation
 import MyMoneyKit
 

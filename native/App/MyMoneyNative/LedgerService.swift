@@ -788,4 +788,80 @@ actor LedgerService {
         }
         return ReportScreen(kind: kind, range: range, data: data, baseCurrency: book.baseCurrency)
     }
+
+    // MARK: - Bringing a statement's rows in
+    //
+    // A DIFFERENT THING FROM `importBackup`, and the difference is the whole
+    // safety argument. `importBackup` REPLACES the book: one file in, eleven
+    // tables cleared and rewritten, and afterwards this device holds exactly
+    // what the file held. The three calls below ADD to it: rows from a
+    // spreadsheet or a bank statement become transactions alongside everything
+    // already here, nothing is cleared, and the whole batch can be taken back.
+    //
+    // NEITHER OF THEM IS A SECOND WRITE PATH. `commitImport` goes through the
+    // same `writeTransaction` the transaction editor, the transfer editor,
+    // Quick Add and Siri go through -- same validation, same currency read off
+    // the account, same category checks -- and it does the whole batch inside
+    // one SQLite transaction with an additive census that rolls the lot back
+    // unless the live counts grew by exactly what the batch wrote down.
+
+    /// A copy of the book for the import wizard to resolve a file against.
+    ///
+    /// ONE READ. The plan, the account pickers and the names the preview puts
+    /// beside a duplicate all come from this single snapshot, so no two parts
+    /// of that screen can be describing the book at two different moments.
+    ///
+    /// It goes through `reportBook`, which is cached on SQLite's own count of
+    /// rows changed -- so opening the wizard right after drawing a report costs
+    /// nothing, and a write anywhere invalidates it without knowing the cache
+    /// exists.
+    func importContext() throws -> ImportContext {
+        let book = try reportBook()
+        return ImportContext(
+            // The LIVE rows: `book()` reads the `live_*` views, never the base
+            // tables. A tombstoned transaction handed to the planner would sit
+            // in its dedupe index and silently absorb an incoming row, so a
+            // re-import after a delete would skip exactly the row the owner
+            // deleted on purpose.
+            ledger: ImportLedger(book: book),
+            choosableAccounts: book.accounts
+                .filter { !$0.archived }
+                .sorted { ($0.sortOrder, $0.name) < ($1.sortOrder, $1.name) },
+            accountsById: Dictionary(
+                book.accounts.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }
+            ),
+            categoryNameById: Dictionary(
+                book.categories.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first }
+            ),
+            payeeNameById: Dictionary(
+                book.payees.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first }
+            ),
+            baseCurrency: book.baseCurrency,
+            savedMappings: book.settings?.savedMappings ?? [:]
+        )
+    }
+
+    /// Write an import plan. Additive, all or nothing, undoable.
+    func commitImport(_ plan: ImportPlan) throws -> ImportReceipt {
+        let receipt = try opened().commitImport(plan)
+        // The cached book is now wrong by exactly the rows just written. It
+        // would invalidate itself on the write token anyway; this is here so
+        // that a reader between the two lines cannot see the old one.
+        cachedBook = nil
+        return receipt
+    }
+
+    /// Take one back. Removal is a tombstone save, so nothing is destroyed and
+    /// anything the import created that has been used since is kept.
+    func undoImport(batchId: String) throws -> UndoneImport {
+        let undone = try opened().undoImport(batchId: batchId)
+        cachedBook = nil
+        return undone
+    }
+
+    /// The ids of every import batch the book holds, for deciding which of the
+    /// imports this DEVICE recorded are still there to be undone.
+    func importBatchIds() throws -> Set<String> {
+        Set(try opened().importBatches().map(\.id))
+    }
 }

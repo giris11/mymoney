@@ -30,6 +30,24 @@
 //     and says where to go instead; `saveTransfer` writes both legs together.
 //     One leg written alone is how a transfer stops cancelling out and quietly
 //     invents or destroys money.
+//
+// ─────────────────────────────────────────────────────────────────────────────
+// AND ONE STRUCTURAL RULE: THERE IS EXACTLY ONE TRANSACTION WRITER
+//
+// `writeTransaction` below is it. Every route by which a transaction reaches
+// this database goes through that function -- the editor (`saveTransaction`),
+// transfers (`saveTransfer`), a schedule being entered (which goes through
+// `saveTransaction`), and a statement being imported
+// (LedgerStore+CommitImport.swift) -- and it is the function that holds the
+// checks: the date is a real day, the account is live, the currency is the
+// ACCOUNT'S, the splits add up, and every category named still exists.
+//
+// The checks live in the writer rather than in each caller because a second
+// writer is a second set of bugs, and the second set is always the one that
+// gets them wrong: a bulk path that skips the currency read is a bulk path that
+// writes the file's currency into the account's ledger, and nothing downstream
+// can tell. What each caller keeps is only what is genuinely its own -- which
+// rows it is writing, what to call them, and what to count afterwards.
 import Foundation
 
 /// What a delete took away, and everything undo needs to put it back.
@@ -76,12 +94,15 @@ extension LedgerStore {
     public func saveTransaction(_ draft: TransactionDraft) throws -> Transaction {
         try connection.transaction {
             // Cheap, pure and first, so a mistyped date is refused before
-            // anything has been looked up.
+            // anything has been looked up. `writeTransaction` asks both of
+            // these again -- it asks them of every caller -- and they are
+            // repeated here only to decide WHICH refusal a draft with two
+            // faults gets: a mistyped date should be reported as a mistyped
+            // date, not as whatever the second fault was.
             guard CalendarDate(iso: draft.date) != nil else {
                 throw EditError.badDate(draft.date)
             }
-
-            guard let account = try liveAccount(id: draft.accountId) else {
+            guard try liveRowExists("accounts", id: draft.accountId) else {
                 throw EditError.unknownAccount(draft.accountId)
             }
 
@@ -102,61 +123,38 @@ extension LedgerStore {
                 existing = found
             }
 
-            // The currency comes from the ACCOUNT (rule 3), and the split check
-            // is stated in it, so the refusal reads as money.
-            let currency = account.currency
-            let tally = SplitTally.of(
-                amountMinor: draft.amountMinor, splits: draft.splits, currency: currency
-            )
-            if let refusal = tally.refusal { throw refusal }
-
-            if let categoryId = draft.categoryId {
-                guard try liveRowExists("categories", id: categoryId) else {
-                    throw EditError.unknownCategory(categoryId)
-                }
-            }
-            for split in draft.splits {
-                guard let categoryId = split.categoryId else { continue }
-                guard try liveRowExists("categories", id: categoryId) else {
-                    throw EditError.unknownCategory(categoryId)
-                }
-            }
-
             let payee = try getOrCreatePayee(named: draft.payeeName)
             let tags = try getOrCreateTags(named: draft.tagNames)
             let notes = draft.notes
-            // The hash's fourth field: the payee name when there is one, else
-            // the notes. The same rule the importer follows, so a transaction
-            // typed by hand and the same transaction arriving in a CSV collide
-            // instead of doubling.
-            let hashSource = payee?.name ?? notes
             let now = environment.now()
 
-            let saved = Transaction(
-                id: existing?.id ?? environment.newId(),
-                accountId: draft.accountId,
-                date: draft.date,
-                amountMinor: draft.amountMinor,
-                currency: currency,
-                payeeId: payee?.id,
-                categoryId: draft.categoryId,
-                tagIds: tags.map(\.id),
-                notes: notes,
-                status: draft.status,
-                splits: draft.splits,
-                transferGroupId: nil,
-                // Provenance is not the form's to change. A transaction that
-                // arrived in an import stays part of that import batch after
-                // it is edited, so undoing the import still finds it.
-                importBatchId: existing?.importBatchId,
-                dedupeHash: Dedupe.makeDedupeHash(
-                    accountId: draft.accountId, date: draft.date,
-                    amountMinor: draft.amountMinor, payeeOrDescription: hashSource
-                ),
-                createdAt: existing?.createdAt ?? now,
-                updatedAt: now
+            let saved = try writeTransaction(
+                PendingTransaction(
+                    id: existing?.id ?? environment.newId(),
+                    isNew: existing == nil,
+                    accountId: draft.accountId,
+                    date: draft.date,
+                    amountMinor: draft.amountMinor,
+                    payeeId: payee?.id,
+                    categoryId: draft.categoryId,
+                    tagIds: tags.map(\.id),
+                    notes: notes,
+                    status: draft.status,
+                    splits: draft.splits,
+                    transferGroupId: nil,
+                    // Provenance is not the form's to change. A transaction
+                    // that arrived in an import stays part of that import batch
+                    // after it is edited, so undoing the import still finds it.
+                    importBatchId: existing?.importBatchId,
+                    // The hash's fourth field: the payee name when there is
+                    // one, else the notes. The same rule the importer follows,
+                    // so a transaction typed by hand and the same transaction
+                    // arriving in a CSV collide instead of doubling.
+                    dedupeSource: payee?.name ?? notes,
+                    createdAt: existing?.createdAt ?? now,
+                    updatedAt: now
+                )
             )
-            try upsertTransactionRow(saved, isNew: existing == nil)
 
             // Learning happens AFTER the write, so the transaction just saved
             // is one of the ones counted (D17).
@@ -311,55 +309,52 @@ extension LedgerStore {
             }
 
             let now = environment.now()
-            let fromLeg = Transaction(
-                id: fromExisting?.id ?? environment.newId(),
-                accountId: draft.fromAccountId,
-                date: draft.date,
-                // The sign is put on HERE, from the leg's role. The draft
-                // carries magnitudes precisely so a form cannot get this wrong.
-                amountMinor: -draft.amountFromMinor,
-                currency: fromAccount.currency,
-                payeeId: nil,
-                categoryId: nil,
-                tagIds: [],
-                notes: draft.notes,
-                status: draft.status,
-                splits: [],
-                transferGroupId: groupId,
-                importBatchId: fromExisting?.importBatchId,
-                dedupeHash: Dedupe.makeDedupeHash(
-                    accountId: draft.fromAccountId, date: draft.date,
+            // BOTH LEGS THROUGH THE ONE WRITER, which is what makes each of
+            // them as checked as an ordinary save -- and what reads the
+            // currency off each leg's own account rather than off the draft.
+            let fromLeg = try writeTransaction(
+                PendingTransaction(
+                    id: fromExisting?.id ?? environment.newId(),
+                    isNew: fromExisting == nil,
+                    accountId: draft.fromAccountId,
+                    date: draft.date,
+                    // The sign is put on HERE, from the leg's role. The draft
+                    // carries magnitudes precisely so a form cannot get this
+                    // wrong.
                     amountMinor: -draft.amountFromMinor,
-                    payeeOrDescription: "Transfer to \(toAccount.name)"
-                ),
-                createdAt: fromExisting?.createdAt ?? now,
-                updatedAt: now
+                    payeeId: nil,
+                    categoryId: nil,
+                    tagIds: [],
+                    notes: draft.notes,
+                    status: draft.status,
+                    splits: [],
+                    transferGroupId: groupId,
+                    importBatchId: fromExisting?.importBatchId,
+                    dedupeSource: "Transfer to \(toAccount.name)",
+                    createdAt: fromExisting?.createdAt ?? now,
+                    updatedAt: now
+                )
             )
-            let toLeg = Transaction(
-                id: toExisting?.id ?? environment.newId(),
-                accountId: draft.toAccountId,
-                date: draft.date,
-                amountMinor: draft.amountToMinor,
-                currency: toAccount.currency,
-                payeeId: nil,
-                categoryId: nil,
-                tagIds: [],
-                notes: draft.notes,
-                status: draft.status,
-                splits: [],
-                transferGroupId: groupId,
-                importBatchId: toExisting?.importBatchId,
-                dedupeHash: Dedupe.makeDedupeHash(
-                    accountId: draft.toAccountId, date: draft.date,
+            let toLeg = try writeTransaction(
+                PendingTransaction(
+                    id: toExisting?.id ?? environment.newId(),
+                    isNew: toExisting == nil,
+                    accountId: draft.toAccountId,
+                    date: draft.date,
                     amountMinor: draft.amountToMinor,
-                    payeeOrDescription: "Transfer from \(fromAccount.name)"
-                ),
-                createdAt: toExisting?.createdAt ?? now,
-                updatedAt: now
+                    payeeId: nil,
+                    categoryId: nil,
+                    tagIds: [],
+                    notes: draft.notes,
+                    status: draft.status,
+                    splits: [],
+                    transferGroupId: groupId,
+                    importBatchId: toExisting?.importBatchId,
+                    dedupeSource: "Transfer from \(fromAccount.name)",
+                    createdAt: toExisting?.createdAt ?? now,
+                    updatedAt: now
+                )
             )
-
-            try upsertTransactionRow(fromLeg, isNew: fromExisting == nil)
-            try upsertTransactionRow(toLeg, isNew: toExisting == nil)
 
             // An ordinary transaction becoming a transfer leg would leave its
             // old payee holding a vote it no longer casts.
@@ -456,6 +451,121 @@ extension LedgerStore {
         // Order preserved from the transaction: a tag list is an array, and its
         // order is data.
         return ids.compactMap { byId[$0] }
+    }
+
+    // MARK: - The one transaction writer
+
+    /// One transaction on its way to the database: everything DECIDED, and
+    /// nothing yet CHECKED.
+    ///
+    /// Deliberately not a `TransactionDraft`. A draft is what a FORM holds --
+    /// names the owner typed, no ids, no provenance -- and three of the fields
+    /// here are ones a form must never be able to set: `transferGroupId`,
+    /// `importBatchId`, and the string the dedupe key is built from. Keeping
+    /// them on a separate internal type is what stops "the editor may not
+    /// change provenance" from being a rule somebody has to remember.
+    struct PendingTransaction {
+        let id: String
+        /// INSERT or UPDATE. Stated rather than inferred from whether the id is
+        /// already in the table: a write that silently turned an intended
+        /// insert into an update -- or the reverse -- would be a write that
+        /// either overwrote a stranger's row or duplicated one.
+        let isNew: Bool
+        let accountId: String
+        let date: String
+        /// Signed minor units, IN THE ACCOUNT'S CURRENCY. The writer reads the
+        /// currency itself and never takes one; a caller that has resolved an
+        /// amount at some other currency is a caller writing a wrong number.
+        let amountMinor: Int64
+        let payeeId: String?
+        let categoryId: String?
+        let tagIds: [String]
+        let notes: String
+        let status: TxStatus
+        let splits: [Split]
+        let transferGroupId: String?
+        let importBatchId: String?
+        /// The fourth field of the dedupe key. The rule differs by caller --
+        /// the editor uses the payee else the notes, a transfer leg names the
+        /// other account, an import uses the payee else the file's description
+        /// -- and getting it wrong is what makes a re-import of the same file
+        /// double instead of collide, so it is stated rather than derived.
+        let dedupeSource: String
+        let createdAt: String
+        let updatedAt: String
+    }
+
+    /// THE ONE PLACE A TRANSACTION ROW IS VALIDATED AND WRITTEN.
+    ///
+    /// Called from inside a transaction, always, and it does not open one --
+    /// the same rule the get-or-creates in LedgerStore+Lookup.swift follow, and
+    /// for the same reason: half of a save is not a save.
+    ///
+    /// The five checks are here, in the writer, rather than in each caller:
+    ///
+    ///   * the date is a real calendar day;
+    ///   * the account is LIVE (not missing, not tombstoned);
+    ///   * THE CURRENCY IS THE ACCOUNT'S -- read here, never accepted from the
+    ///     caller (rule 3, and D30 for the import path: balances and net worth
+    ///     sum `amount_minor` per account with no currency check, so a EUR row
+    ///     banked in a GBP account corrupts every total at once and nothing
+    ///     downstream can tell);
+    ///   * the splits sum EXACTLY to the amount, stated in that currency;
+    ///   * every category named still exists.
+    ///
+    /// What it does NOT check is the payee and the tag ids, because every
+    /// caller obtains those from `getOrCreatePayee`/`getOrCreateTags` in this
+    /// same transaction -- there is no way to hold one that is not in the table.
+    @discardableResult
+    func writeTransaction(_ pending: PendingTransaction) throws -> Transaction {
+        guard CalendarDate(iso: pending.date) != nil else {
+            throw EditError.badDate(pending.date)
+        }
+        guard let account = try liveAccount(id: pending.accountId) else {
+            throw EditError.unknownAccount(pending.accountId)
+        }
+        let currency = account.currency
+
+        let tally = SplitTally.of(
+            amountMinor: pending.amountMinor, splits: pending.splits, currency: currency
+        )
+        if let refusal = tally.refusal { throw refusal }
+
+        if let categoryId = pending.categoryId {
+            guard try liveRowExists("categories", id: categoryId) else {
+                throw EditError.unknownCategory(categoryId)
+            }
+        }
+        for split in pending.splits {
+            guard let categoryId = split.categoryId else { continue }
+            guard try liveRowExists("categories", id: categoryId) else {
+                throw EditError.unknownCategory(categoryId)
+            }
+        }
+
+        let saved = Transaction(
+            id: pending.id,
+            accountId: pending.accountId,
+            date: pending.date,
+            amountMinor: pending.amountMinor,
+            currency: currency,
+            payeeId: pending.payeeId,
+            categoryId: pending.categoryId,
+            tagIds: pending.tagIds,
+            notes: pending.notes,
+            status: pending.status,
+            splits: pending.splits,
+            transferGroupId: pending.transferGroupId,
+            importBatchId: pending.importBatchId,
+            dedupeHash: Dedupe.makeDedupeHash(
+                accountId: pending.accountId, date: pending.date,
+                amountMinor: pending.amountMinor, payeeOrDescription: pending.dedupeSource
+            ),
+            createdAt: pending.createdAt,
+            updatedAt: pending.updatedAt
+        )
+        try upsertTransactionRow(saved, isNew: pending.isNew)
+        return saved
     }
 
     // MARK: - The row writer

@@ -48,6 +48,20 @@ public enum StoreError: Error, Sendable, CustomStringConvertible {
     /// The store's own content contradicts itself.
     case corrupt(String)
 
+    /// AN IMPORT OF ROWS STOPPED BEING ADDITIVE, and was rolled back.
+    ///
+    /// Bringing a statement's rows into a book ADDS to it. Restoring a backup
+    /// REPLACES it. The two are one keystroke apart in a diff and a whole
+    /// ledger apart in effect, so the additive path counts every table before
+    /// and after itself and refuses to commit unless the arithmetic holds: no
+    /// row removed anywhere, and exactly as many rows added as the import batch
+    /// wrote down. This is what that check found.
+    ///
+    /// It is also the check that keeps UNDO honest. An import that created a
+    /// row the batch does not record is an import whose undo would leave that
+    /// row behind for ever, with nothing to say where it came from.
+    case importIsNotAdditive(table: String, expected: Int, found: Int, kind: String)
+
     /// A transaction failed AND the rollback failed. The connection is refused
     /// from here on rather than left in an unknown state.
     case rollbackFailed(original: String, rollback: String)
@@ -91,6 +105,12 @@ public enum StoreError: Error, Sendable, CustomStringConvertible {
                 + "whole minor units. An amount held as a floating-point number is not money."
         case .corrupt(let detail):
             return "Corrupt ledger: \(detail)"
+        case .importIsNotAdditive(let table, let expected, let found, let kind):
+            return
+                "This import did not do what it said it would: \(table) should have held "
+                + "\(expected) \(kind) row(s) afterwards and holds \(found). An import ADDS "
+                + "rows to your book \u{2014} it never replaces or removes any \u{2014} so it "
+                + "was rolled back. Nothing was changed."
         case .rollbackFailed(let original, let rollback):
             return
                 "A write failed and could not be rolled back, so the ledger's state is unknown "

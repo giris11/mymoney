@@ -266,6 +266,110 @@ extension LedgerStore {
         try update.run()
     }
 
+    // MARK: - Categories
+
+    /// What a get-or-create of a category PATH did: where the path ends up, and
+    /// which levels of it had to be made.
+    ///
+    /// The created ids are REPORTED rather than left to be worked out
+    /// afterwards, because they are what an import batch has to record: a
+    /// category created by an import and not written down is a category undo
+    /// cannot remove, and it stays in the owner's category list for ever with
+    /// nothing to explain it.
+    struct ResolvedCategoryPath {
+        /// The id of the last level -- the one a transaction is filed under.
+        let leafId: String
+        /// The ids this call INSERTED, parents before children.
+        let created: [String]
+    }
+
+    /// Find, or create, the category a path names. Ported from
+    /// `findOrCreateByPath` in src/domain/categories.ts.
+    ///
+    /// One level at a time, matching by name key AND kind among the LIVE
+    /// children of the level above -- live, because a tombstoned category is
+    /// one the owner deleted, and quietly filing new transactions into it would
+    /// bring a deleted row back into every report without anybody asking.
+    ///
+    /// The KIND is fixed for the whole path by the caller. That is the web
+    /// app's rule and it matters: a path whose levels disagreed about kind
+    /// would put an expense leaf under an income parent, and the reports read
+    /// the tree from the root.
+    func getOrCreateCategoryPath(_ path: [String], kind: CategoryKind) throws -> ResolvedCategoryPath {
+        let cleaned = path.map(Names.clean).filter { !$0.isEmpty }
+        guard !cleaned.isEmpty else { throw EditError.blankName(what: "category") }
+
+        var parentId: String? = nil
+        var leafId: String? = nil
+        var created: [String] = []
+        for name in cleaned {
+            let key = Names.key(name)
+            let siblings = try liveCategories(parentId: parentId)
+            if let match = siblings.first(where: { Names.key($0.name) == key && $0.kind == kind }) {
+                parentId = match.id
+                leafId = match.id
+                continue
+            }
+            let category = Category(
+                id: environment.newId(),
+                name: name,
+                parentId: parentId,
+                kind: kind,
+                // No icon and no colour: this category was named by a file, and
+                // inventing a colour for it would put a made-up swatch next to
+                // a hand-chosen one in the same list. The category editor is
+                // where a colour is chosen.
+                icon: nil,
+                colour: nil,
+                archived: false,
+                sortOrder: siblings.map(\.sortOrder).max().map { $0 + 1 } ?? 0
+            )
+            try writeCategories([category])
+            created.append(category.id)
+            parentId = category.id
+            leafId = category.id
+        }
+        // Unreachable: `cleaned` is non-empty, so the loop ran at least once.
+        guard let leafId else { throw EditError.blankName(what: "category") }
+        return ResolvedCategoryPath(leafId: leafId, created: created)
+    }
+
+    /// The live categories directly under `parentId`, or the live top-level
+    /// ones when it is nil.
+    ///
+    /// An EMPTY parent id is the same claim as an absent one -- both mean top
+    /// level, and both occur in books written by different builds -- which is
+    /// why the nil case tests for both.
+    func liveCategories(parentId: String?) throws -> [Category] {
+        let sql =
+            parentId == nil
+            ? "SELECT id, name, parent_id, kind, icon, colour, archived, sort_order "
+                + "FROM live_categories WHERE parent_id IS NULL OR parent_id = '' ORDER BY id"
+            : "SELECT id, name, parent_id, kind, icon, colour, archived, sort_order "
+                + "FROM live_categories WHERE parent_id = ? ORDER BY id"
+        let statement = try connection.prepare(sql)
+        defer { statement.finalize() }
+        if let parentId { statement.bind(1, text: parentId) }
+        var out: [Category] = []
+        while try statement.step() {
+            out.append(
+                Category(
+                    id: try statement.text(0),
+                    name: try statement.text(1),
+                    parentId: try statement.optionalText(2),
+                    kind: try Self.enumeration(
+                        try statement.text(3), CategoryKind.self, "categories.kind"
+                    ),
+                    icon: try statement.optionalText(4),
+                    colour: try statement.optionalText(5),
+                    archived: try statement.flag(6),
+                    sortOrder: try statement.int(7)
+                )
+            )
+        }
+        return out
+    }
+
     // MARK: - Tags
 
     /// Look up or create each tag name. Blanks skipped, case-insensitive
