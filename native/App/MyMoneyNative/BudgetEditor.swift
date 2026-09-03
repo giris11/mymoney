@@ -82,8 +82,34 @@ struct BudgetEditor: View {
         amount.minor(currency: baseCurrency)
     }
 
-    private var canSave: Bool {
-        !Names.isBlank(name) && !chosen.isEmpty && (typedMinor ?? 0) > 0 && !saving
+    /// Why Save will not run, or nil when it will. A sentence rather than a
+    /// boolean -- see `PrimaryAction` in `ActionBar.swift`.
+    private var saveProblem: PrimaryAction.DisabledReason? {
+        if saving { return .working }
+        if Names.isBlank(name) {
+            return .because(
+                "Give this budget a name \u{2014} \u{201C}Eating out\u{201D}, "
+                    + "\u{201C}Car\u{201D}, whatever you will recognise it by."
+            )
+        }
+        guard let typed = typedMinor else {
+            return .because(
+                "\u{201C}\(amount.text)\u{201D} is not an amount \(baseCurrency) can hold."
+            )
+        }
+        if typed <= 0 {
+            return .because(
+                "A budget needs an amount above nought \u{2014} it is the figure the spending "
+                    + "is measured against."
+            )
+        }
+        if chosen.isEmpty {
+            return .because(
+                "Choose at least one category for this budget to watch. Without one there is "
+                    + "nothing for it to count."
+            )
+        }
+        return nil
     }
 
     var body: some View {
@@ -150,8 +176,8 @@ struct BudgetEditor: View {
             #endif
             .safeAreaInset(edge: .bottom) {
                 SaveBar(
-                    title: "Save",
-                    isEnabled: canSave,
+                    title: saving ? "Saving\u{2026}" : "Save",
+                    disabledReason: saveProblem,
                     probe: "Budget editor \u{2014} Save",
                     save: { Task { await save() } }
                 )

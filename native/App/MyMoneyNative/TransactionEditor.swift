@@ -76,12 +76,41 @@ struct TransactionEditor: View {
         )
     }
 
-    private var canSave: Bool {
-        guard !saving, amountMinor != nil, !draft.accountId.isEmpty else { return false }
+    /// Why Save will not run, or nil when it will. A sentence rather than a
+    /// boolean -- see `PrimaryAction` in `ActionBar.swift`.
+    private var saveProblem: PrimaryAction.DisabledReason? {
+        if saving { return .working }
+        if draft.accountId.isEmpty {
+            return .because(
+                context.accounts.isEmpty
+                    ? "There are no accounts in your book yet, and a transaction has to land in "
+                        + "one. Add an account first and this will be waiting."
+                    : "Choose the account this belongs to. It fixes the currency the amount is "
+                        + "stored in, so it is never assumed."
+            )
+        }
+        if amountMinor == nil {
+            return .because(
+                amount.text.isEmpty
+                    ? "Type the amount."
+                    : "\u{201C}\(amount.text)\u{201D} is not an amount \(currency) can hold."
+            )
+        }
         // Every typed line has to BE a number before Save is offered -- not
         // treated as zero, which would silently save a different split.
-        guard lines.splits(currency: currency) != nil else { return false }
-        return tally?.isSavable ?? false
+        if lines.splits(currency: currency) == nil {
+            return .because(
+                "One of the split lines does not have an amount yet. Finish it, or remove the "
+                    + "line."
+            )
+        }
+        if let tally, !tally.isSavable {
+            return .because(
+                (tally.message ?? "The split does not add up to the transaction.")
+                    + " A split has to add up to the transaction exactly."
+            )
+        }
+        return nil
     }
 
     var body: some View {
@@ -184,8 +213,8 @@ struct TransactionEditor: View {
             #endif
             .safeAreaInset(edge: .bottom) {
                 SaveBar(
-                    title: "Save",
-                    isEnabled: canSave,
+                    title: saving ? "Saving\u{2026}" : "Save",
+                    disabledReason: saveProblem,
                     probe: "Transaction editor \u{2014} Save",
                     save: { Task { await save() } },
                     delete: editing == nil

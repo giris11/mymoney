@@ -85,8 +85,27 @@ struct AccountEditor: View {
         Money.parseToMinor(openingText, currency: currency)
     }
 
-    private var canSave: Bool {
-        !saving && !Names.isBlank(name) && openingMinor != nil
+    /// Why Save will not run, or nil when it will.
+    ///
+    /// A SENTENCE, NOT A BOOLEAN. `PrimaryAction` takes this rather than an
+    /// `isEnabled` so that a grey Save always has an answer beside it -- see
+    /// `ActionBar.swift`.
+    private var saveProblem: PrimaryAction.DisabledReason? {
+        if saving { return .working }
+        if Names.isBlank(name) {
+            return .because(
+                "Give this account a name \u{2014} whatever you will recognise it by in the "
+                    + "list."
+            )
+        }
+        if openingMinor == nil {
+            return .because(
+                "\u{201C}\(openingText)\u{201D} is not an amount \(currency) can hold. It is "
+                    + "the figure every future balance of this account is built on, so it is "
+                    + "never quietly read as nought."
+            )
+        }
+        return nil
     }
 
     var body: some View {
@@ -211,8 +230,8 @@ struct AccountEditor: View {
             #endif
             .safeAreaInset(edge: .bottom) {
                 SaveBar(
-                    title: "Save",
-                    isEnabled: canSave,
+                    title: saving ? "Saving\u{2026}" : "Save",
+                    disabledReason: saveProblem,
                     probe: "Account editor \u{2014} Save",
                     save: { Task { await save() } },
                     delete: canDelete
@@ -401,11 +420,15 @@ struct AccountGroupsView: View {
                 HStack(spacing: 12) {
                     TextField("New group name", text: $newName)
                         .textFieldStyle(.roundedBorder)
-                    PrimaryAction(title: "Add", isEnabled: !Names.isBlank(newName)) {
+                    PrimaryAction(
+                        title: "Add",
+                        disabledReason: Names.isBlank(newName)
+                            ? .because("Type a name for the new group first.") : nil,
+                        probe: "Account groups \u{2014} Add"
+                    ) {
                         Task { await add() }
                     }
                     .frame(maxWidth: 120)
-                    .reachProbe("Account groups \u{2014} Add")
                 }
             }
         }
@@ -481,11 +504,17 @@ private struct RenameGroupSheet: View {
             #endif
             .safeAreaInset(edge: .bottom) {
                 ActionBar {
-                    PrimaryAction(title: "Save", isEnabled: !Names.isBlank(name)) {
+                    PrimaryAction(
+                        title: "Save",
+                        disabledReason: Names.isBlank(name)
+                            ? .because("A group needs a name. Type one, or cancel to keep the "
+                                + "one it has.")
+                            : nil,
+                        probe: "Rename group \u{2014} Save"
+                    ) {
                         save()
                         dismiss()
                     }
-                    .reachProbe("Rename group \u{2014} Save")
                 }
             }
             .toolbar {

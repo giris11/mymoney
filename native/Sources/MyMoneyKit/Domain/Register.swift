@@ -165,9 +165,17 @@ public enum Register {
 
     /// The first line of a multi-line note; the whole thing when it has one line.
     /// `indexOf('\n')`, character for character with the TypeScript.
+    ///
+    /// SCALARS, because Swift's `Character` makes "\r\n" a single grapheme that
+    /// equals neither "\r" nor "\n" -- searched as Characters, a note saved
+    /// with Windows line endings has no `\n` in it at all and the register row
+    /// shows the whole note instead of its first line. JS strings are UTF-16
+    /// code units, so `indexOf` finds the LF of the pair and the slice keeps
+    /// the CR; this now does the same.
     public static func firstLine(_ s: String) -> String {
-        guard let i = s.firstIndex(of: "\n") else { return s }
-        return String(s[s.startIndex..<i])
+        let scalars = s.unicodeScalars
+        guard let i = scalars.firstIndex(of: "\n") else { return s }
+        return String(String.UnicodeScalarView(scalars[scalars.startIndex..<i]))
     }
 
     /// What the row is called: payee, else the first line of the note, else

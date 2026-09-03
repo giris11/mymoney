@@ -104,10 +104,12 @@ struct SchedulesView: View {
         .safeAreaInset(edge: .bottom) {
             if screen != nil {
                 ActionBar {
-                    PrimaryAction(title: "New schedule", systemImage: "plus") {
+                    PrimaryAction(
+                        title: "New schedule", systemImage: "plus",
+                        probe: "Scheduled \u{2014} New schedule"
+                    ) {
                         editing = .creating
                     }
-                    .reachProbe("Scheduled \u{2014} New schedule")
                 }
             }
         }

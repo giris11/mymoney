@@ -147,12 +147,22 @@ struct FirstRunView: View {
                     // Back is top-left, where Cancel is everywhere else in this
                     // app: it is pressed rarely, and a swipe already does it.
                     ToolbarItem(placement: .cancellationAction) {
-                        Button("Back") { goBack() }.disabled(working)
+                        // Greyed only while the book is being written, which
+                        // the bottom bar's own "Setting up…" already says.
+                        Button("Back") { goBack() }
+                            .disabled(working)
+                            .accessibilityHint(working ? "Not while your book is being set up" : "")
                     }
                 }
             }
             .navigationDestination(for: ImportDestination.self) { _ in
-                ImportView()
+                // THE CURRENCY THIS SCREEN ALREADY ASKED FOR travels with the
+                // push. A statement can now start a book on a device that has
+                // none, and the base currency that book takes must be the one
+                // chosen two steps ago rather than a second guess from the
+                // locale -- asking twice, or ignoring the answer, would be the
+                // app not listening.
+                ImportView(newBookCurrency: currency)
             }
         }
         // A FILE THAT ARRIVES DURING FIRST RUN GOES STRAIGHT TO THE IMPORT
@@ -339,25 +349,19 @@ struct FirstRunView: View {
     /// The one action of whichever step is showing, full width, at the bottom.
     private var bar: some View {
         ActionBar {
-            if let problem = blockingProblem {
-                // THE REASON LIVES WITH THE BUTTON IT IS DISABLING. Stranded at
-                // the top of a scrolling form it would be a question and its
-                // answer at opposite ends of the screen -- the same argument
-                // `AccountEditor` makes about its delete.
-                Label(problem, systemImage: "exclamationmark.circle")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+            // THE REASON LIVES WITH THE BUTTON IT IS DISABLING, and it is now
+            // `PrimaryAction` that draws it -- one implementation for every bar
+            // in the app rather than this screen's own copy. Stranded at the
+            // top of a scrolling form it would be a question and its answer at
+            // opposite ends of the screen.
             PrimaryAction(
                 title: primaryTitle,
                 systemImage: primarySymbol,
-                isEnabled: !working && blockingProblem == nil
+                disabledReason: working ? .working : blockingProblem.map { .because($0) },
+                probe: probeName
             ) {
                 advance()
             }
-            .reachProbe(probeName)
         }
     }
 

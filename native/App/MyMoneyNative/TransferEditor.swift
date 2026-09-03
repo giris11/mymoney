@@ -75,11 +75,39 @@ struct TransferEditor: View {
     private var sentMinor: Int64? { Money.parseToMinor(sentText, currency: fromCurrency) }
     private var receivedMinor: Int64? { Money.parseToMinor(receivedText, currency: toCurrency) }
 
-    private var canSave: Bool {
-        guard !saving, fromAccountId != toAccountId else { return false }
-        guard let sent = sentMinor, sent > 0 else { return false }
-        guard let received = receivedMinor, received > 0 else { return false }
-        return true
+    /// Why Save will not run, or nil when it will. A sentence rather than a
+    /// boolean -- see `PrimaryAction` in `ActionBar.swift`.
+    private var saveProblem: PrimaryAction.DisabledReason? {
+        if saving { return .working }
+        if context.accounts.count < 2 {
+            return .because(
+                "A transfer moves money between two accounts, and your book has "
+                    + "\(context.accounts.count == 1 ? "only one" : "none"). Add another "
+                    + "account and this will work."
+            )
+        }
+        if fromAccountId == toAccountId {
+            return .because(
+                "Choose two different accounts \u{2014} money cannot move to itself."
+            )
+        }
+        guard let sent = sentMinor else {
+            return .because(
+                "\u{201C}\(sentText)\u{201D} is not an amount \(fromCurrency) can hold."
+            )
+        }
+        if sent <= 0 {
+            return .because("The amount sent has to be more than nought.")
+        }
+        guard let received = receivedMinor else {
+            return .because(
+                "\u{201C}\(receivedText)\u{201D} is not an amount \(toCurrency) can hold."
+            )
+        }
+        if received <= 0 {
+            return .because("The amount received has to be more than nought.")
+        }
+        return nil
     }
 
     var body: some View {
@@ -148,8 +176,8 @@ struct TransferEditor: View {
             #endif
             .safeAreaInset(edge: .bottom) {
                 SaveBar(
-                    title: "Save",
-                    isEnabled: canSave,
+                    title: saving ? "Saving\u{2026}" : "Save",
+                    disabledReason: saveProblem,
                     probe: "Transfer editor \u{2014} Save",
                     save: { Task { await save() } },
                     delete: legId == nil

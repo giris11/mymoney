@@ -44,6 +44,21 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct ImportView: View {
+    /// The currency a book started by this import would be kept in.
+    ///
+    /// PASSED IN BY FIRST RUN WHERE THERE IS ONE, because first run has already
+    /// asked -- on the screen before the one that offered Import -- and asking
+    /// twice, or ignoring the answer, would be the app not listening. Otherwise
+    /// the device's own, which is the same guess the first-run screen starts
+    /// from. Never used while a book exists.
+    let newBookCurrency: String?
+
+    /// Spelled out rather than left to the memberwise initialiser, which every
+    /// `@State private var` below would otherwise make private to this file.
+    init(newBookCurrency: String? = nil) {
+        self.newBookCurrency = newBookCurrency
+    }
+
     @Environment(AppModel.self) private var app
     @State private var picking = false
     /// Asked from the bottom bar, where the import button now lives.
@@ -67,6 +82,20 @@ struct ImportView: View {
 
     private func importIncoming() {
         Task { await app.importIncoming() }
+    }
+
+    private var bookCurrency: String {
+        app.baseCurrency ?? newBookCurrency ?? FirstRunView.currencyFromThisDevice()
+    }
+
+    /// What "Set up this import…" will do, said before it is pressed. Never
+    /// absent, in any state. See `ImportAdvice.statementSetupNote`.
+    private var statementNote: String {
+        ImportAdvice.statementSetupNote(
+            hasBook: app.hasBook,
+            accountCount: app.summary?.accountCount ?? 0,
+            baseCurrency: bookCurrency
+        )
     }
 
     var body: some View {
@@ -95,7 +124,6 @@ struct ImportView: View {
             if let document = app.incoming {
                 IncomingSection(
                     document: document,
-                    hasBook: app.hasBook,
                     dismiss: { app.clearIncoming() }
                 )
             }
@@ -259,40 +287,53 @@ struct ImportView: View {
                         .controlSize(.large)
 
                         PrimaryAction(
-                            title: "Check and import this file",
+                            title: isReading
+                                ? "Checking the file\u{2026}" : "Check and import this file",
                             systemImage: "checkmark.seal",
-                            isEnabled: !isReading
+                            disabledReason: isReading ? .working : nil,
+                            probe: "Import \u{2014} Check and import"
                         ) {
                             if app.hasBook { confirmingIncoming = true } else { importIncoming() }
                         }
-                        .reachProbe("Import \u{2014} Check and import")
                     }
                 } else if let document = app.incoming, document.kind == .csv {
-                    HStack(spacing: 16) {
-                        Button(role: .cancel) { app.clearIncoming() } label: {
-                            Text("Not now").frame(minHeight: 24)
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.large)
+                    // THE BUTTON THAT WAS GREY, AND THE SENTENCE THAT WAS NOT
+                    // THERE. It used to be disabled whenever there was no book,
+                    // with the only explanation three screens up in a card the
+                    // owner had already scrolled past. Both halves of that were
+                    // wrong: a statement that declares its own accounts can
+                    // populate an empty device exactly, and a disabled primary
+                    // must carry its reason beside itself. Now the note is
+                    // always here and always says what the tap will do -- see
+                    // `ImportAdvice.statementSetupNote`.
+                    VStack(alignment: .leading, spacing: 10) {
+                        ActionReason(text: statementNote)
+                        HStack(spacing: 16) {
+                            Button(role: .cancel) { app.clearIncoming() } label: {
+                                Text("Not now").frame(minHeight: 24)
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.large)
 
-                        PrimaryAction(
-                            title: "Set up this import\u{2026}",
-                            systemImage: "tablecells.badge.ellipsis",
-                            isEnabled: !isReading && app.hasBook
-                        ) {
-                            openWizard(for: document)
+                            PrimaryAction(
+                                title: "Set up this import\u{2026}",
+                                systemImage: "tablecells.badge.ellipsis",
+                                disabledReason: isReading ? .working : nil,
+                                probe: "Import \u{2014} Set up this import"
+                            ) {
+                                openWizard(for: document)
+                            }
                         }
-                        .reachProbe("Import \u{2014} Set up this import")
                     }
                 } else {
                     PrimaryAction(
-                        title: "Choose a file\u{2026}",
+                        title: isReading ? "Checking the file\u{2026}" : "Choose a file\u{2026}",
                         systemImage: "doc.badge.plus",
-                        isEnabled: !isReading
+                        disabledReason: isReading ? .working : nil,
+                        probe: "Import \u{2014} Choose a file"
                     ) {
                         picking = true
                     }
-                    .reachProbe("Import \u{2014} Choose a file")
                 }
             }
         }
@@ -374,7 +415,16 @@ struct ImportView: View {
         }
         Task {
             do {
-                let context = try await app.service.importContext()
+                // NO BOOK IS A STATE THE WIZARD CAN OPEN IN NOW. There is
+                // nothing to resolve against -- no accounts, no categories, no
+                // duplicates to check -- so the snapshot is empty and the
+                // preview is built exactly as it is for any other file. The
+                // book is created by the COMMIT, in the same transaction as the
+                // rows, so nothing is written by opening this.
+                let context =
+                    app.hasBook
+                    ? try await app.service.importContext()
+                    : ImportContext.emptyBook(baseCurrency: bookCurrency)
                 guard
                     let model = ImportWizardModel(
                         fileName: document.fileName, text: text, context: context,
@@ -403,9 +453,23 @@ struct ImportView: View {
     /// A file that was previewed and abandoned stays, because that is what
     /// "Cancel" promised.
     private func wizardClosed() {
-        if lastWizard?.outcome != nil, lastWizard?.undone == nil { app.clearIncoming() }
+        let closed = lastWizard
+        if closed?.outcome != nil, closed?.undone == nil { app.clearIncoming() }
         lastWizard = nil
-        Task { await loadUndoable() }
+        Task {
+            // AN IMPORT THAT CREATED THE BOOK REFRESHES ON THE WAY OUT, NOT
+            // WHILE THE SHEET IS UP, and that is a bug fixed rather than a
+            // preference. `app.rowsImported()` flips `isFirstRun` false, and
+            // `RootView` swaps the whole first-run flow -- including the screen
+            // this sheet is presented FROM -- for the main shell. Doing it the
+            // moment the commit lands would tear the Done step off the screen
+            // mid-tap, taking the undo button with it. So the wizard sees its
+            // own result, the owner reads it, and the app catches up when they
+            // close it. Nothing on screen is stale in the meantime: the sheet
+            // covers the screen that would be.
+            if closed?.outcome?.createdTheBook == true { await app.rowsImported() }
+            await loadUndoable()
+        }
     }
 
     // MARK: - Taking one back
@@ -436,7 +500,11 @@ struct ImportView: View {
                         Spacer(minLength: 8)
                         Button("Undo") { undoTarget = entry }
                             .buttonStyle(.bordered)
+                            // Greyed only while another undo is running, which
+                            // the footer says out loud rather than leaving as a
+                            // row of dead buttons.
                             .disabled(undoing)
+                            .accessibilityHint(undoing ? "Not while an undo is running" : "")
                     }
                     .padding(.vertical, 2)
                 }
@@ -444,9 +512,12 @@ struct ImportView: View {
                 Text("Imports you can still undo")
             } footer: {
                 Text(
-                    "Only imports made on this device. Undoing one removes the transactions it "
-                        + "added, and any account, category, payee or tag it created that nothing "
-                        + "else has used since."
+                    undoing
+                        ? "Taking one back\u{2026} the others wait until it has finished, so two "
+                            + "undos can never overlap."
+                        : "Only imports made on this device. Undoing one removes the "
+                            + "transactions it added, and any account, category, payee or tag it "
+                            + "created that nothing else has used since."
                 )
             }
         }
@@ -803,9 +874,6 @@ private struct RefusedSection: View {
 /// a file that cannot be imported at all, the single Dismiss.
 private struct IncomingSection: View {
     let document: IncomingDocument
-    /// Whether this device holds a book at all. A statement adds rows TO one,
-    /// so with no book there is nothing for it to be added to.
-    let hasBook: Bool
     let dismiss: () -> Void
 
     var body: some View {
@@ -849,32 +917,23 @@ private struct IncomingSection: View {
                         }
                     }
                 }
-                // WHAT USED TO BE HERE. A sentence saying that bringing a
-                // statement's rows into the book was not built here yet, and
-                // that the way to do it was the web app. It was true and it was
-                // a dead end; the button in the bar below is what replaced it,
-                // and this line says the one thing that still needs saying --
-                // that pressing it writes nothing on its own.
+                // WHAT USED TO BE HERE, TWICE OVER. First a sentence saying
+                // that bringing a statement's rows into the book was not built
+                // here yet and that the way to do it was the web app. Then,
+                // when it was, a sentence saying that a statement adds rows to
+                // a book rather than creating one, so with no book there was
+                // nothing to do -- which greyed the button out and put the only
+                // explanation up here, in a card that scrolls, while the button
+                // it was about sat at the bottom of the screen with nothing
+                // beside it. On a real 348-row export that read as an app that
+                // had simply stopped working.
                 //
-                // AND THE ONE CASE THE BUTTON CANNOT ANSWER. A statement's rows
-                // go INTO a book: they need accounts to land in, categories to
-                // resolve against and existing transactions to be checked for
-                // duplicates against. With no book on this device there is
-                // nothing to add to, so the button is disabled -- and a
-                // disabled button with no sentence beside it is the dead end
-                // this screen has just stopped having.
-                Label(
-                    hasBook
-                        ? "Nothing has been added. Setting up the import shows you exactly what "
-                            + "it would do first, row by row, and writes only when you say so."
-                        : "There is no book on this device yet, and a statement adds rows to a "
-                            + "book rather than creating one. Import a backup first, or start a "
-                            + "book on this device, and then bring this file back.",
-                    systemImage: "info.circle"
-                )
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+                // BOTH SENTENCES ARE GONE. A file that declares its own
+                // accounts can populate an empty device, one that does not can
+                // be given an account, and whatever the state the note that
+                // says so now lives in the bar, against the button
+                // (`ImportAdvice.statementSetupNote`). This card describes the
+                // FILE; the bar describes the ACTION.
             }
 
             // THE BUTTONS FOR A FILE THAT CAN BE IMPORTED ARE IN THE BOTTOM

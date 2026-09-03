@@ -335,11 +335,13 @@ struct LockCover: View {
                         PrimaryAction(
                             title: lock.isAuthenticating ? "Unlocking\u{2026}" : "Unlock",
                             systemImage: "faceid",
-                            isEnabled: !lock.isAuthenticating
+                            // The TITLE is the reason -- see
+                            // `PrimaryAction.DisabledReason.working`.
+                            disabledReason: lock.isAuthenticating ? .working : nil,
+                            probe: "Lock \u{2014} Unlock"
                         ) {
                             Task { await lock.unlock() }
                         }
-                        .reachProbe("Lock \u{2014} Unlock")
                     }
                 }
                 // ASKS AS SOON AS IT APPEARS. The button is for a second

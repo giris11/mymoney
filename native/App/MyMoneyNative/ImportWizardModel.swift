@@ -62,9 +62,32 @@ struct ImportContext: Sendable {
     /// Mappings the BOOK carries -- saved by the web app when it read a file of
     /// the same shape. Keyed by file signature.
     let savedMappings: [String: ColumnMapping]
+    /// Is there a book on this device at all?
+    ///
+    /// FALSE IS A REAL STATE NOW, AND IT USED TO BE A DEAD END. A statement was
+    /// refused outright while there was no book -- correct about the arithmetic
+    /// and wrong about the person holding the phone, because a MoneyWiz Report
+    /// export declares its own accounts, their currencies and their balances
+    /// and needs nothing from a book that it does not bring with it. So the
+    /// wizard opens against an EMPTY snapshot instead, the preview is built
+    /// exactly as it would be for any other file, and the book is created by
+    /// the commit -- in the same transaction as the rows, so the two land
+    /// together or not at all. Nothing is written before the confirmation,
+    /// which is the promise this whole screen is built on.
+    let bookExists: Bool
 
     /// The name of an account already in the book.
     func accountName(_ id: String) -> String? { accountsById[id]?.name }
+
+    /// The snapshot for a device with NO BOOK: nothing to resolve against, and
+    /// the currency a book created here would be kept in.
+    static func emptyBook(baseCurrency: String) -> ImportContext {
+        ImportContext(
+            ledger: ImportLedger(), choosableAccounts: [], accountsById: [:],
+            categoryNameById: [:], payeeNameById: [:], baseCurrency: baseCurrency,
+            savedMappings: [:], bookExists: false
+        )
+    }
 }
 
 // MARK: - What an import did
@@ -99,6 +122,11 @@ struct ImportOutcome: Sendable, Hashable {
     let unpairedTransferCount: Int
     /// When it happened, for the list of imports that can still be undone.
     let importedAt: Date
+    /// This import also STARTED the book on this device. Said out loud on the
+    /// Done step, because it is the biggest thing that happened and because it
+    /// changes what the undo means (the rows and the accounts come back out;
+    /// the book stays, empty).
+    var createdTheBook = false
 
     init(receipt: ImportReceipt, plan: ImportPlan, importedAt: Date = Date()) {
         batchId = receipt.batchId
@@ -240,8 +268,46 @@ final class ImportWizardModel: Identifiable {
     var mapping = CSVMapping()
     private(set) var mappingOrigin: MappingOrigin = .guessed
     /// The account every row is pinned to, whatever the file says. Empty means
-    /// "use the file's own Account column".
+    /// "use the file's own Account column"; `ImportWizardModel.newAccountTag`
+    /// means "the one being named below".
     var fixedAccountId = ""
+    /// The picker tag for "create an account for this file".
+    ///
+    /// A SENTINEL RATHER THAN A SECOND @State FLAG, because the two can then
+    /// never disagree: `fixedAccountId` is the one answer to "where do these
+    /// rows go", and this is one of the values it can take.
+    static let newAccountTag = "\u{0000}new-account"
+    /// What that account would be called. Only read while the tag is chosen.
+    var newAccountName = ""
+    /// And which currency it holds -- which fixes the scale its amounts are
+    /// read at (D31) and the currency they are stored in (D30), so it is asked
+    /// rather than assumed.
+    var newAccountCurrency = ""
+
+    /// Is the owner naming an account for this file?
+    var isNamingAnAccount: Bool { fixedAccountId == Self.newAccountTag }
+
+    /// Can an account even be CHOSEN here? On a book with no accounts the
+    /// picker has nothing in it, and "choose an account above" is then an
+    /// instruction to do the impossible -- which was the second dead end.
+    var canChooseAnExistingAccount: Bool { !context.choosableAccounts.isEmpty }
+
+    /// The account this import would create for the file, or nil.
+    var pinnedNewAccount: DeclaredAccount? {
+        guard isNamingAnAccount,
+            ImportAdvice.newAccountProblem(
+                name: newAccountName, currency: newAccountCurrency
+            ) == nil
+        else { return nil }
+        return DeclaredAccount(
+            name: Names.clean(newAccountName),
+            currency: Names.clean(newAccountCurrency).uppercased(),
+            // The file states no balance for it -- a plain bank CSV cannot --
+            // so it starts at nought, which is what every layout that cannot
+            // state one has always produced.
+            openingBalanceMinor: nil
+        )
+    }
 
     // The preview step
     private(set) var plan: ImportPlan?
@@ -280,6 +346,10 @@ final class ImportWizardModel: Identifiable {
         self.headers = headers
         self.context = context
         self.service = service
+        // The book's own currency as the starting point for an account named
+        // here -- a guess the owner can change in one tap, and the right guess
+        // far more often than not.
+        self.newAccountCurrency = context.baseCurrency
 
         // ORDER MATTERS, and it is the web app's order for the same reason. A
         // Report export also passes the flat MoneyWiz header test -- it has
@@ -378,24 +448,56 @@ final class ImportWizardModel: Identifiable {
         return header.isEmpty ? "Column \(column + 1)" : header
     }
 
-    /// What is still missing before this file can be previewed.
+    /// What is still missing before this file can be previewed, in the owner's
+    /// words. Empty means it can be.
+    ///
+    /// THE ADVICE HAS TO FIT THE BOOK. "Choose an account above" cannot be
+    /// followed on a book with no accounts, so `ImportAdvice.accountRequirement`
+    /// says "name a new one above" instead -- and the picker offers that.
+    /// FRAGMENTS, not sentences: they are joined into "Still needed: a, b." A
+    /// whole sentence in this list would read as a run-on with two full stops,
+    /// which is why `newAccountProblem` is kept separate.
     var missingRequirements: [String] {
-        mapping.missingRequirements(fixedAccountChosen: !fixedAccountId.isEmpty)
+        mapping.missingRequirements(
+            fixedAccountChosen: !fixedAccountId.isEmpty,
+            accountAdvice: ImportAdvice.accountRequirement(
+                bookHasAccounts: canChooseAnExistingAccount
+            )
+        )
     }
 
-    /// The account every row would be pinned to, if one has been chosen.
+    /// Is there anything at all stopping this file being previewed?
+    var canPreview: Bool { missingRequirements.isEmpty && newAccountProblem == nil }
+
+    /// Why the account being named for this file cannot be used yet, or nil.
+    var newAccountProblem: String? {
+        guard isNamingAnAccount else { return nil }
+        return ImportAdvice.newAccountProblem(
+            name: newAccountName, currency: newAccountCurrency
+        )
+    }
+
+    /// The account every row would be pinned to, if an EXISTING one has been
+    /// chosen. nil while an account is being named -- that one does not exist
+    /// yet, and pretending it does is how a preview promises the wrong
+    /// currency.
     var fixedAccount: Account? { context.accountsById[fixedAccountId] }
 
     /// The currency an amount with no Currency column is read at. The pinned
-    /// account's if there is one, because that is the currency the row will be
-    /// STORED in (D30), and only otherwise the book's base.
-    var mappingCurrency: String { fixedAccount?.currency ?? context.baseCurrency }
+    /// account's if there is one -- existing or about to be created -- because
+    /// that is the currency the row will be STORED in (D30), and only otherwise
+    /// the book's base.
+    var mappingCurrency: String {
+        if let fixedAccount { return fixedAccount.currency }
+        if let pinned = pinnedNewAccount { return pinned.currency }
+        return context.baseCurrency
+    }
 
     /// Apply the mapping and go to the preview. The one place the mapping is
     /// remembered: while it is being edited it is half-built, and half-built is
     /// not an answer worth offering back next time.
     func continueFromMap() async {
-        guard !busy, missingRequirements.isEmpty else { return }
+        guard !busy, canPreview else { return }
         busy = true
         problem = nil
         defer { busy = false }
@@ -418,7 +520,11 @@ final class ImportWizardModel: Identifiable {
                 source: .csv,
                 fileName: fileName,
                 defaultCurrency: context.baseCurrency,
-                fixedAccountId: fixedAccountId.isEmpty ? nil : fixedAccountId
+                // An EXISTING account by id, or one named here by name. Never
+                // both: `pinnedNewAccount` is nil unless the tag is chosen, and
+                // the tag is not an account id.
+                fixedAccountId: fixedAccount == nil ? nil : fixedAccountId,
+                fixedNewAccount: pinnedNewAccount
             )
         )
         if plan != nil { step = .preview }
@@ -545,15 +651,52 @@ final class ImportWizardModel: Identifiable {
         step = .map
     }
 
+    /// Why the import cannot be written yet, or nil when it can.
+    ///
+    /// NEVER SILENT. The preview's primary action reads this, and the sentence
+    /// is drawn immediately above the button -- see `ImportAdvice` and
+    /// `PrimaryAction.DisabledReason`.
+    var commitProblem: PrimaryAction.DisabledReason? {
+        if busy { return .working }
+        guard let plan else {
+            return .because(
+                "This file has not been read yet, so there is nothing to import."
+            )
+        }
+        if let note = ImportAdvice.nothingToImportNote(
+            rowsRead: plan.rowsRead,
+            importableCount: plan.importableCount,
+            exactDuplicateCount: plan.exactDuplicateCount,
+            nearDuplicateCount: plan.nearDuplicateCount,
+            errorCount: plan.errorCount,
+            accountsToCreateCount: plan.accountsToCreateCount,
+            hasNewAccounts: !plan.newAccounts.isEmpty
+        ) {
+            return .because(note)
+        }
+        return nil
+    }
+
     /// Write the plan. The ONE call in this file that changes the book.
+    ///
+    /// AND, ON A DEVICE WITH NO BOOK, THE CALL THAT STARTS ONE. The settings
+    /// row, the seeded categories and every row of this import go into a single
+    /// transaction (`LedgerStore.commitImport(_:creatingBookWithBaseCurrency:)`),
+    /// so a failure anywhere leaves the device exactly as it was -- with
+    /// nothing on it -- rather than with a book that looks set up and holds
+    /// none of the money the file described.
     func commit() async {
         guard let plan, !busy, plan.importableCount > 0 else { return }
         busy = true
         problem = nil
         defer { busy = false }
         do {
-            let receipt = try await service.commitImport(plan)
-            let outcome = ImportOutcome(receipt: receipt, plan: plan)
+            let receipt = try await service.commitImport(
+                plan,
+                creatingBookWithBaseCurrency: context.bookExists ? nil : context.baseCurrency
+            )
+            var outcome = ImportOutcome(receipt: receipt, plan: plan)
+            outcome.createdTheBook = !context.bookExists
             self.outcome = outcome
             ImportHistory.record(outcome)
             step = .done

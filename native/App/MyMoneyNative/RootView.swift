@@ -553,10 +553,11 @@ struct AddActionBar: View {
     /// before it has been done.
     private var accountOnly: some View {
         ActionBar {
-            PrimaryAction(title: "Add an account", systemImage: "building.columns") {
+            PrimaryAction(
+                title: "Add an account", systemImage: "building.columns", probe: probe
+            ) {
                 open(.account(nil))
             }
-            .reachProbe(probe)
         }
     }
 
@@ -589,10 +590,9 @@ struct AddActionBar: View {
                 .accessibilityLabel("Add a transaction, a transfer or an account")
                 .help("Add a transaction, a transfer or an account")
 
-                PrimaryAction(title: "Quick add", systemImage: "bolt.fill") {
+                PrimaryAction(title: "Quick add", systemImage: "bolt.fill", probe: probe) {
                     open(.quickAdd)
                 }
-                .reachProbe(probe)
             }
         }
     }

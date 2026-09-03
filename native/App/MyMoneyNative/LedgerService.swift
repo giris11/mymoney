@@ -837,13 +837,23 @@ actor LedgerService {
                 book.payees.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first }
             ),
             baseCurrency: book.baseCurrency,
-            savedMappings: book.settings?.savedMappings ?? [:]
+            savedMappings: book.settings?.savedMappings ?? [:],
+            bookExists: book.settings != nil
         )
     }
 
     /// Write an import plan. Additive, all or nothing, undoable.
-    func commitImport(_ plan: ImportPlan) throws -> ImportReceipt {
-        let receipt = try opened().commitImport(plan)
+    ///
+    /// `creatingBookWithBaseCurrency` is non-nil only when the wizard was
+    /// opened on a device with NO BOOK -- then the settings row, the seeded
+    /// categories and the whole import land in one transaction. It is ignored
+    /// when a book is already here; it can never replace one.
+    func commitImport(
+        _ plan: ImportPlan, creatingBookWithBaseCurrency baseCurrency: String? = nil
+    ) throws -> ImportReceipt {
+        let receipt = try opened().commitImport(
+            plan, creatingBookWithBaseCurrency: baseCurrency
+        )
         // The cached book is now wrong by exactly the rows just written. It
         // would invalidate itself on the write token anyway; this is here so
         // that a reader between the two lines cannot see the old one.

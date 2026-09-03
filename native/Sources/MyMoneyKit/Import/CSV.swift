@@ -22,6 +22,25 @@
 // every file either implementation will ever see -- the two agree; on a file
 // that mixes them, this one is more forgiving, and being more forgiving about
 // line endings has never cost anybody a transaction.
+//
+// ─────────────────────────────────────────────────────────────────────────────
+// UNICODE SCALARS, NOT CHARACTERS, AND IT IS NOT A STYLE CHOICE
+//
+// Swift's `Character` is a grapheme cluster, and "\r\n" is ONE of them: it
+// compares equal to neither "\r" nor "\n". A parser that walks `Characters` and
+// asks `c == "\n"` therefore never finds a line ending in a CRLF file -- which
+// is the ending RFC 4180 specifies, which every spreadsheet on Windows writes,
+// and which any export carrying a `sep=` hint for Excel is overwhelmingly
+// likely to use. The whole file comes back as ONE row with the breaks buried
+// inside the fields, `IncomingFile.kind` sees one row and calls it unreadable,
+// and the owner is told their export "is not something this app can read" with
+// nothing on screen about line endings. That is the same dead end as the greyed
+// button, one door earlier.
+//
+// JavaScript strings are UTF-16 code units, so PapaParse sees the CR and the LF
+// as separate characters and always did. Walking scalars here is what makes
+// this a port of that parser rather than a different one that agrees on the
+// fixtures. Every fixture in this repo used "\n", so nothing caught it.
 import Foundation
 
 public struct CSVTable: Sendable, Hashable {
@@ -52,14 +71,20 @@ public enum CSV {
     /// dropped. That also settles "the remaining cells must be empty" by
     /// construction: a real header whose first column is literally named `sep=`
     /// necessarily has more on the line.
+    ///
+    /// SCALARS for the newline search: on a CRLF file `text.firstIndex(of:
+    /// "\n")` is nil, because the pair is a single grapheme that equals
+    /// neither half. Searched as Characters this returned the file untouched
+    /// and the hint became row 1 -- see the note at the top.
     static func strippingSeparatorHint(_ text: String) -> String {
-        guard let nl = text.firstIndex(of: "\n") else {
+        let scalars = text.unicodeScalars
+        guard let nl = scalars.firstIndex(of: "\n") else {
             return isSeparatorHint(text) ? "" : text
         }
-        var firstLine = String(text[text.startIndex..<nl])
+        var firstLine = String(String.UnicodeScalarView(scalars[scalars.startIndex..<nl]))
         if firstLine.hasSuffix("\r") { firstLine.removeLast() }
         guard isSeparatorHint(firstLine) else { return text }
-        return String(text[text.index(after: nl)...])
+        return String(String.UnicodeScalarView(scalars[scalars.index(after: nl)...]))
     }
 
     /// `/^sep=.$/i` — `.` in JavaScript does not match a line terminator, and
@@ -103,9 +128,13 @@ public enum CSV {
         var inQuotes = false
         var fieldStarted = false  // has anything (quote or char) been seen yet?
 
-        var iterator = text.makeIterator()
-        var pending: Character? = nil
-        func next() -> Character? {
+        // Every delimiter this parser is ever handed is one scalar (see
+        // `delimitersToGuess`); the fallback is the comma the caller would have
+        // used anyway rather than a crash on a hypothetical.
+        let delimiter = delimiter.unicodeScalars.first ?? ","
+        var iterator = text.unicodeScalars.makeIterator()
+        var pending: Unicode.Scalar? = nil
+        func next() -> Unicode.Scalar? {
             if let p = pending { pending = nil; return p }
             return iterator.next()
         }
@@ -115,7 +144,7 @@ public enum CSV {
                 if c == "\"" {
                     if let after = next() {
                         if after == "\"" {
-                            field.append("\"")
+                            field.unicodeScalars.append("\"")
                         } else {
                             inQuotes = false
                             pending = after
@@ -124,7 +153,7 @@ public enum CSV {
                         inQuotes = false
                     }
                 } else {
-                    field.append(c)
+                    field.unicodeScalars.append(c)
                 }
                 continue
             }
@@ -150,7 +179,7 @@ public enum CSV {
                 fieldStarted = false
                 continue
             }
-            field.append(c)
+            field.unicodeScalars.append(c)
             fieldStarted = true
         }
         // A file ending in a newline leaves nothing pending; anything else is a

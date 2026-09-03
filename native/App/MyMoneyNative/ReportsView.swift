@@ -276,7 +276,12 @@ struct ReportsView: View {
                     .font(.caption.weight(parentId == nil ? .semibold : .regular))
                     .buttonStyle(.plain)
                     .foregroundStyle(parentId == nil ? AnyShapeStyle(.primary) : AnyShapeStyle(Color.accentColor))
+                    // Not a refusal: it is the crumb for where you already
+                    // are, and the semibold weight above says so. Disabling it
+                    // stops a tap that would do nothing, and VoiceOver is told
+                    // the same thing the weight shows.
                     .disabled(parentId == nil)
+                    .accessibilityHint(parentId == nil ? "You are here" : "")
                 ForEach(Array(trail.enumerated()), id: \.element.id) { index, crumb in
                     Text("\u{203A}").font(.caption).foregroundStyle(.tertiary)
                     if index == trail.count - 1 {
@@ -542,11 +547,10 @@ struct CustomRangeSheet: View {
             #endif
             .safeAreaInset(edge: .bottom) {
                 ActionBar {
-                    PrimaryAction(title: "Apply") {
+                    PrimaryAction(title: "Apply", probe: "Date range \u{2014} Apply") {
                         apply(DateRange(from: from, to: to))
                         dismiss()
                     }
-                    .reachProbe("Date range \u{2014} Apply")
                 }
             }
             .toolbar {

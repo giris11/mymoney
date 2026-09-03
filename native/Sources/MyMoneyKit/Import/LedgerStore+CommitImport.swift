@@ -218,6 +218,57 @@ extension LedgerStore {
         try commitImport(plan, probe: nil)
     }
 
+    /// Write an import plan into a book, CREATING THAT BOOK if this device has
+    /// none and the caller says which currency it should be in.
+    ///
+    /// ─────────────────────────────────────────────────────────────────────
+    /// WHY THIS EXISTS, AND WHY IT IS ONE TRANSACTION
+    ///
+    /// A statement adds rows to a book, so the app refused one outright while
+    /// there was no book -- which is correct about the arithmetic and wrong
+    /// about the person holding the phone. A MoneyWiz Report export DECLARES
+    /// its accounts, their currencies and their balances: it is a description
+    /// of a whole ledger, and there is nothing it needs from a book that it
+    /// does not bring with it. Refusing it was the app declining to do
+    /// something it could already do, and it left a first run with no way in.
+    ///
+    /// The settings row and the seeded categories therefore go in FIRST, inside
+    /// the same transaction as the import, so the two either both land or
+    /// neither does. A book created and then left empty because the rows failed
+    /// their audit would be a device that looks set up and holds nothing, and
+    /// the owner would have no way to tell that from a book they made on
+    /// purpose.
+    ///
+    /// `baseCurrency` is ignored when a book is already here -- this is not a
+    /// way to change one (see `setBaseCurrency`), and it never replaces
+    /// anything. With no book and no currency it still throws
+    /// `EditError.noBook`, unchanged, because a book has to be denominated in
+    /// something and guessing that is not this function's business.
+    @discardableResult
+    public func commitImport(
+        _ plan: ImportPlan, creatingBookWithBaseCurrency baseCurrency: String?
+    ) throws -> ImportReceipt {
+        try commitImport(plan, creatingBookWithBaseCurrency: baseCurrency, probe: nil)
+    }
+
+    @discardableResult
+    func commitImport(
+        _ plan: ImportPlan, creatingBookWithBaseCurrency baseCurrency: String?,
+        probe: ImportCommitProbe?
+    ) throws -> ImportReceipt {
+        try connection.transaction {
+            if try readSettings() == nil, let baseCurrency {
+                // Through the ordinary creator: one book writer, one set of
+                // refusals, one seeded category tree. A currency that is not a
+                // currency throws `EditError.badCurrency` from in here and
+                // takes the whole transaction with it.
+                try createBook(baseCurrency: baseCurrency)
+                try probe?("book", 1)
+            }
+            return try commitImport(plan, probe: probe)
+        }
+    }
+
     @discardableResult
     func commitImport(_ plan: ImportPlan, probe: ImportCommitProbe?) throws -> ImportReceipt {
         try connection.transaction {
@@ -308,7 +359,12 @@ extension LedgerStore {
                     }
                     return account
                 }
-                let key = Import.nameKey(row.row.accountName ?? "")
+                // THE PLAN'S ANSWER, not the file's. See
+                // `ImportPlanRow.newAccountName`: the account a row lands in is
+                // not always one the file named -- it can be one the owner
+                // named for a file that has no Account column at all -- and the
+                // plan is the single place that decided which.
+                let key = Import.nameKey(row.newAccountName ?? row.row.accountName ?? "")
                 guard let account = accountsByKey[key] else {
                     throw StoreError.corrupt(
                         "row \(row.rowNumber) is marked importable but names no account this "

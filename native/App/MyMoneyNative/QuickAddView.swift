@@ -71,7 +71,27 @@ struct QuickAddView: View {
 
     private var magnitude: Int64 { AmountKeypad.magnitude(digits) }
 
-    private var canSave: Bool { !saving && !digits.isEmpty && !accountId.isEmpty }
+    /// Why Save will not run, or nil when it will. A sentence rather than a
+    /// boolean -- see `PrimaryAction` in `ActionBar.swift`.
+    ///
+    /// A \u{00A3}0.00 row is almost always a slip, so Save waits for digits --
+    /// and now says so instead of sitting there grey over a keypad that has
+    /// not been touched.
+    private var saveProblem: PrimaryAction.DisabledReason? {
+        if saving { return .working }
+        if accountId.isEmpty {
+            return .because(
+                context.accounts.isEmpty
+                    ? "There are no accounts in your book yet, and this has to land in one. Add "
+                        + "an account first and Quick add will be waiting."
+                    : "Choose the account this goes in, just above the keypad."
+            )
+        }
+        if digits.isEmpty {
+            return .because("Tap the amount on the keypad below.")
+        }
+        return nil
+    }
 
     var body: some View {
         NavigationStack {
@@ -133,10 +153,13 @@ struct QuickAddView: View {
                         AmountKeypadKeys(digits: $digits)
                             .reachProbe("Quick add \u{2014} keypad")
                     }
-                    PrimaryAction(title: "Save", isEnabled: canSave) {
+                    PrimaryAction(
+                        title: saving ? "Saving\u{2026}" : "Save",
+                        disabledReason: saveProblem,
+                        probe: "Quick add \u{2014} Save"
+                    ) {
                         Task { await save() }
                     }
-                    .reachProbe("Quick add \u{2014} Save")
                 }
                 .animation(.default, value: systemKeyboardUp)
             }

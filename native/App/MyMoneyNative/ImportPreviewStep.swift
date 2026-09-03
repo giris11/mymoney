@@ -71,11 +71,18 @@ struct ImportPreviewStep: View {
     }
 
     private func list(_ plan: ImportPlan) -> some View {
-        List {
+        // ONE COMPUTATION, TWO SECTIONS. "Where the money goes" and "what will
+        // be created" are two views of the same arithmetic, and deriving them
+        // separately is how a screen ends up promising an opening balance in
+        // one section and a closing balance in the other that do not agree.
+        let lines = ImportPreview.accountLines(
+            plan: plan, context: model.context, reportAccounts: model.reportAccounts
+        )
+        return List {
             countsSection(plan)
             if model.layout.isMoneyWiz { dateSection }
-            accountsSection(plan)
-            createSection(plan)
+            accountsSection(plan, lines)
+            createSection(plan, lines)
             disclosuresSection(plan)
             nearDuplicatesSection(plan)
             errorsSection(plan)
@@ -148,6 +155,17 @@ struct ImportPreviewStep: View {
                 Text("Year / Month / Day").tag(DateOrder.ymd)
             }
             .disabled(model.busy)
+            .accessibilityHint(model.busy ? "Not while the file is being re-read" : "")
+            if model.busy {
+                // GREYED WITH A REASON. Re-reading a file under a different
+                // ordering rebuilds the whole plan, and a second change while
+                // that is in flight would be answering a question the screen
+                // has already moved past.
+                Label("Re-reading the file under the new ordering\u{2026}", systemImage: "clock")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             if let example = model.dateExample {
                 FigureRow(
                     label: "\u{201C}\(example.raw)\u{201D} in this file is",
@@ -179,10 +197,9 @@ struct ImportPreviewStep: View {
 
     // MARK: 3. Where the money goes
 
-    @ViewBuilder private func accountsSection(_ plan: ImportPlan) -> some View {
-        let lines = ImportPreview.accountLines(
-            plan: plan, context: model.context, reportAccounts: model.reportAccounts
-        )
+    @ViewBuilder private func accountsSection(
+        _ plan: ImportPlan, _ lines: [ImportAccountLine]
+    ) -> some View {
         if !lines.isEmpty {
             Section {
                 ForEach(lines) { line in
@@ -211,16 +228,35 @@ struct ImportPreviewStep: View {
 
     // MARK: 4. What will be created
 
-    @ViewBuilder private func createSection(_ plan: ImportPlan) -> some View {
+    @ViewBuilder private func createSection(
+        _ plan: ImportPlan, _ lines: [ImportAccountLine]
+    ) -> some View {
         if !plan.newAccounts.isEmpty {
             Section {
                 ForEach(plan.newAccounts, id: \.name) { account in
                     Toggle(isOn: createBinding(account.name)) {
+                        // WHAT WILL BE CREATED, IN FULL, and it used to be one
+                        // line. An account this import invents is a bigger
+                        // change than a row it adds -- it is the thing every
+                        // future balance of that money is built on -- so it
+                        // gets the same arithmetic the "into which accounts"
+                        // section gets: the currency, the opening balance the
+                        // file's own figures imply, and where it ends up
+                        // against the balance the file states.
                         VStack(alignment: .leading, spacing: 2) {
                             Text(account.name)
                             Text(openingLine(account))
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                            if let closing = closingLine(
+                                for: account, in: lines
+                            ) {
+                                Text(closing.text)
+                                    .font(.caption)
+                                    .foregroundStyle(closing.matches ? Color.green : Color.orange)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
                         }
                     }
                 }
@@ -272,6 +308,32 @@ struct ImportPreviewStep: View {
         }
         return "\(account.currency) \u{2014} opening balance "
             + Display.money(opening, account.currency)
+    }
+
+    /// Where a created account ends up, against the figure the file states.
+    ///
+    /// FROM THE SAME LINES THE SECTION ABOVE DRAWS, so this cannot disagree
+    /// with them; nil when the file states no balance to check against, which
+    /// is every layout but the Report export.
+    private func closingLine(
+        for account: NewAccountPlan, in lines: [ImportAccountLine]
+    ) -> (text: String, matches: Bool)? {
+        let key = Names.key(account.name)
+        guard let line = lines.first(where: { $0.key == key }),
+            let final = line.finalMinor, let stated = line.fileBalanceMinor,
+            let difference = line.differenceMinor
+        else { return nil }
+        if difference == 0 {
+            return (
+                "Ends at " + Display.money(final, line.currency)
+                    + " \u{2014} exactly what the file states.", true
+            )
+        }
+        return (
+            "Ends at " + Display.money(final, line.currency) + "; the file states "
+                + Display.money(stated, line.currency) + " \u{2014} "
+                + Display.money(difference, line.currency) + " out.", false
+        )
     }
 
     /// READ THROUGH THE MODEL, NOT THROUGH THE PLAN THIS FUNCTION WAS HANDED.
@@ -443,14 +505,14 @@ struct ImportPreviewStep: View {
                 ImportNote(text: problem, tone: .red)
             }
             // A DISABLED PRIMARY WITH NOTHING BESIDE IT IS A DEAD END, which is
-            // the thing this whole screen replaced. Nought to import has three
-            // causes and they are not the same news: the file is already in the
-            // book (good, and the commonest -- it is what re-importing the same
-            // statement looks like), every row failed (fixable, and the counts
-            // above say how), or the owner has unticked everything.
-            if let note = nothingToImportNote(plan) {
-                ImportNote(text: note, symbol: "info.circle", tone: .secondary)
-            }
+            // the thing this whole screen replaced. Nought to import has
+            // several causes and they are not the same news -- the file is
+            // already in the book (good, and the commonest: it is what
+            // re-importing the same statement looks like), every row failed
+            // (fixable, and the counts above say how), or the owner has
+            // unticked everything. `PrimaryAction` draws the sentence itself
+            // now, from `ImportAdvice.nothingToImportNote`, so a grey button
+            // here cannot be written without one.
             HStack(spacing: 16) {
                 if model.layout == .generic {
                     Button { model.back() } label: {
@@ -460,15 +522,16 @@ struct ImportPreviewStep: View {
                     .buttonStyle(.bordered)
                     .controlSize(.large)
                     .disabled(model.busy)
+                    .accessibilityHint(model.busy ? "Not while the file is being read" : "")
                 }
                 PrimaryAction(
                     title: primaryTitle(plan),
                     systemImage: "tray.and.arrow.down",
-                    isEnabled: !model.busy && plan.importableCount > 0
+                    disabledReason: model.commitProblem,
+                    probe: "Import \u{2014} Import these transactions"
                 ) {
                     confirming = true
                 }
-                .reachProbe("Import \u{2014} Import these transactions")
             }
         }
         .confirmationDialog(
@@ -483,20 +546,6 @@ struct ImportPreviewStep: View {
         }
     }
 
-    private func nothingToImportNote(_ plan: ImportPlan) -> String? {
-        guard plan.importableCount == 0, plan.rowsRead > 0 else { return nil }
-        if plan.errorCount == plan.rowsRead { return nil }  // the counts already say it
-        if plan.exactDuplicateCount + plan.nearDuplicateCount == plan.rowsRead {
-            return "Every row in this file is already in your book, so there is nothing to add. "
-                + "That is what bringing the same statement back a second time looks like."
-        }
-        if plan.accountsToCreateCount == 0 && !plan.newAccounts.isEmpty {
-            return "Nothing will be added because every account this file needs is unticked "
-                + "above."
-        }
-        return "Nothing in this file would be added. The counts above say why."
-    }
-
     private func primaryTitle(_ plan: ImportPlan) -> String {
         if model.busy { return "Importing\u{2026}" }
         if plan.importableCount == 0 { return "Nothing to import" }
@@ -504,7 +553,25 @@ struct ImportPreviewStep: View {
     }
 
     private func confirmation(_ plan: ImportPlan) -> String {
-        var sentence =
+        // THE BIGGEST THING FIRST, when there is a bigger thing. On a device
+        // with no book this tap does not add to a book -- it starts one -- and
+        // the confirmation has to say that before it says anything else.
+        var sentence = ""
+        if !model.context.bookExists {
+            sentence =
+                "This starts your book on this device, in \(model.context.baseCurrency), and "
+                + "puts \(Display.count(plan.importableCount, "transaction")) in it"
+            if plan.accountsToCreateCount > 0 {
+                sentence +=
+                    " across \(Display.count(plan.accountsToCreateCount, "account")) taken from "
+                    + "the file"
+            }
+            sentence += ". It all happens at once \u{2014} if any part of it fails, nothing is "
+            sentence += "written at all \u{2014} and the whole import can be undone straight "
+            sentence += "afterwards."
+            return sentence
+        }
+        sentence =
             "\(Display.count(plan.importableCount, "transaction")) will be added to the copy of "
             + "your book on this device"
         if plan.accountsToCreateCount > 0 {
@@ -536,6 +603,18 @@ private struct AccountLineRow: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+            // WHAT THE ACCOUNT IS BEING CREATED AS, spelled out beside what is
+            // going into it. The currency was only ever implied by the money
+            // formatting and the opening balance lived in another section, so
+            // the one figure every future balance of this account is built on
+            // could not be checked against the file without scrolling between
+            // two lists.
+            if let creationLine {
+                Text(creationLine)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             if let balanceLine {
                 Text(balanceLine)
                     .font(.caption)
@@ -567,6 +646,21 @@ private struct AccountLineRow: View {
         return parts.joined(separator: ", ")
     }
 
+    /// For an account being created: the currency it gets and the opening
+    /// balance the file's own arithmetic implies. nil for one already here --
+    /// its currency and its opening balance are its own and are not touched.
+    private var creationLine: String? {
+        guard line.status == .willCreate || line.status == .notCreated else { return nil }
+        let verb = line.status == .willCreate ? "Created" : "Would be created"
+        guard let opening = line.fileOpeningMinor else {
+            return "\(verb) in \(line.currency), starting at nought \u{2014} this file states "
+                + "no opening balance for it."
+        }
+        return "\(verb) in \(line.currency), opening at "
+            + Display.money(opening, line.currency)
+            + " \u{2014} the balance the file states, less this account\u{2019}s own rows."
+    }
+
     /// The claim only a balance-stating export can make, and the one worth
     /// reading before committing: where this account ends up, against where the
     /// file says it should be.
@@ -594,6 +688,7 @@ private struct AccountLineRow: View {
     private var spoken: String {
         var text = "\(line.name), \(countLine), net "
         text += Display.moneySpoken(line.importedNetMinor, line.currency)
+        if let creationLine { text += ". " + creationLine }
         if let balanceLine { text += ". " + balanceLine }
         return text
     }

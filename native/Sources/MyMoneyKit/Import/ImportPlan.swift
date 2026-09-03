@@ -147,16 +147,41 @@ public struct ImportPlanOptions: Sendable {
     /// What the file itself says about its accounts, in file order. Empty for
     /// every layout that does not state balances.
     public let declaredAccounts: [DeclaredAccount]
+    /// An account the OWNER named for a file that names none of its own, which
+    /// this book may not have yet.
+    ///
+    /// WHY THIS EXISTS. A plain bank CSV has no Account column: every row of it
+    /// is implicitly "the account this statement is for", and the file never
+    /// says which. `fixedAccountId` answers that by pointing at an account
+    /// already in the book -- and on a book with no accounts at all there is
+    /// nothing for it to point at, so the file had nowhere to go and the screen
+    /// had nothing to offer but giving up. Naming the account is the obvious
+    /// answer and it was the one thing the planner could not express.
+    ///
+    /// IT IS A DECLARATION, NOT A SPECIAL CASE. Everything below treats it
+    /// exactly as it treats an account name the FILE stated: matched against
+    /// the book first -- so typing the name of an account that is already here
+    /// files the rows into THAT account rather than standing a second one
+    /// beside it -- created otherwise, listed and untickable-able in the
+    /// preview like any other new account, and its currency fixes the
+    /// minor-unit scale its rows are read at (D31), because the currency of the
+    /// account a row lands in is the currency that row is stored in (D30).
+    ///
+    /// Ignored when `fixedAccountId` names an account that exists: an id beats
+    /// a name, because an id cannot be ambiguous.
+    public let fixedNewAccount: DeclaredAccount?
 
     public init(
         source: ImportSource, fileName: String, defaultCurrency: String,
-        fixedAccountId: String? = nil, declaredAccounts: [DeclaredAccount] = []
+        fixedAccountId: String? = nil, declaredAccounts: [DeclaredAccount] = [],
+        fixedNewAccount: DeclaredAccount? = nil
     ) {
         self.source = source
         self.fileName = fileName
         self.defaultCurrency = defaultCurrency
         self.fixedAccountId = fixedAccountId
         self.declaredAccounts = declaredAccounts
+        self.fixedNewAccount = fixedNewAccount
     }
 }
 
@@ -247,6 +272,21 @@ public struct ImportPlanRow: Sendable, Hashable {
     /// The existing account this row lands in. nil ⇒ the account is new; see
     /// `ImportPlan.newAccounts`.
     public internal(set) var accountId: String?
+    /// The account this row lands in when that account does not exist yet, BY
+    /// NAME: the file's own name for it, or the one the owner typed for a file
+    /// that has no Account column at all. nil whenever `accountId` is set, and
+    /// nil on a row that never reached an account.
+    ///
+    /// RECORDED RATHER THAN RE-DERIVED, and that is a defect fixed rather than
+    /// a convenience. The commit step used to find the account it had just
+    /// created by reading `row.row.accountName` -- which quietly assumed that
+    /// the only way to reach a new account is for the FILE to have named it.
+    /// It is not: an account the owner names for a file that names none has no
+    /// `accountName` on any of its rows, and every one of them would have gone
+    /// looking for an account called "" and refused the whole import. Between
+    /// the plan and the write there is now ONE answer to "where does this row
+    /// go", and the plan is the thing that holds it.
+    public internal(set) var newAccountName: String?
     /// Index into `ImportPlan.rows` of the paired transfer leg.
     public internal(set) var transferPairIndex: Int?
     /// The file declared a currency other than the account's. The amount is
@@ -366,7 +406,12 @@ public struct ImportPlan: Sendable {
         if pr.action == .error || pr.action == .skipExactDuplicate { return false }
         if pr.action == .needsDecision && pr.decision != .add { return false }
         if pr.accountId != nil { return true }
-        return createByAccountKey[Import.nameKey(pr.row.accountName ?? "")] == true
+        // THE PLAN'S OWN ANSWER, not the file's. `newAccountName` is the name
+        // this row was actually resolved to -- which is the file's for a file
+        // that names its accounts and the owner's for one that does not.
+        // Reading `row.accountName` here would leave every row of a pinned
+        // import un-importable, silently, with a preview saying zero.
+        return createByAccountKey[Import.nameKey(pr.newAccountName ?? "")] == true
     }
 
     /// A row that will be written as an ORDINARY transaction even though the
@@ -456,14 +501,34 @@ extension Import {
         let tagKeys = Set(ledger.tags.map(\.nameLower))
         let fixedAccount = options.fixedAccountId.flatMap { accountById[$0] }
 
+        // THE ACCOUNT THE OWNER NAMED, for a file that names none of its own.
+        // Only when no existing account was pinned by id, and only when the
+        // name is actually a name -- a blank one would file every row under an
+        // account called "", which is not somewhere anybody can find money.
+        let pinnedName: String? = {
+            guard fixedAccount == nil, let pinned = options.fixedNewAccount else { return nil }
+            let name = Names.clean(pinned.name)
+            return name.isEmpty ? nil : name
+        }()
+
         // The file's declarations, re-keyed the way every account lookup here
         // is keyed, so "Everyday  Current" in a header row still finds
         // "Everyday Current". First occurrence fixes the ORDER, last occurrence
         // fixes the VALUE -- which is what a JavaScript Map does, and the web
         // app's behaviour for a file that names one account twice.
+        //
+        // THE OWNER'S PINNED ACCOUNT IS ONE OF THEM, and going in here rather
+        // than into a branch of its own is the whole point: its currency then
+        // fixes the scale of its rows, and its opening balance (if it ever
+        // carries one) lands, by exactly the code a Report header row uses.
+        // It goes in LAST so a file that declares the same name wins -- the
+        // file is describing an export, the picker is describing an intention.
         var declaredOrder: [String] = []
         var declaredByKey: [String: DeclaredAccount] = [:]
-        for d in options.declaredAccounts {
+        let declarations =
+            (pinnedName == nil ? [] : [options.fixedNewAccount].compactMap { $0 })
+            + options.declaredAccounts
+        for d in declarations {
             let key = nameKey(d.name)
             if declaredByKey[key] == nil { declaredOrder.append(key) }
             declaredByKey[key] = d
@@ -486,15 +551,29 @@ extension Import {
         // was rejected outright at GBP's two.
         for i in planRows.indices {
             let row = planRows[i].row
+            // KNOWN FOR EVERY ROW OF A PINNED IMPORT, INCLUDING ONE THAT
+            // CANNOT BE READ. The preview counts an account's skipped rows by
+            // the name they were bound for; a row that failed its date has no
+            // account name of its own, and without this it would vanish from
+            // the account's line entirely -- so the file's row count and the
+            // account's "n added, m skipped" would stop adding up.
+            if let pinnedName, accountByKey[nameKey(pinnedName)] == nil {
+                planRows[i].newAccountName = pinnedName
+            }
             if row.date == nil {
                 planRows[i].action = .error
                 planRows[i].error = row.error ?? "Unparseable row"
                 planRows[i].amountMinor = nil
                 continue
             }
-            let key = row.accountName.map(nameKey) ?? ""
-            let existing = fixedAccount ?? (row.accountName != nil ? accountByKey[key] : nil)
-            if existing == nil && row.accountName == nil {
+            // THE NAME THIS ROW GOES UNDER. The owner's pinned name where
+            // there is one -- it is exactly as good an answer as a column, and
+            // for a file with no Account column it is the only one -- else the
+            // file's own. `fixedAccountId` still beats both, unchanged.
+            let rowAccountName = pinnedName ?? row.accountName
+            let key = rowAccountName.map(nameKey) ?? ""
+            let existing = fixedAccount ?? (rowAccountName != nil ? accountByKey[key] : nil)
+            if existing == nil && rowAccountName == nil {
                 planRows[i].action = .error
                 planRows[i].error = row.error ?? "No account for this row"
                 planRows[i].amountMinor = nil
@@ -526,16 +605,22 @@ extension Import {
             }
             if let existing {
                 planRows[i].accountId = existing.id
-            } else if newAccountIndexByKey[key] == nil {
-                newAccountIndexByKey[key] = newAccounts.count
-                newAccounts.append(
-                    NewAccountPlan(
-                        name: Names.clean(row.accountName ?? ""),
-                        currency: currency,
-                        create: true,
-                        openingBalanceMinor: declaredByKey[key]?.openingBalanceMinor
+            } else {
+                // WRITTEN ON THE ROW, not left to be worked out again later.
+                // See `ImportPlanRow.newAccountName`.
+                let name = Names.clean(rowAccountName ?? "")
+                planRows[i].newAccountName = name
+                if newAccountIndexByKey[key] == nil {
+                    newAccountIndexByKey[key] = newAccounts.count
+                    newAccounts.append(
+                        NewAccountPlan(
+                            name: name,
+                            currency: currency,
+                            create: true,
+                            openingBalanceMinor: declaredByKey[key]?.openingBalanceMinor
+                        )
                     )
-                )
+                }
             }
             // Rows for a new account keep `.add`; the id only exists at commit.
             planRows[i].currencyMismatch = row.currency != nil && row.currency != currency

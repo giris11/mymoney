@@ -82,6 +82,14 @@ struct ImportDoneStep: View {
 
     private func headline(_ outcome: ImportOutcome) -> String {
         if model.undone != nil { return "This import has been taken back" }
+        // THE BIGGEST THING FIRST. On a device that had no book, this import
+        // did not add to a book -- it started one -- and saying "added 348
+        // transactions to your book" would skip past the fact that the book
+        // itself is new.
+        if outcome.createdTheBook {
+            return "Started your book with "
+                + Display.count(outcome.transactionCount, "transaction")
+        }
         return "Added \(Display.count(outcome.transactionCount, "transaction")) to your book"
     }
 
@@ -89,6 +97,15 @@ struct ImportDoneStep: View {
 
     private func addedSection(_ outcome: ImportOutcome) -> some View {
         Section {
+            if outcome.createdTheBook {
+                ImportNote(
+                    text: "This device had no book, so this import made one and put these in "
+                        + "it. Undoing takes the transactions and the accounts back out; the "
+                        + "book itself stays, empty, ready for the next file or for accounts "
+                        + "you add by hand.",
+                    symbol: "book.closed", tone: .accentColor
+                )
+            }
             FigureRow(
                 label: "Transactions added",
                 value: Display.grouped(outcome.transactionCount), emphasised: true
@@ -272,14 +289,16 @@ struct ImportDoneStep: View {
                     .buttonStyle(.bordered)
                     .controlSize(.large)
                     .disabled(model.busy)
+                    .accessibilityHint(model.busy ? "Not while the undo is running" : "")
                 }
                 PrimaryAction(
                     title: model.busy ? "Working\u{2026}" : "Done",
                     systemImage: "checkmark",
-                    isEnabled: !model.busy,
+                    // The TITLE is the reason. See `PrimaryAction`.
+                    disabledReason: model.busy ? .working : nil,
+                    probe: "Import \u{2014} Done",
                     run: close
                 )
-                .reachProbe("Import \u{2014} Done")
             }
         }
         .confirmationDialog(

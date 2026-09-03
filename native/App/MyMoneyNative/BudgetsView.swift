@@ -118,10 +118,12 @@ struct BudgetsView: View {
         .safeAreaInset(edge: .bottom) {
             if screen != nil {
                 ActionBar {
-                    PrimaryAction(title: "New budget", systemImage: "plus") {
+                    PrimaryAction(
+                        title: "New budget", systemImage: "plus",
+                        probe: "Budgets \u{2014} New budget"
+                    ) {
                         editing = .creating
                     }
-                    .reachProbe("Budgets \u{2014} New budget")
                 }
             }
         }
@@ -352,10 +354,12 @@ struct BudgetDetailView: View {
         .safeAreaInset(edge: .bottom) {
             if let budget = screen?.budget {
                 ActionBar {
-                    PrimaryAction(title: "Edit this budget", systemImage: "pencil") {
+                    PrimaryAction(
+                        title: "Edit this budget", systemImage: "pencil",
+                        probe: "Budget detail \u{2014} Edit"
+                    ) {
                         editing = .editing(budget)
                     }
-                    .reachProbe("Budget detail \u{2014} Edit")
                 }
             }
         }

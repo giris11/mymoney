@@ -180,16 +180,20 @@ struct CSVMapping: Equatable, Codable, Sendable {
     /// words. Empty means it can.
     ///
     /// The same three requirements the engine has: a date, an amount, and an
-    /// account for the row to land in. `fixedAccountId` satisfies the third on
-    /// its own, because it overrides the mapped Account column for every row.
-    func missingRequirements(fixedAccountChosen: Bool) -> [String] {
+    /// account for the row to land in. `fixedAccountChosen` satisfies the third
+    /// on its own, because it overrides the mapped Account column for every row.
+    ///
+    /// `accountAdvice` COMES FROM THE CALLER because the advice depends on the
+    /// book, not on the mapping: "choose one above" cannot be followed when the
+    /// picker is empty. See `ImportAdvice.accountRequirement`.
+    func missingRequirements(fixedAccountChosen: Bool, accountAdvice: String) -> [String] {
         var missing: [String] = []
         if date < 0 { missing.append("a Date column") }
         if amount < 0 && debit < 0 && credit < 0 {
             missing.append("an Amount column, or a Debit and Credit pair")
         }
         if account < 0 && !fixedAccountChosen {
-            missing.append("an account \u{2014} choose one above, or map an Account column")
+            missing.append(accountAdvice)
         }
         return missing
     }

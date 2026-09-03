@@ -124,8 +124,38 @@ struct ScheduleEditor: View {
         }
     }
 
-    private var canSave: Bool {
-        !Names.isBlank(name) && !accountId.isEmpty && (typedMinor ?? 0) != 0 && !saving
+    /// Why Save will not run, or nil when it will. A sentence rather than a
+    /// boolean -- see `PrimaryAction` in `ActionBar.swift`.
+    private var saveProblem: PrimaryAction.DisabledReason? {
+        if saving { return .working }
+        if Names.isBlank(name) {
+            return .because(
+                "Give this schedule a name \u{2014} \u{201C}Rent\u{201D}, \u{201C}Season "
+                    + "ticket\u{201D}, whatever you will recognise it by when it is due."
+            )
+        }
+        if accountId.isEmpty {
+            return .because(
+                accounts.isEmpty
+                    ? "There are no accounts in your book yet, and a schedule has to be paid "
+                        + "from one. Add an account first \u{2014} the accounts screen is a tap "
+                        + "away \u{2014} and this will be waiting."
+                    : "Choose the account this is paid from. It fixes the currency the amount "
+                        + "is held in, so it cannot be assumed."
+            )
+        }
+        guard let typed = typedMinor else {
+            return .because(
+                "\u{201C}\(amount.text)\u{201D} is not an amount \(currency) can hold."
+            )
+        }
+        if typed == 0 {
+            return .because(
+                "A schedule for nought would post an empty transaction every time it came "
+                    + "round. Type the amount it is actually for."
+            )
+        }
+        return nil
     }
 
     var body: some View {
@@ -263,8 +293,8 @@ struct ScheduleEditor: View {
             #endif
             .safeAreaInset(edge: .bottom) {
                 SaveBar(
-                    title: "Save",
-                    isEnabled: canSave,
+                    title: saving ? "Saving\u{2026}" : "Save",
+                    disabledReason: saveProblem,
                     probe: "Schedule editor \u{2014} Save",
                     save: { Task { await save() } }
                 )
@@ -478,6 +508,26 @@ struct ConfirmPostSheet: View {
 
     private var typedMinor: Int64? { amount.minor(currency: occurrence.currency) }
 
+    /// Why "Enter it" will not run, or nil when it will. A sentence rather
+    /// than a boolean -- see `PrimaryAction` in `ActionBar.swift`.
+    private var enterProblem: PrimaryAction.DisabledReason? {
+        if saving { return .working }
+        guard let typed = typedMinor else {
+            return .because(
+                "\u{201C}\(amount.text)\u{201D} is not an amount \(occurrence.currency) can "
+                    + "hold. Type the figure this payment was actually for."
+            )
+        }
+        if typed == 0 {
+            return .because(
+                "This would enter a payment of nought. If it did not happen, use "
+                    + "\u{201C}Skip this one\u{201D} above \u{2014} that records it as skipped "
+                    + "rather than as an empty transaction."
+            )
+        }
+        return nil
+    }
+
     var body: some View {
         NavigationStack {
             Form {
@@ -559,8 +609,8 @@ struct ConfirmPostSheet: View {
             #endif
             .safeAreaInset(edge: .bottom) {
                 SaveBar(
-                    title: "Enter it",
-                    isEnabled: typedMinor != nil && typedMinor != 0 && !saving,
+                    title: saving ? "Entering\u{2026}" : "Enter it",
+                    disabledReason: enterProblem,
                     probe: "Confirm payment \u{2014} Enter",
                     save: { Task { await post() } }
                 )

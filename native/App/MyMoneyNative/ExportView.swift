@@ -141,11 +141,23 @@ struct ExportView: View {
                 PrimaryAction(
                     title: working ? "Writing the file\u{2026}" : "Create the file",
                     systemImage: "doc.badge.plus",
-                    isEnabled: !working && app.hasBook
+                    // A BACKUP OF NOTHING IS NOT A BACKUP, and that used to be
+                    // a grey button with nothing beside it. It is a real
+                    // refusal -- unlike an import, there is genuinely nothing
+                    // here to write out -- so it says what to do about it.
+                    disabledReason: working
+                        ? .working
+                        : (app.hasBook
+                            ? nil
+                            : .because(
+                                "There is no book on this device yet, so there is nothing to "
+                                    + "back up. Start one, or bring a file in from the Import "
+                                    + "screen, and then come back."
+                            )),
+                    probe: "Export \u{2014} Create the file"
                 ) {
                     write()
                 }
-                .reachProbe("Export \u{2014} Create the file")
             }
         }
     }

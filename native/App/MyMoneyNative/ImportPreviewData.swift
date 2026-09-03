@@ -106,7 +106,13 @@ enum ImportPreview {
             // account's own name where the row resolved to one, so a file
             // spelling it differently does not appear as a second account.
             let existing = row.accountId.flatMap { context.accountsById[$0] }
-            let displayName = existing?.name ?? Names.clean(row.row.accountName ?? "")
+            // THE PLAN'S ANSWER FOR A NEW ACCOUNT, not the file's. A statement
+            // pinned to an account the owner named has no account name on any
+            // of its rows, and reading `row.row.accountName` here left every
+            // one of them nameless -- so the section that exists to say where
+            // the money is going drew nothing at all.
+            let displayName =
+                existing?.name ?? row.newAccountName ?? Names.clean(row.row.accountName ?? "")
             guard !displayName.isEmpty else { continue }
             let key = Names.key(displayName)
             let currency =

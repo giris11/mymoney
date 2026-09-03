@@ -93,10 +93,23 @@ struct ImportWizard: View {
         // showing yesterday's net worth would be the same dishonesty as a
         // banner that stopped counting.
         .onChange(of: model.outcome) { _, outcome in
-            if outcome != nil { Task { await app.rowsImported() } }
+            // NOT WHEN THIS IMPORT STARTED THE BOOK. Refreshing then flips
+            // `AppModel.isFirstRun` false, and `RootView` replaces the whole
+            // first-run flow -- including the screen this sheet is presented
+            // from -- which would tear the Done step and its undo button off
+            // the screen the instant the commit landed. `ImportView.wizardClosed`
+            // does it when the sheet is dismissed instead.
+            if let outcome, !outcome.createdTheBook { Task { await app.rowsImported() } }
         }
         .onChange(of: model.undone) { _, undone in
-            if undone != nil { Task { await app.rowsImported() } }
+            // THE SAME EXEMPTION, for the same reason. Undoing an import that
+            // created the book leaves the book behind (removal is a tombstone
+            // save, and a book is not an import batch), so a refresh here would
+            // still flip `isFirstRun` false and pull this sheet off the screen
+            // in the middle of showing what was taken back.
+            if undone != nil, model.outcome?.createdTheBook != true {
+                Task { await app.rowsImported() }
+            }
         }
     }
 

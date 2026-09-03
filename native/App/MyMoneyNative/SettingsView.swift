@@ -84,7 +84,17 @@ struct SettingsView: View {
                     Label("Base currency", systemImage: "banknote")
                 }
                 .disabled(changingCurrency)
+                .accessibilityHint(changingCurrency ? "Not while the last change is saving" : "")
 
+                if changingCurrency {
+                    // GREYED WITH A REASON. Changing the base currency rewrites
+                    // every total in the book, and a second change on top of an
+                    // unfinished one is a question the screen cannot answer.
+                    Label("Changing it\u{2026} every total is being redone.", systemImage: "clock")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 if let currencyRefusal {
                     RefusalNotice(refusal: currencyRefusal)
                 }
@@ -200,6 +210,18 @@ struct SettingsView: View {
                 Label("Lock this app", systemImage: "lock")
             }
             .disabled(enabling)
+            .accessibilityHint(enabling ? "Waiting for Face ID or your passcode" : "")
+
+            if enabling {
+                Label(
+                    "Waiting for Face ID or your passcode \u{2014} the switch comes back as soon "
+                        + "as it answers.",
+                    systemImage: "clock"
+                )
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
 
             if lock.isEnabled {
                 Picker(selection: Binding(get: { lock.grace }, set: { lock.setGrace($0) })) {
@@ -317,6 +339,18 @@ struct SettingsView: View {
                 Label("Remind me what is due", systemImage: "bell")
             }
             .disabled(app.reminders.isWorking)
+            .accessibilityHint(app.reminders.isWorking ? "Waiting for iOS to answer" : "")
+
+            if app.reminders.isWorking {
+                Label(
+                    "Asking iOS for permission to send reminders \u{2014} the switch comes back "
+                        + "as soon as it answers.",
+                    systemImage: "clock"
+                )
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
 
             if app.reminders.settings.enabled {
                 Picker(selection: leadBinding) {

@@ -331,7 +331,10 @@ private struct ReachProbe: ViewModifier {
     let name: String
 
     @ViewBuilder func body(content: Content) -> some View {
-        if Reach.isMeasuring {
+        // AN EMPTY NAME IS NOT A CONTROL. `PrimaryAction` takes an optional
+        // probe name and passes "" when it has none, so the modifier has to be
+        // able to say "measure nothing" rather than report a nameless box.
+        if Reach.isMeasuring, !name.isEmpty {
             content
                 .background {
                     GeometryReader { proxy in
